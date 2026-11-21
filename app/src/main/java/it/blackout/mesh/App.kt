@@ -747,7 +747,7 @@ private fun AdvancedRows(s: AppState, a: MainActivity, showBlocked: Boolean, ope
             }
             ToggleRow(R.drawable.ic_public, "Internet", n != null, net, netColor) { MeshEngine.setInternet(it); s.tick++ }
             if (n != null) ToggleRow(R.drawable.ic_shield, "Through Tor", Tor.enabled(a),
-                "Hides your internet address from the relays. Slower, uses more battery.") { MeshEngine.setTor(it); s.tick++ }
+                if (Here.batterySaver) "Hides your internet address from the relays. Slower, uses more battery." else "Hides your internet address from the relays. Slower.") { MeshEngine.setTor(it); s.tick++ }
         }
         if (Here.radios) {
             val radio = when {

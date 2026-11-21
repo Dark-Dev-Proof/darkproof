@@ -19,23 +19,6 @@ object DebugTools {
 }
 
 /**
- * "Connect through Tor". There is no Tor inside the desktop app yet, so its port is never ready: while the setting is
- * on (the default), the relay links wait and nothing goes to the internet relays.
- */
-object Tor {
-    const val CHECK_URL = "https://check.torproject.org/api/ip"
-    private fun prefs(c: Context) = c.getSharedPreferences("mesh", 0)
-    fun enabled(c: Context) = prefs(c).getBoolean("tor", true)
-    fun setEnabled(c: Context, on: Boolean) = prefs(c).edit().putBoolean("tor", on).apply()
-    fun start(c: Context) {}
-    fun stop(c: Context) {}
-    fun socksPort(): Int? = null
-    /** The Tor Project's answer: {"IsTor": true, "IP": …}. The same check as the phones'. */
-    fun isTor(json: String): Boolean = runCatching { JSONObject(json).getBoolean("IsTor") }.getOrDefault(false)
-    fun check(client: okhttp3.OkHttpClient, label: String = ""): Boolean = false
-}
-
-/**
  * DarkProof devices on the same network, found with DNS-SD and linked with [WifiLinks]: the desktop's version of the
  * phones' WifiLink.kt, with the desktop's own finder ([Mdns]) where a phone asks its system. The rules are the phones'
  * (spec/FORMAT.md, "Wi-Fi networks"): only the device with the smaller node id connects, it tries again every 10 s

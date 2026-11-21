@@ -18,7 +18,7 @@ object RealEngine {
 
     private val start: Unit by lazy {
         WifiLink.discovery = null // the tests' engine must not find, or be found by, real DarkProof devices on this network
-        val a = Desktop.activity(dir); activity = a // nothing saved yet: the screens ask for a name and a group
+        val a = Desktop.activity(dir, relays = false); activity = a // the tests' engine never goes to the real relays // nothing saved yet: the screens ask for a name and a group
         Screen { App(a) }.use { s ->
             check(s.has("Create a group") && s.has("Join a group")) { "a first start doesn't show the setup: ${s.texts()}" }
             s.png("build/screen-setup.png")

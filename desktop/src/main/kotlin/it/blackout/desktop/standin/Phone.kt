@@ -37,7 +37,7 @@ import kotlin.math.roundToInt
 object Here {
     val device = "computer"
     val bluetooth = false     // no Bluetooth or Wi-Fi Direct links yet: phones link over the same network
-    val internet = false      // no internet relays yet: the phones reach them through Tor inside the app, which the desktop lacks
+    val internet = true       // the internet relays, through the Tor program the app carries (standin/Tor.kt); off until switched on
     val radios = false
     val batterySaver = false
     val wifiBoard = false

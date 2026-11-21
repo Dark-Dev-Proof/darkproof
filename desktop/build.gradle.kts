@@ -1,6 +1,8 @@
+import java.io.OutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import java.util.zip.GZIPInputStream
 import java.util.zip.ZipInputStream
 
 // DarkProof for desktop computers (Windows first). Run it with: ./gradlew -Pdesktop :desktop:run
@@ -100,6 +102,12 @@ tasks.withType<Test>().configureEach {
     testLogging { events("failed"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }
 
+fun sha256(f: File): String {
+    val md = MessageDigest.getInstance("SHA-256")
+    f.inputStream().use { i -> val b = ByteArray(1 shl 16); while (true) { val n = i.read(b); if (n < 0) break; md.update(b, 0, n) } }
+    return md.digest().joinToString("") { "%02x".format(it) }
+}
+
 // The AI engine: llama.cpp's own server program (MIT), one pinned build from its authors' releases, checked by SHA-256
 // before it is unpacked. It is code from outside, so it is fetched only when asked for with -PaiEngine (the builds on
 // GitHub ask). Without it the app builds and runs, and its Ask page says this copy has no AI engine.
@@ -111,7 +119,7 @@ val aiEngines = mapOf( // the computer it is for, to: the folder it gets in the 
     ),
     "macos-arm64" to listOf(Triple("llama", "llama-$aiEngineBuild-bin-macos-arm64.tar.gz", "c0961e9c1ee87fb17357825a8f4a0a294ce7334093e1295917f71f17977d5ad6")), // uses the Mac's graphics chip by itself
 )
-val engineRoot = layout.projectDirectory.dir("engine") // engine/<computer>/<folder> goes into the app as resources/<folder>
+val engineRoot = layout.projectDirectory.dir("engine") // engine/<computer>/<folder> goes into the app as resources/<folder>: the AI engine, and Tor
 val fetchAiEngine = tasks.register("fetchAiEngine") {
     val wanted = providers.gradleProperty("aiEngine").isPresent
     val picks = aiEngines[composeTarget].orEmpty()
@@ -119,11 +127,6 @@ val fetchAiEngine = tasks.register("fetchAiEngine") {
     val work = layout.buildDirectory.dir("ai-engine").get().asFile
     onlyIf { wanted && picks.isNotEmpty() }
     doLast {
-        fun sha256(f: File): String {
-            val md = MessageDigest.getInstance("SHA-256")
-            f.inputStream().use { i -> val b = ByteArray(1 shl 16); while (true) { val n = i.read(b); if (n < 0) break; md.update(b, 0, n) } }
-            return md.digest().joinToString("") { "%02x".format(it) }
-        }
         for ((folder, name, sha) in picks) {
             val archive = File(work, name)
             if (!archive.isFile || sha256(archive) != sha) {
@@ -166,12 +169,74 @@ val fetchAiEngine = tasks.register("fetchAiEngine") {
         }
     }
 }
-tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(fetchAiEngine) }
-// Packing the app drops the mark that says the engine is a program (seen on the Mac build of 2026-11-20: every file in
+
+// Tor, for the internet relays: the Tor Project's own program from its "expert bundle", one pinned version from its
+// permanent archive, checked by SHA-256 before it is unpacked. When they were pinned (2026-11-21) both files were also
+// checked against the Tor Browser developers' signature (key EF6E 286D DA85 EA2A 4BA7 DE68 4E2C 6E87 9329 8290).
+// Like the AI engine it is code from outside: fetched only when asked for with -Ptor. Without it the app builds and
+// runs, and its relays wait for a Tor that this copy does not have.
+val torVersion = "16.0.1"
+val torBundles = mapOf( // the computer it is for, to the file's name and SHA-256
+    "windows-x64" to ("tor-expert-bundle-windows-x86_64-$torVersion.tar.gz" to "9eed3c3ff1fe43df034ce360196c9ec95472560d77ff55614d0cd5120edea27b"),
+    "macos-arm64" to ("tor-expert-bundle-macos-aarch64-$torVersion.tar.gz" to "0b7d022017c31e3f972d06465bcd7ac50feb66ac825547419a934914fe4bb156"),
+)
+val fetchTor = tasks.register("fetchTor") {
+    val wanted = providers.gradleProperty("tor").isPresent
+    val pick = torBundles[composeTarget]
+    val into = engineRoot.dir("$composeTarget/tor").asFile
+    val work = layout.buildDirectory.dir("tor").get().asFile
+    onlyIf { wanted && pick != null }
+    doLast {
+        val (name, sha) = pick!!
+        val archive = File(work, name)
+        if (!archive.isFile || sha256(archive) != sha) {
+            work.mkdirs()
+            uri("https://archive.torproject.org/tor-package-archive/torbrowser/$torVersion/$name").toURL().openStream().use { i -> archive.outputStream().use { i.copyTo(it) } }
+        }
+        check(sha256(archive) == sha) { "$name is not the file that was pinned (SHA-256 ${sha256(archive)})" }
+        into.deleteRecursively(); into.mkdirs()
+        // The archive is read here, entry by entry: the program, the library beside it and their licences are kept. Not the
+        // programs for getting around blocks of Tor (they are large, and not used yet) and not the country lists.
+        GZIPInputStream(archive.inputStream().buffered()).use { tar ->
+            val header = ByteArray(512)
+            while (tar.readNBytes(header, 0, 512) == 512 && header.any { it != 0.toByte() }) {
+                fun text(from: Int, length: Int) = String(header, from, length, Charsets.US_ASCII).substringBefore('\u0000').trim()
+                val entry = text(345, 155).let { if (it.isEmpty()) "" else "$it/" } + text(0, 100)
+                val size = text(124, 12).ifEmpty { "0" }.toLong(8)
+                val isFile = header[156] == '0'.code.toByte() || header[156] == 0.toByte()
+                val out = when {
+                    !isFile -> null
+                    entry == "tor/tor" || entry == "tor/tor.exe" -> File(into, entry.substringAfter('/'))
+                    entry.startsWith("tor/") && entry.count { it == '/' } == 1 && (entry.endsWith(".dylib") || entry.endsWith(".dll")) -> File(into, entry.substringAfter('/'))
+                    entry in setOf("docs/tor.txt", "docs/libevent.txt", "docs/openssl.txt", "docs/zlib.txt") -> File(into, "licences/" + entry.substringAfter('/'))
+                    else -> null
+                }
+                out?.parentFile?.mkdirs()
+                var left = size; val buffer = ByteArray(1 shl 16)
+                (out?.outputStream() ?: OutputStream.nullOutputStream()).use { o ->
+                    while (left > 0) { val n = tar.read(buffer, 0, minOf(buffer.size.toLong(), left).toInt()); check(n > 0) { "$name ends in the middle of $entry" }; o.write(buffer, 0, n); left -= n }
+                }
+                tar.skipNBytes((512 - size % 512) % 512)
+                if (out != null && out.parentFile == into) out.setExecutable(true)
+            }
+        }
+        check(File(into, "tor").isFile || File(into, "tor.exe").isFile) { "Tor was not unpacked from $name" }
+        // The Mac program comes with a signature that a Mac with Apple's own chips rejects, and such a Mac ends an unsigned
+        // program the moment it starts (seen 2026-11-21: "invalid signature", ended with 137). It is signed again here, by
+        // this computer and in no one's name, as every program built on a Mac is.
+        if (composeTarget.startsWith("macos")) {
+            val files = into.listFiles().orEmpty().filter { it.isFile && it.name != "NOTICE.txt" }.map { it.path }
+            val sign = ProcessBuilder(listOf("codesign", "--force", "-s", "-") + files).inheritIO().start()
+            check(sign.waitFor() == 0) { "Tor could not be signed for this Mac" }
+        }
+    }
+}
+tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(fetchAiEngine, fetchTor) }
+// Packing the app drops the mark that says a file is a program (seen on the Mac build of 2026-11-20: every file in
 // the packed app came out as a plain file). It is put back in the packed app, which the disk image is then made from.
 tasks.matching { it.name == "createDistributable" }.configureEach {
     val packed = layout.buildDirectory.dir("compose/binaries/main/app")
-    doLast { packed.get().asFile.walkTopDown().filter { it.isFile && it.name == "llama-server" }.forEach { it.setExecutable(true, false) } }
+    doLast { packed.get().asFile.walkTopDown().filter { it.isFile && (it.name == "llama-server" || (it.name == "tor" && it.parentFile.name == "tor")) }.forEach { it.setExecutable(true, false) } }
 }
 
 compose.desktop {

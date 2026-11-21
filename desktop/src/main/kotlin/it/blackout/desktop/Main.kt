@@ -46,7 +46,7 @@ fun main(args: Array<String>) {
 }
 
 private fun window(test: Boolean) = application {
-    val a = remember { Desktop.activity() }
+    val a = remember { Desktop.activity(relays = !test) } // the window test stays off the relays
     // On Windows the window opens once its title bar has been made dark, so it never shows up with a light one.
     var open by remember { mutableStateOf(!TitleBar.onWindows) }
     LaunchedEffect(Unit) { delay(2500); open = true } // whatever happens to the title bar, the window opens

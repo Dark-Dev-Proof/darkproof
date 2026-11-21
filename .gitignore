@@ -5,6 +5,7 @@ app/build/
 .kotlin/
 *.apk
 *.msi
+*.dmg
 DerivedData/
 
 # Machine-specific
@@ -25,4 +26,7 @@ ios/Vendor/llama.framework/
 *.gguf
 # The AI engine is fetched by the build (desktop/build.gradle.kts, fetchAiEngine), never committed
 desktop/engine/*/llama/
+desktop/engine/*/llama-gpu/
+desktop/engine/*/tor/
 !desktop/engine/common/llama/
+!desktop/engine/common/tor/

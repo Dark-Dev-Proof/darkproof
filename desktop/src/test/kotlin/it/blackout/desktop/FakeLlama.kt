@@ -23,8 +23,9 @@ object FakeLlama {
      * The command that starts it, for [Llama.command]: this same Java, with the tests' own classes. The classes are
      * named in a file that Java reads its arguments from: on Windows a command line holds too few letters for them all.
      */
-    fun command() = listOf(File(System.getProperty("java.home"), "bin/java" + if (TitleBar.onWindows) ".exe" else "").path, "@" + arguments.path, "it.blackout.desktop.FakeLlama")
-    private val arguments: File by lazy {
+    fun command() = listOf(File(System.getProperty("java.home"), "bin/java" + if (TitleBar.onWindows) ".exe" else "").path, "@" + classes.path, "it.blackout.desktop.FakeLlama")
+    /** The file that names the tests' classes to a stand-in program's Java. */
+    val classes: File by lazy {
         File.createTempFile("darkproof-fake-llama", ".args").also { f ->
             f.deleteOnExit()
             f.writeText("-cp \"" + System.getProperty("java.class.path").replace("\\", "\\\\").replace("\"", "\\\"") + "\"\n") // in such a file, \ and " are written with a \ before them

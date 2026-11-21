@@ -56,8 +56,10 @@ class WindowScriptTest {
 
                 // Connections, from the status card: link to another device by typing its address
                 s.tap("Looking for phones"); assertTrue(s.has("Connections") && s.says("Wi-Fi network") && s.has("Send through another app"))
-                assertTrue(s.has("None linked")); for (phoneOnly in listOf("Searching", "Internet", "Through Tor", "Long-range radio", "Battery saver", "Wi-Fi board")) assertFalse(phoneOnly, s.says(phoneOnly))
-                assertTrue(s.has("They keep working in a blackout.")); assertFalse(s.has("All but Internet"))
+                assertTrue(s.has("None linked")); for (phoneOnly in listOf("Searching", "Long-range radio", "Battery saver", "Wi-Fi board")) assertFalse(phoneOnly, s.says(phoneOnly))
+                // The internet relays are there and off: the test never switches them on, so nothing of it reaches a real relay
+                assertTrue(s.says("Internet") && s.has("Off: messages go only from phone to phone") && s.has("All but Internet keep working in a blackout."))
+                assertFalse("Tor's own row shows once the internet is on", s.says("Through Tor")); assertTrue(MeshEngine.nostr == null)
                 s.png("build/screen-connections.png")
                 s.tap("Nearby phones"); assertTrue(s.has("Same Wi-Fi network") && s.has("Looking on this network") && s.has("This computer: "))
                 assertFalse(s.has("This phone"))
