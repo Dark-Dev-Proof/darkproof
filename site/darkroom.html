@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- This page may run WebAssembly (the AI engine, served from this site) and may reach three places: this site (the
+     holder check), huggingface.co and its file servers under hf.co (the model). Nothing typed here is sent anywhere. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self' https://huggingface.co https://*.hf.co; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>The dark room | DarkProof</title>
+<meta name="description" content="For holders: an assistant with no filter that runs in your own browser.">
+<link rel="icon" href="favicon-dark.png?v=3" type="image/png" sizes="96x96" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="favicon.png?v=3" type="image/png" sizes="96x96" media="(prefers-color-scheme: light)">
+<link rel="icon" href="favicon.svg?v=3" type="image/svg+xml" media="(prefers-color-scheme: light)">
+<link rel="apple-touch-icon" href="logo.png">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="demo.css">
+<link rel="stylesheet" href="darkroom.css">
+<script src="darkroom.js" defer></script>
+</head>
+<body>
+<!-- Icons copied from the home page's sprite (Phosphor, MIT, and our own system icons). -->
+<svg class="sprite" aria-hidden="true">
+<symbol id="i-arrow-up-bold" viewBox="0 0 256 256"><path d="M208.49,120.49a12,12,0,0,1-17,0L140,69V216a12,12,0,0,1-24,0V69L64.49,120.49a12,12,0,0,1-17-17l72-72a12,12,0,0,1,17,0l72,72A12,12,0,0,1,208.49,120.49Z"/></symbol>
+<symbol id="i-arrow-counter-clockwise-bold" viewBox="0 0 256 256"><path d="M228,128a100,100,0,0,1-98.66,100H128a99.39,99.39,0,0,1-68.62-27.29,12,12,0,0,1,16.48-17.45,76,76,0,1,0-1.57-109c-.13.13-.25.25-.39.37L54.89,92H72a12,12,0,0,1,0,24H24a12,12,0,0,1-12-12V56a12,12,0,0,1,24,0V76.72L57.48,57.06A100,100,0,0,1,228,128Z"/></symbol>
+<symbol id="i-check-bold" viewBox="0 0 256 256"><path d="M232.49,80.49l-128,128a12,12,0,0,1-17,0l-56-56a12,12,0,1,1,17-17L96,183,215.51,63.51a12,12,0,0,1,17,17Z"/></symbol>
+<symbol id="i-sys-signal" viewBox="0 0 18 12"><rect y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" width="3" height="12" rx="1"/></symbol>
+<symbol id="i-sys-wifi" viewBox="0 0 16 12"><path d="M0.01 3.31A11.3 11.3 0 0 1 15.99 3.31L14.505 4.795A9.2 9.2 0 0 0 1.495 4.795Z"/><path d="M2.697 5.997A7.5 7.5 0 0 1 13.303 5.997L11.818 7.482A5.4 5.4 0 0 0 4.182 7.482Z"/><path d="M8 11.3L5.596 8.896A3.4 3.4 0 0 1 10.404 8.896Z"/></symbol>
+<symbol id="i-sys-battery-75" viewBox="0 0 27 13"><rect x="0.5" y="0.5" width="23" height="12" rx="3.6" fill="none" stroke="currentColor" stroke-opacity="0.45"/><rect x="2" y="2" width="15" height="9" rx="2.2"/><path d="M25 4.5C26.2 4.9 26.5 5.8 26.5 6.5C26.5 7.2 26.2 8.1 25 8.5Z" fill-opacity="0.5"/></symbol>
+</svg>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap wide">
+<header class="site">
+  <a class="home" href="./"><span class="dots">DarkProof</span></a>
+  <a class="act act-light act-sm" href="./#stage">Try the demo</a>
+</header>
+
+<main id="main">
+  <section class="dr-head" aria-labelledby="title">
+    <p class="label">[ Holders only · early test ]</p>
+    <h1 id="title">The dark room</h1>
+    <p class="lead">An assistant with no filter that runs in your own browser. Nothing you type leaves this page. It
+    is for adults, it can be wrong, and what you do with its answers is on you.</p>
+  </section>
+
+  <section class="room" aria-label="Steps and assistant">
+    <ol class="gate" id="gate">
+      <li id="g-wallet" data-on="now">
+        <div class="gate-top"><h2>Connect your wallet</h2><svg class="gate-tick" aria-hidden="true"><use href="#i-check-bold"></use></svg></div>
+        <div class="gate-body">
+          <p>The page asks your Solana wallet for its address. It can't move anything.</p>
+          <div class="buttons"><button class="button primary" id="b-connect" type="button">Connect wallet</button></div>
+          <p class="say" id="say-wallet" role="status" aria-live="polite"></p>
+        </div>
+      </li>
+      <li id="g-proof" data-on="wait">
+        <div class="gate-top"><h2>Prove you hold the coin</h2><svg class="gate-tick" aria-hidden="true"><use href="#i-check-bold"></use></svg></div>
+        <div class="gate-body" hidden>
+          <p>Your wallet signs a short message. It is not a transaction and costs nothing. darkproof.app checks the
+          signature and whether the wallet holds any of the coin, then forgets it.</p>
+          <div class="buttons"><button class="button primary" id="b-sign" type="button">Sign the message</button></div>
+          <p class="say" id="say-proof" role="status" aria-live="polite"></p>
+        </div>
+      </li>
+      <li id="g-model" data-on="wait">
+        <div class="gate-top"><h2>Download the model</h2><svg class="gate-tick" aria-hidden="true"><use href="#i-check-bold"></use></svg></div>
+        <div class="gate-body" hidden>
+          <p>The model comes straight from Hugging Face and stays in this browser, so the next visit starts at once.</p>
+          <div class="pick" id="pick">
+            <button type="button" data-model="large"><b>Download the model</b><span class="why">Qwen 3.5 2B. Best on a computer; many phones can't hold it.</span><span class="sz">1.27 GB</span></button>
+          </div>
+          <div class="bar" id="bar" hidden><span></span></div>
+          <p class="say" id="say-model" role="status" aria-live="polite"></p>
+        </div>
+      </li>
+    </ol>
+
+    <div class="room-phone">
+      <div class="phone-slot" id="dr-slot">
+        <div class="phone" role="group" aria-label="The DarkProof assistant on a simulated iPhone">
+          <span class="hw hw-action" aria-hidden="true"></span><span class="hw hw-up" aria-hidden="true"></span><span class="hw hw-down" aria-hidden="true"></span><span class="hw hw-power" aria-hidden="true"></span>
+          <div class="phone-screen">
+            <div class="sb" aria-hidden="true"><span id="dr-time">9:41</span><span class="island"></span><span class="sb-icons"><svg class="ic ic-sys-signal"><use href="#i-sys-signal"></use></svg><svg class="ic ic-sys-wifi"><use href="#i-sys-wifi"></use></svg><svg class="ic ic-sys-battery-75"><use href="#i-sys-battery-75"></use></svg></span></div>
+            <div class="app">
+              <div class="dr-lock" id="dr-lock"><b>Holders only</b><span>Finish the steps to open the assistant.</span></div>
+              <div class="scr ask" id="dr-ask" hidden>
+                <div class="ask-top"><div><h2 class="p-title">Ask</h2><p class="p-sub">Runs in this browser, with no filter. It can be wrong: double-check anything important.</p></div>
+                  <button class="round" id="dr-new" type="button" aria-label="New conversation" disabled><svg class="ic" aria-hidden="true"><use href="#i-arrow-counter-clockwise-bold"></use></svg></button></div>
+                <div class="msgs" id="dr-msgs" aria-live="polite"></div>
+                <div class="composer"><input id="dr-draft" type="text" autocomplete="off" enterkeyhint="send" maxlength="500" aria-label="Ask a question" placeholder="Ask a question"><button class="send" id="dr-send" type="button" aria-label="Send"><svg class="ic" aria-hidden="true"><use href="#i-arrow-up-bold"></use></svg></button></div>
+              </div>
+            </div>
+            <span class="home-ind" aria-hidden="true"></span>
+            <span class="glass" aria-hidden="true"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tells" aria-labelledby="tells-title">
+    <h2 id="tells-title">What this page contacts</h2>
+    <ul>
+      <li>darkproof.app, for the holder check. It receives your wallet address and the signed message, asks a public
+      Solana node whether the wallet holds the coin, and stores nothing.</li>
+      <li>Hugging Face, for the model file. It sees your internet address, like any site you download from.</li>
+      <li>Nobody else. Your questions and the answers stay in this browser: the model runs on your own device.</li>
+    </ul>
+    <p class="dim">The lock is a soft one. The model is public on Hugging Face, and this page only saves holders the
+    work of setting it up. The engine is wllama (MIT), the model is a version of Qwen 3.5 2B (Apache 2.0) published by
+    HauhauCS. It gets medicine doses wrong: check any dose on the package.</p>
+    <noscript><p class="dim">This page needs JavaScript: the assistant is a program that runs in your browser.</p></noscript>
+  </section>
+</main>
+
+<footer class="site">
+  <nav aria-label="Footer">
+    <a href="./">About DarkProof</a>
+    <a href="privacy.html">Privacy policy</a>
+    <a href="terms.html">Terms of use</a>
+    <a href="mailto:support@darkproof.app">support@darkproof.app</a>
+  </nav>
+</footer>
+</div>
+</body>
+</html>

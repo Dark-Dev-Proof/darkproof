@@ -313,6 +313,8 @@ struct HelpPrivacyPage: View {
                     Button("Email us") { UIApplication.shared.open(Contact.mail) }.buttonStyle(GhostButton())
                     Button("Privacy policy") { UIApplication.shared.open(Contact.privacy) }.buttonStyle(GhostButton())
                 }
+                // On its own line: three in a row do not fit a narrow phone.
+                Button("Terms of use") { UIApplication.shared.open(Contact.terms) }.buttonStyle(GhostButton())
             }
         }
     }

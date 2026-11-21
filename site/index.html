@@ -3,82 +3,492 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<!-- connect-src 'none': scripts on this page can't send anything anywhere, so what visitors type in the demo stays in the browser. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; media-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <title>DarkProof: messages without internet</title>
-<meta name="description" content="DarkProof is a free messaging app for blackouts and disasters. Phones pass messages to each other over Bluetooth, Wi-Fi and LoRa radios, with no internet and no servers.">
-<link rel="icon" href="favicon.png" type="image/png">
+<meta name="description" content="DarkProof is a free messaging app for blackouts and disasters. Phones pass messages to each other with no internet and no account. Try the demo.">
+<link rel="canonical" href="https://darkproof.app/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://darkproof.app/">
+<meta property="og:title" content="DarkProof: messages without internet">
+<meta property="og:description" content="A free messaging app for blackouts and disasters. Phones pass messages to each other, with no internet and no account. Try the demo in your browser.">
+<meta property="og:image" content="https://darkproof.app/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon-dark.png?v=3" type="image/png" sizes="96x96" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="favicon.png?v=3" type="image/png" sizes="96x96" media="(prefers-color-scheme: light)">
+<link rel="icon" href="favicon.svg?v=3" type="image/svg+xml" media="(prefers-color-scheme: light)">
 <link rel="apple-touch-icon" href="logo.png">
+<link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/GeistMono-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="home.css">
+<link rel="stylesheet" href="demo.css">
+<script src="outage-map.js" defer></script>
+<script src="globe.js" defer></script>
+<script src="home.js" defer></script>
+<script src="demo.js" defer></script>
 </head>
-<body>
+<body class="home" data-clips>
 <a class="skip" href="#main">Skip to content</a>
-<div class="wrap">
-<header class="site">
-  <img src="logo.png" alt="" width="40" height="40">
-  <a href="./">DarkProof</a>
+<!-- icons:start -->
+<svg class="sprite" aria-hidden="true">
+<symbol id="i-arrow-counter-clockwise-bold" viewBox="0 0 256 256"><path d="M228,128a100,100,0,0,1-98.66,100H128a99.39,99.39,0,0,1-68.62-27.29,12,12,0,0,1,16.48-17.45,76,76,0,1,0-1.57-109c-.13.13-.25.25-.39.37L54.89,92H72a12,12,0,0,1,0,24H24a12,12,0,0,1-12-12V56a12,12,0,0,1,24,0V76.72L57.48,57.06A100,100,0,0,1,228,128Z"/></symbol>
+<symbol id="i-arrow-down-bold" viewBox="0 0 256 256"><path d="M208.49,152.49l-72,72a12,12,0,0,1-17,0l-72-72a12,12,0,0,1,17-17L116,187V40a12,12,0,0,1,24,0V187l51.51-51.52a12,12,0,0,1,17,17Z"/></symbol>
+<symbol id="i-arrow-up-bold" viewBox="0 0 256 256"><path d="M208.49,120.49a12,12,0,0,1-17,0L140,69V216a12,12,0,0,1-24,0V69L64.49,120.49a12,12,0,0,1-17-17l72-72a12,12,0,0,1,17,0l72,72A12,12,0,0,1,208.49,120.49Z"/></symbol>
+<symbol id="i-arrow-up-right-bold" viewBox="0 0 256 256"><path d="M204,64V168a12,12,0,0,1-24,0V93L72.49,200.49a12,12,0,0,1-17-17L163,76H88a12,12,0,0,1,0-24H192A12,12,0,0,1,204,64Z"/></symbol>
+<symbol id="i-bluetooth-bold" viewBox="0 0 256 256"><path d="M199.2,166.4,148,128l51.2-38.4a12,12,0,0,0,0-19.2l-64-48A12,12,0,0,0,116,32v72L71.2,70.4A12,12,0,0,0,56.8,89.6L108,128,56.8,166.4a12,12,0,1,0,14.4,19.2L116,152v72a12,12,0,0,0,19.2,9.6l64-48a12,12,0,0,0,0-19.2ZM140,56l32,24-32,24Zm0,144V152l32,24Z"/></symbol>
+<symbol id="i-broadcast-bold" viewBox="0 0 256 256"><path d="M128,84a44,44,0,1,0,44,44A44.05,44.05,0,0,0,128,84Zm0,64a20,20,0,1,1,20-20A20,20,0,0,1,128,148Zm77.39,12.7A83.94,83.94,0,0,1,190.61,184a12,12,0,0,1-17.89-16,59.92,59.92,0,0,0,0-80,12,12,0,0,1,17.89-16,84.07,84.07,0,0,1,14.78,88.7ZM83.28,168a12,12,0,0,1-17.89,16,83.94,83.94,0,0,1,0-112A12,12,0,0,1,83.28,88a59.92,59.92,0,0,0,0,80ZM252,128a123.63,123.63,0,0,1-35.43,86.78A12,12,0,1,1,199.43,198a99.88,99.88,0,0,0,0-140,12,12,0,0,1,17.14-16.8A123.63,123.63,0,0,1,252,128ZM56.57,198a12,12,0,0,1-17.14,16.8,123.89,123.89,0,0,1,0-173.56A12,12,0,0,1,56.57,58a99.88,99.88,0,0,0,0,140Z"/></symbol>
+<symbol id="i-caret-down-bold" viewBox="0 0 256 256"><path d="M216.49,104.49l-80,80a12,12,0,0,1-17,0l-80-80a12,12,0,0,1,17-17L128,159l71.51-71.52a12,12,0,0,1,17,17Z"/></symbol>
+<symbol id="i-caret-right-bold" viewBox="0 0 256 256"><path d="M184.49,136.49l-80,80a12,12,0,0,1-17-17L159,128,87.51,56.49a12,12,0,1,1,17-17l80,80A12,12,0,0,1,184.49,136.49Z"/></symbol>
+<symbol id="i-chat-circle-dots-fill" viewBox="0 0 256 256"><path d="M128,24A104,104,0,0,0,36.18,176.88L24.83,210.93a16,16,0,0,0,20.24,20.24l34.05-11.35A104,104,0,1,0,128,24ZM84,140a12,12,0,1,1,12-12A12,12,0,0,1,84,140Zm44,0a12,12,0,1,1,12-12A12,12,0,0,1,128,140Zm44,0a12,12,0,1,1,12-12A12,12,0,0,1,172,140Z"/></symbol>
+<symbol id="i-chats-fill" viewBox="0 0 256 256"><path d="M232,96a16,16,0,0,0-16-16H184V48a16,16,0,0,0-16-16H40A16,16,0,0,0,24,48V176a8,8,0,0,0,13,6.22L72,154V184a16,16,0,0,0,16,16h93.59L219,230.22a8,8,0,0,0,5,1.78,8,8,0,0,0,8-8Zm-42.55,89.78a8,8,0,0,0-5-1.78H88V152h80a16,16,0,0,0,16-16V96h32V207.25Z"/></symbol>
+<symbol id="i-check-bold" viewBox="0 0 256 256"><path d="M232.49,80.49l-128,128a12,12,0,0,1-17,0l-56-56a12,12,0,1,1,17-17L96,183,215.51,63.51a12,12,0,0,1,17,17Z"/></symbol>
+<symbol id="i-check-circle-fill" viewBox="0 0 256 256"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"/></symbol>
+<symbol id="i-clock-bold" viewBox="0 0 256 256"><path d="M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm0,192a84,84,0,1,1,84-84A84.09,84.09,0,0,1,128,212Zm68-84a12,12,0,0,1-12,12H128a12,12,0,0,1-12-12V72a12,12,0,0,1,24,0v44h44A12,12,0,0,1,196,128Z"/></symbol>
+<symbol id="i-drop-fill" viewBox="0 0 256 256"><path d="M174,47.75a254.19,254.19,0,0,0-41.45-38.3,8,8,0,0,0-9.18,0A254.19,254.19,0,0,0,82,47.75C54.51,79.32,40,112.6,40,144a88,88,0,0,0,176,0C216,112.6,201.49,79.32,174,47.75Zm9.85,105.59a57.6,57.6,0,0,1-46.56,46.55A8.75,8.75,0,0,1,136,200a8,8,0,0,1-1.32-15.89c16.57-2.79,30.63-16.85,33.44-33.45a8,8,0,0,1,15.78,2.68Z"/></symbol>
+<symbol id="i-envelope-simple-bold" viewBox="0 0 256 256"><path d="M224,44H32A12,12,0,0,0,20,56V192a20,20,0,0,0,20,20H216a20,20,0,0,0,20-20V56A12,12,0,0,0,224,44ZM193.15,68,128,127.72,62.85,68ZM44,188V83.28l75.89,69.57a12,12,0,0,0,16.22,0L212,83.28V188Z"/></symbol>
+<symbol id="i-export-bold" viewBox="0 0 256 256"><path d="M220,112v96a20,20,0,0,1-20,20H56a20,20,0,0,1-20-20V112A20,20,0,0,1,56,92H76a12,12,0,0,1,0,24H60v88H196V116H180a12,12,0,0,1,0-24h20A20,20,0,0,1,220,112ZM96.49,72.49,116,53v83a12,12,0,0,0,24,0V53l19.51,19.52a12,12,0,1,0,17-17l-40-40a12,12,0,0,0-17,0l-40,40a12,12,0,1,0,17,17Z"/></symbol>
+<symbol id="i-first-aid-kit-fill" viewBox="0 0 256 256"><path d="M216,56H176V48a24,24,0,0,0-24-24H104A24,24,0,0,0,80,48v8H40A16,16,0,0,0,24,72V200a16,16,0,0,0,16,16H216a16,16,0,0,0,16-16V72A16,16,0,0,0,216,56Zm-64,88H136v16a8,8,0,0,1-16,0V144H104a8,8,0,0,1,0-16h16V112a8,8,0,0,1,16,0v16h16a8,8,0,0,1,0,16Zm8-88H96V48a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8Z"/></symbol>
+<symbol id="i-gear-fill" viewBox="0 0 256 256"><path d="M216,130.16q.06-2.16,0-4.32l14.92-18.64a8,8,0,0,0,1.48-7.06,107.6,107.6,0,0,0-10.88-26.25,8,8,0,0,0-6-3.93l-23.72-2.64q-1.48-1.56-3-3L186,40.54a8,8,0,0,0-3.94-6,107.29,107.29,0,0,0-26.25-10.86,8,8,0,0,0-7.06,1.48L130.16,40Q128,40,125.84,40L107.2,25.11a8,8,0,0,0-7.06-1.48A107.6,107.6,0,0,0,73.89,34.51a8,8,0,0,0-3.93,6L67.32,64.27q-1.56,1.49-3,3L40.54,70a8,8,0,0,0-6,3.94,107.71,107.71,0,0,0-10.87,26.25,8,8,0,0,0,1.49,7.06L40,125.84Q40,128,40,130.16L25.11,148.8a8,8,0,0,0-1.48,7.06,107.6,107.6,0,0,0,10.88,26.25,8,8,0,0,0,6,3.93l23.72,2.64q1.49,1.56,3,3L70,215.46a8,8,0,0,0,3.94,6,107.71,107.71,0,0,0,26.25,10.87,8,8,0,0,0,7.06-1.49L125.84,216q2.16.06,4.32,0l18.64,14.92a8,8,0,0,0,7.06,1.48,107.21,107.21,0,0,0,26.25-10.88,8,8,0,0,0,3.93-6l2.64-23.72q1.56-1.48,3-3L215.46,186a8,8,0,0,0,6-3.94,107.71,107.71,0,0,0,10.87-26.25,8,8,0,0,0-1.49-7.06ZM128,168a40,40,0,1,1,40-40A40,40,0,0,1,128,168Z"/></symbol>
+<symbol id="i-github-logo-fill" viewBox="0 0 256 256"><path d="M216,104v8a56.06,56.06,0,0,1-48.44,55.47A39.8,39.8,0,0,1,176,192v40a8,8,0,0,1-8,8H104a8,8,0,0,1-8-8V216H72a40,40,0,0,1-40-40A24,24,0,0,0,8,152a8,8,0,0,1,0-16,40,40,0,0,1,40,40,24,24,0,0,0,24,24H96v-8a39.8,39.8,0,0,1,8.44-24.53A56.06,56.06,0,0,1,56,112v-8a58.14,58.14,0,0,1,7.69-28.32A59.78,59.78,0,0,1,69.07,28,8,8,0,0,1,76,24a59.75,59.75,0,0,1,48,24h24a59.75,59.75,0,0,1,48-24,8,8,0,0,1,6.93,4,59.74,59.74,0,0,1,5.37,47.68A58,58,0,0,1,216,104Z"/></symbol>
+<symbol id="i-globe-bold" viewBox="0 0 256 256"><path d="M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm0,187a113.4,113.4,0,0,1-20.39-35h40.82a116.94,116.94,0,0,1-10,20.77A108.61,108.61,0,0,1,128,207Zm-26.49-59a135.42,135.42,0,0,1,0-40h53a135.42,135.42,0,0,1,0,40ZM44,128a83.49,83.49,0,0,1,2.43-20H77.25a160.63,160.63,0,0,0,0,40H46.43A83.49,83.49,0,0,1,44,128Zm84-79a113.4,113.4,0,0,1,20.39,35H107.59a116.94,116.94,0,0,1,10-20.77A108.61,108.61,0,0,1,128,49Zm50.73,59h30.82a83.52,83.52,0,0,1,0,40H178.75a160.63,160.63,0,0,0,0-40Zm20.77-24H173.71a140.82,140.82,0,0,0-15.5-34.36A84.51,84.51,0,0,1,199.52,84ZM97.79,49.64A140.82,140.82,0,0,0,82.29,84H56.48A84.51,84.51,0,0,1,97.79,49.64ZM56.48,172H82.29a140.82,140.82,0,0,0,15.5,34.36A84.51,84.51,0,0,1,56.48,172Zm101.73,34.36A140.82,140.82,0,0,0,173.71,172h25.81A84.51,84.51,0,0,1,158.21,206.36Z"/></symbol>
+<symbol id="i-house-fill" viewBox="0 0 256 256"><path d="M224,120v96a8,8,0,0,1-8,8H160a8,8,0,0,1-8-8V164a4,4,0,0,0-4-4H108a4,4,0,0,0-4,4v52a8,8,0,0,1-8,8H40a8,8,0,0,1-8-8V120a16,16,0,0,1,4.69-11.31l80-80a16,16,0,0,1,22.62,0l80,80A16,16,0,0,1,224,120Z"/></symbol>
+<symbol id="i-lightning-fill" viewBox="0 0 256 256"><path d="M213.85,125.46l-112,120a8,8,0,0,1-13.69-7l14.66-73.33L45.19,143.49a8,8,0,0,1-3-13l112-120a8,8,0,0,1,13.69,7L153.18,90.9l57.63,21.61a8,8,0,0,1,3,12.95Z"/></symbol>
+<symbol id="i-map-trifold-bold" viewBox="0 0 256 256"><path d="M231.38,46.54a12,12,0,0,0-10.29-2.18L161.4,59.28l-60-30a12,12,0,0,0-8.28-.91l-64,16A12,12,0,0,0,20,56V200a12,12,0,0,0,14.91,11.64L94.6,196.72l60,30a12,12,0,0,0,8.28.91l64-16A12,12,0,0,0,236,200V56A12,12,0,0,0,231.38,46.54ZM108,59.42l40,20V196.58l-40-20Zm-64,6,40-10V174.63l-40,10ZM212,190.63l-40,10V81.37l40-10Z"/></symbol>
+<symbol id="i-megaphone-fill" viewBox="0 0 256 256"><path d="M200,72H160.2c-2.91-.17-53.62-3.74-101.91-44.24A16,16,0,0,0,32,40V200a16,16,0,0,0,26.29,12.25c37.77-31.68,77-40.76,93.71-43.3v31.72A16,16,0,0,0,159.12,214l11,7.33A16,16,0,0,0,194.5,212l11.77-44.36A48,48,0,0,0,200,72ZM179,207.89l0,.11-11-7.33V168h21.6ZM200,152H168V88h32a32,32,0,1,1,0,64Z"/></symbol>
+<symbol id="i-plus-bold" viewBox="0 0 256 256"><path d="M228,128a12,12,0,0,1-12,12H140v76a12,12,0,0,1-24,0V140H40a12,12,0,0,1,0-24h76V40a12,12,0,0,1,24,0v76h76A12,12,0,0,1,228,128Z"/></symbol>
+<symbol id="i-qr-code-bold" viewBox="0 0 256 256"><path d="M100,36H56A20,20,0,0,0,36,56v44a20,20,0,0,0,20,20h44a20,20,0,0,0,20-20V56A20,20,0,0,0,100,36ZM96,96H60V60H96Zm4,40H56a20,20,0,0,0-20,20v44a20,20,0,0,0,20,20h44a20,20,0,0,0,20-20V156A20,20,0,0,0,100,136Zm-4,60H60V160H96ZM200,36H156a20,20,0,0,0-20,20v44a20,20,0,0,0,20,20h44a20,20,0,0,0,20-20V56A20,20,0,0,0,200,36Zm-4,60H160V60h36Zm-60,76V148a12,12,0,0,1,24,0v24a12,12,0,0,1-24,0Zm84-8a12,12,0,0,1-12,12H196v32a12,12,0,0,1-12,12H148a12,12,0,0,1,0-24h24V148a12,12,0,0,1,24,0v4h12A12,12,0,0,1,220,164Z"/></symbol>
+<symbol id="i-shield-check-fill" viewBox="0 0 256 256"><path d="M208,40H48A16,16,0,0,0,32,56v56c0,52.72,25.52,84.67,46.93,102.19,23.06,18.86,46,25.26,47,25.53a8,8,0,0,0,4.2,0c1-.27,23.91-6.67,47-25.53C198.48,196.67,224,164.72,224,112V56A16,16,0,0,0,208,40Zm-34.32,69.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z"/></symbol>
+<symbol id="i-sys-app-store" viewBox="0 0 256 256"><path d="M88 164L146 60M62 208L72 190M114 64L194 206M44 164H140M200 164H214" fill="none" stroke="currentColor" stroke-width="28" stroke-linecap="round"/></symbol>
+<symbol id="i-sys-arrow" viewBox="0 0 256 256"><path d="M128 34L206 212L128 172L50 212Z" stroke="currentColor" stroke-width="22" stroke-linejoin="round"/></symbol>
+<symbol id="i-sys-battery-0" viewBox="0 0 27 13"><rect x="0.5" y="0.5" width="23" height="12" rx="3.6" fill="none" stroke="currentColor" stroke-opacity="0.45"/><rect x="2" y="2" width="1.5" height="9" rx="2.2"/><path d="M25 4.5C26.2 4.9 26.5 5.8 26.5 6.5C26.5 7.2 26.2 8.1 25 8.5Z" fill-opacity="0.5"/></symbol>
+<symbol id="i-sys-battery-100" viewBox="0 0 27 13"><rect x="0.5" y="0.5" width="23" height="12" rx="3.6" fill="none" stroke="currentColor" stroke-opacity="0.45"/><rect x="2" y="2" width="20" height="9" rx="2.2"/><path d="M25 4.5C26.2 4.9 26.5 5.8 26.5 6.5C26.5 7.2 26.2 8.1 25 8.5Z" fill-opacity="0.5"/></symbol>
+<symbol id="i-sys-battery-25" viewBox="0 0 27 13"><rect x="0.5" y="0.5" width="23" height="12" rx="3.6" fill="none" stroke="currentColor" stroke-opacity="0.45"/><rect x="2" y="2" width="5" height="9" rx="2.2"/><path d="M25 4.5C26.2 4.9 26.5 5.8 26.5 6.5C26.5 7.2 26.2 8.1 25 8.5Z" fill-opacity="0.5"/></symbol>
+<symbol id="i-sys-battery-50" viewBox="0 0 27 13"><rect x="0.5" y="0.5" width="23" height="12" rx="3.6" fill="none" stroke="currentColor" stroke-opacity="0.45"/><rect x="2" y="2" width="10" height="9" rx="2.2"/><path d="M25 4.5C26.2 4.9 26.5 5.8 26.5 6.5C26.5 7.2 26.2 8.1 25 8.5Z" fill-opacity="0.5"/></symbol>
+<symbol id="i-sys-battery-75" viewBox="0 0 27 13"><rect x="0.5" y="0.5" width="23" height="12" rx="3.6" fill="none" stroke="currentColor" stroke-opacity="0.45"/><rect x="2" y="2" width="15" height="9" rx="2.2"/><path d="M25 4.5C26.2 4.9 26.5 5.8 26.5 6.5C26.5 7.2 26.2 8.1 25 8.5Z" fill-opacity="0.5"/></symbol>
+<symbol id="i-sys-google-play" viewBox="0 0 256 256"><polygon points="74.3,64.0 125.5,128.0 74.3,192.0" stroke="currentColor" stroke-width="12" stroke-linejoin="round"/><polygon points="80.2,56.6 151.1,96.0 131.4,120.6" stroke="currentColor" stroke-width="12" stroke-linejoin="round"/><polygon points="80.2,199.4 131.4,135.4 151.1,160.0" stroke="currentColor" stroke-width="12" stroke-linejoin="round"/><polygon points="140.5,128.0 160.1,103.4 204.5,128.0 160.1,152.6" stroke="currentColor" stroke-width="12" stroke-linejoin="round"/></symbol>
+<symbol id="i-sys-pin" viewBox="0 0 256 256"><ellipse cx="128" cy="206" rx="82" ry="28" fill="none" stroke="currentColor" stroke-width="18"/><rect x="118" y="112" width="20" height="96" rx="10"/><circle cx="128" cy="74" r="54"/></symbol>
+<symbol id="i-sys-product-hunt" viewBox="0 0 31 31"><path fill-rule="evenodd" d="M31 15.5C31 24.06 24.06 31 15.5 31S0 24.06 0 15.5 6.94 0 15.5 0 31 6.94 31 15.5ZM17.43 15.96H13.09V11.31H17.43C18.7 11.31 19.73 12.35 19.73 13.63S18.7 15.96 17.43 15.96ZM17.43 8.21H10.03V23.71H13.09V19.06H17.43C20.39 19.06 22.79 16.63 22.79 13.63S20.39 8.21 17.43 8.21Z"/></symbol>
+<symbol id="i-sys-signal" viewBox="0 0 18 12"><rect y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" width="3" height="12" rx="1"/></symbol>
+<symbol id="i-sys-sparkles" viewBox="0 0 256 256"><path d="M104 52Q123.2 128.8 200 148Q123.2 167.2 104 244Q84.8 167.2 8 148Q84.8 128.8 104 52Z"/><path d="M198 14Q207.2 50.8 244 60Q207.2 69.2 198 106Q188.8 69.2 152 60Q188.8 50.8 198 14Z"/><path d="M210 168Q216.4 193.6 242 200Q216.4 206.4 210 232Q203.6 206.4 178 200Q203.6 193.6 210 168Z"/></symbol>
+<symbol id="i-sys-wifi" viewBox="0 0 16 12"><path d="M0.01 3.31A11.3 11.3 0 0 1 15.99 3.31L14.505 4.795A9.2 9.2 0 0 0 1.495 4.795Z"/><path d="M2.697 5.997A7.5 7.5 0 0 1 13.303 5.997L11.818 7.482A5.4 5.4 0 0 0 4.182 7.482Z"/><path d="M8 11.3L5.596 8.896A3.4 3.4 0 0 1 10.404 8.896Z"/></symbol>
+<symbol id="i-users-fill" viewBox="0 0 256 256"><path d="M164.47,195.63a8,8,0,0,1-6.7,12.37H10.23a8,8,0,0,1-6.7-12.37,95.83,95.83,0,0,1,47.22-37.71,60,60,0,1,1,66.5,0A95.83,95.83,0,0,1,164.47,195.63Zm87.91-.15a95.87,95.87,0,0,0-47.13-37.56A60,60,0,0,0,144.7,54.59a4,4,0,0,0-1.33,6A75.83,75.83,0,0,1,147,150.53a4,4,0,0,0,1.07,5.53,112.32,112.32,0,0,1,29.85,30.83,23.92,23.92,0,0,1,3.65,16.47,4,4,0,0,0,3.95,4.64h60.3a8,8,0,0,0,7.73-5.93A8.22,8.22,0,0,0,252.38,195.48Z"/></symbol>
+<symbol id="i-wifi-high-bold" viewBox="0 0 256 256"><path d="M144,204a16,16,0,1,1-16-16A16,16,0,0,1,144,204ZM239.61,83.91a176,176,0,0,0-223.22,0,12,12,0,1,0,15.23,18.55,152,152,0,0,1,192.76,0,12,12,0,1,0,15.23-18.55Zm-32.16,35.73a128,128,0,0,0-158.9,0,12,12,0,0,0,14.9,18.81,104,104,0,0,1,129.1,0,12,12,0,0,0,14.9-18.81ZM175.07,155.3a80.05,80.05,0,0,0-94.14,0,12,12,0,0,0,14.14,19.4,56,56,0,0,1,65.86,0,12,12,0,1,0,14.14-19.4Z"/></symbol>
+</svg>
+<!-- icons:end -->
+<div class="dotfield" aria-hidden="true"></div>
+
+<header class="nav">
+  <div class="nav-bar">
+    <button class="menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="menu" aria-label="Menu"><span></span><span></span></button>
+    <a class="brand" href="./" aria-current="page"><span class="dots">DarkProof</span></a>
+    <nav class="nav-links label" aria-label="Sections">
+      <a href="#stage">Demo</a>
+      <a href="#chapters">What it does</a>
+      <a href="#online">How it travels</a>
+      <a href="#install">Install</a>
+      <a href="#questions">Questions</a>
+      <a href="outages.html">Outages</a>
+    </nav>
+    <a class="act act-light act-sm" href="#stage" data-start-demo>Try the demo</a>
+  </div>
 </header>
+<button class="ca" type="button" data-ca="7pZ5HMPTFQsLP6D8Zg6VfgjbKRycitG3H4Dq7cmBpump" aria-label="Copy the contract address 7pZ5HMPTFQsLP6D8Zg6VfgjbKRycitG3H4Dq7cmBpump">
+  <span class="label">CA</span>
+  <span class="ca-full">7pZ5HMPTFQsLP6D8Zg6VfgjbKRycitG3H4Dq7cmBpump</span>
+  <span class="ca-short" aria-hidden="true">7pZ5HM…cmBpump</span>
+  <span class="ca-do label" data-ca-do>Copy</span>
+</button>
+<nav class="menu" id="menu" aria-label="Main" inert>
+  <a href="#stage"><span class="dots">Demo</span></a>
+  <a href="#chapters"><span class="dots">What it does</span></a>
+  <a href="#online"><span class="dots">How it travels</span></a>
+  <a href="#install"><span class="dots">Install</span></a>
+  <a href="#questions"><span class="dots">Questions</span></a>
+  <a href="outages.html"><span class="dots">Outages</span></a>
+  <a href="privacy.html"><span class="dots">Privacy</span></a>
+  <a class="act act-light" href="#stage" data-start-demo>Try the demo</a>
+</nav>
 
 <main id="main">
-  <h1>Messages that work when the network doesn't.</h1>
-  <p class="lead">DarkProof is a free messaging app for blackouts, disasters and places without signal. Phones pass
-  messages to each other over Bluetooth, Wi-Fi and LoRa radios. No internet, no accounts, no servers.</p>
-
-  <div class="buttons">
-    <a class="button primary" href="#download">Get DarkProof</a>
-    <a class="button" href="privacy.html">Privacy</a>
-  </div>
-
-  <h2>What it does</h2>
-  <div class="grid">
-    <div class="card">
-      <h3>Group chat, offline</h3>
-      <p>Your family or team shares one group code. Messages are encrypted end to end, and every DarkProof phone nearby
-      helps carry them, even phones from other groups that can't read them.</p>
+  <section class="hero stage" aria-labelledby="hero-title">
+    <div class="container hero-top">
+      <p class="label">[ Offline mesh messenger ]</p>
+      <h1 class="display hero-title" id="hero-title">Stay connected<br>when everything goes dark.</h1>
+      <p class="body-3 hero-sub">DarkProof is a free messaging app for blackouts, disasters and places without signal. Phones pass messages to each other over Bluetooth, Wi-Fi and LoRa radios. No account, no servers of ours.</p>
+      <div class="hero-actions">
+        <a class="act act-light" href="#stage" data-start-demo>Try the demo<svg class="ic" aria-hidden="true"><use href="#i-arrow-down-bold"></use></svg></a>
+        <a class="link" href="#install">Install from GitHub<svg class="ic" aria-hidden="true"><use href="#i-caret-right-bold"></use></svg></a>
+      </div>
     </div>
-    <div class="card">
-      <h3>“I'm safe” in one tap</h3>
-      <p>Check in as safe or ask for help. Your group sees who is fine, who needs help, their battery level and, if you
-      choose, where you are.</p>
-    </div>
-    <div class="card">
-      <h3>Water, shelter, power</h3>
-      <p>Share places where people can find water, shelter, charging or medical help. Everyone nearby sees them,
-      sorted by distance.</p>
-    </div>
-    <div class="card">
-      <h3>Reaches further</h3>
-      <p>Messages hop from phone to phone for days. Wi-Fi routers and LoRa radios (Meshtastic, MeshCore) stretch the
-      range, and any phone that gets internet passes them on worldwide.</p>
-    </div>
-  </div>
 
-  <h2>Built for trust</h2>
-  <ul>
-    <li>No sign-up. Your name and group codes stay on your phone.</li>
-    <li>No ads, no analytics, no tracking. We run no servers and receive no data.</li>
-    <li>Your position is shared only if you turn it on, and only with your group (or with everyone, for a place you
-    choose to share).</li>
-    <li>Works on iPhone and Android, and the two talk to each other.</li>
-  </ul>
+    <div class="container show" id="stage">
+      <div class="show-left">
+        <div class="seg2 mode" role="tablist" aria-label="What the phone shows">
+          <button type="button" role="tab" id="mode-demo" aria-selected="false">Tap the demo</button>
+          <button type="button" role="tab" id="mode-real" aria-selected="true">Watch the real app</button>
+        </div>
 
-  <h2 id="download">Download</h2>
-  <p>Install it before you need it, and ask your family to do the same.</p>
-  <div class="buttons">
-    <a class="button primary" href="https://apps.apple.com/app/idAPP_STORE_ID">App Store (iPhone)</a>
-    <a class="button primary" href="https://play.google.com/store/apps/details?id=it.darkproof.mesh">Google Play (Android)</a>
-  </div>
-  <p class="note">No internet? Ask a friend who has DarkProof on Android to share the app with you over Quick Share.
-  It works phone to phone, without a network.</p>
+        <div class="panel" id="panel-demo" hidden>
+          <div class="net">
+            <div class="net-row">
+              <span class="label" id="net-label">Mobile network and internet</span>
+              <button class="switch" id="net" type="button" role="switch" aria-checked="true" aria-label="Mobile network and internet"></button>
+            </div>
+            <p class="caption-2" id="net-text" role="status" aria-live="polite">The network is on. Messages also travel through internet relays.</p>
+          </div>
+          <ol class="tips" aria-label="Four things to try">
+            <li data-tip="cut"><span class="tick"><svg class="ic" aria-hidden="true"><use href="#i-check-bold"></use></svg></span><div><b class="body-4">Cut the network</b><br><span class="caption-2">Flip the switch. The phone loses its signal.</span></div></li>
+            <li data-tip="check"><span class="tick"><svg class="ic" aria-hidden="true"><use href="#i-check-bold"></use></svg></span><div><b class="body-4">Check in</b><br><span class="caption-2">Tap “I'm safe”, or answer when Anna asks.</span></div></li>
+            <li data-tip="msg"><span class="tick"><svg class="ic" aria-hidden="true"><use href="#i-check-bold"></use></svg></span><div><b class="body-4">Send a message</b><br><span class="caption-2">Write to Family in the Chat tab.</span></div></li>
+            <li data-tip="find"><span class="tick"><svg class="ic" aria-hidden="true"><use href="#i-check-bold"></use></svg></span><div><b class="body-4">Find water</b><br><span class="caption-2">Open a place in the Places tab.</span></div></li>
+          </ol>
+          <p class="tips-done body-5" id="tips-done" hidden>That is DarkProof. The real app does all of this with no browser and no network.</p>
+          <div class="panel-foot caption-5">
+            <button class="act act-sm" id="restart" type="button"><svg class="ic" aria-hidden="true"><use href="#i-arrow-counter-clockwise-bold"></use></svg>Start over</button>
+            <span>A simulation with made up people and scripted answers. Nothing you type leaves this page.</span>
+          </div>
+        </div>
+
+        <div class="panel" id="panel-real">
+          <ol class="scenes" aria-label="Recordings">
+            <li><button type="button" data-scene="home" aria-pressed="true"><span class="n dots">(01)</span><b class="body-4">Home</b><span class="caption-2">Two phones in range, and “I'm safe” in one tap.</span></button></li>
+            <li><button type="button" data-scene="chat" aria-pressed="false"><span class="n dots">(02)</span><b class="body-4">Chat</b><span class="caption-2">A message goes out and an answer comes back.</span></button></li>
+            <li><button type="button" data-scene="places" aria-pressed="false"><span class="n dots">(03)</span><b class="body-4">Places</b><span class="caption-2">Water nearby, and the compass that leads to it.</span></button></li>
+            <li><button type="button" data-scene="people" aria-pressed="false"><span class="n dots">(04)</span><b class="body-4">People</b><span class="caption-2">Who is safe, and how to ask for help.</span></button></li>
+          </ol>
+          <p class="panel-foot caption-5" id="clip-note">Recorded from the real app in the iPhone Simulator, with test accounts. Nothing here is live.</p>
+        </div>
+      </div>
+
+      <div class="show-phone">
+        <svg class="waves" viewBox="0 0 1240 1240" aria-hidden="true"><circle cx="620" cy="620" r="250"/><circle cx="620" cy="620" r="320"/><circle cx="620" cy="620" r="390"/><circle cx="620" cy="620" r="460"/><circle cx="620" cy="620" r="530"/><circle cx="620" cy="620" r="600"/><circle class="ping" cx="620" cy="620" r="600"/></svg>
+        <div class="phone-slot" id="phone">
+          <div class="phone" id="dp-phone" role="group" aria-label="DarkProof on a simulated iPhone">
+            <span class="hw hw-action" aria-hidden="true"></span><span class="hw hw-up" aria-hidden="true"></span><span class="hw hw-down" aria-hidden="true"></span><span class="hw hw-power" aria-hidden="true"></span>
+            <div class="phone-screen real">
+              <div class="sb" aria-hidden="true"><span id="sb-time"></span><span class="island"></span><span class="sb-icons" id="sb-icons"></span></div>
+              <div class="app" id="app" aria-label="DarkProof">
+                <noscript><p class="no-js">The demo needs JavaScript. It runs only in this page and sends nothing anywhere.</p></noscript>
+              </div>
+              <button class="banner" id="banner" type="button" aria-label="Notification" hidden></button>
+              <div class="toast" id="toast" role="status" aria-live="polite"></div>
+              <div class="sheet-wrap" id="sheet" hidden></div>
+              <div class="tabbar" id="tabbar" role="tablist" aria-label="DarkProof tabs"></div>
+              <span class="home-ind" aria-hidden="true"></span>
+              <video class="clip" id="clip" muted playsinline preload="none" poster="clips/home.jpg" aria-label="Recording of the real DarkProof app"></video>
+              <span class="island island-real" aria-hidden="true"></span>
+              <span class="glass" aria-hidden="true"></span>
+            </div>
+          </div>
+          <p class="sr-only" id="dp-live" aria-live="polite"></p>
+        </div>
+      </div>
+
+      <div class="show-right">
+        <p class="label spec-title">How messages travel</p>
+        <ul class="spec label">
+          <li>Bluetooth<b>10 to 50 m</b></li>
+          <li>Wi-Fi<b>Same network</b></li>
+          <li>LoRa radio<b>Kilometers</b></li>
+          <li>Internet<b>Through Tor</b></li>
+          <li>Encryption<b>End to end</b></li>
+          <li>Account<b>None</b></li>
+          <li>Our servers<b>None</b></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="tagline-sec" aria-label="In short">
+    <div class="container">
+      <p class="label reveal">[ Why it exists ]</p>
+      <p class="tagline display" id="tagline">When the towers go quiet,<br>your phones keep talking.<br>Every phone nearby carries<br>your message a little further.</p>
+    </div>
+  </section>
+
+  <section class="stage" id="chapters" aria-labelledby="chapters-title">
+    <div class="container">
+      <div class="sec-head reveal">
+        <h2 class="display" id="chapters-title">What it does</h2>
+        <p class="body-3">Storms, blackouts and earthquakes take down mobile networks first, and every app that depends on a server goes quiet with them. DarkProof needs neither.</p>
+      </div>
+      <div class="chapters">
+        <article class="chap reveal">
+          <span class="chap-n dots">(01)</span>
+          <div class="frame"><svg viewBox="0 0 400 400" aria-hidden="true"><rect class="d" x="70" y="96" width="190" height="92" rx="24"/><rect class="d" x="140" y="212" width="190" height="92" rx="24"/><circle class="s" cx="120" cy="142" r="5"/><circle class="s" cx="150" cy="142" r="5"/><circle class="s" cx="180" cy="142" r="5"/><circle class="g" cx="290" cy="258" r="7"/><text x="70" y="78">[ sealed for the group ]</text></svg></div>
+          <h3 class="card-heading">Group chat that works offline</h3>
+          <p class="body-3">Your family or team shares one group. Messages are encrypted end to end, and every DarkProof phone nearby helps carry them, even phones that can't read them.</p>
+        </article>
+        <article class="chap reveal">
+          <span class="chap-n dots">(02)</span>
+          <div class="frame"><svg viewBox="0 0 400 400" aria-hidden="true"><circle class="d" cx="200" cy="200" r="62"/><circle class="d" cx="200" cy="200" r="106"/><circle class="d" cx="200" cy="200" r="150"/><path d="M172 200l20 20 38-42" fill="none" stroke="#33D64A" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><text x="266" y="76">[ one tap ]</text></svg></div>
+          <h3 class="card-heading">“I'm safe” in one tap</h3>
+          <p class="body-3">Check in as safe or ask for help. Your group sees who is fine, who needs help, their battery level and, if you choose, where they are.</p>
+        </article>
+        <article class="chap reveal">
+          <span class="chap-n dots">(03)</span>
+          <div class="frame"><svg viewBox="0 0 400 400" aria-hidden="true"><circle class="d" cx="200" cy="200" r="132"/><path class="d" d="M200 44V356M44 200H356"/><path class="s" d="M200 104l30 78-30-16-30 16z" transform="rotate(45 200 200)"/><circle class="g" cx="293" cy="107" r="7"/><text x="306" y="98">[ 250 m ]</text></svg></div>
+          <h3 class="card-heading">Water, shelter, power</h3>
+          <p class="body-3">Share places where people can find water, shelter, charging or medical help. Everyone nearby sees them, nearest first, with a compass to get there.</p>
+        </article>
+        <article class="chap reveal">
+          <span class="chap-n dots">(04)</span>
+          <div class="frame"><svg viewBox="0 0 400 400" aria-hidden="true"><path class="d" d="M56 300Q104 214 152 300"/><path class="d" d="M152 300Q200 180 248 250"/><path class="d" d="M248 250Q296 120 344 112"/><rect class="s" x="47" y="292" width="18" height="32" rx="4"/><rect class="s" x="143" y="292" width="18" height="32" rx="4"/><rect class="s" x="239" y="242" width="18" height="32" rx="4"/><rect class="g" x="335" y="104" width="18" height="32" rx="4"/><text x="36" y="350">[ you ]</text><text x="308" y="86">[ them ]</text></svg></div>
+          <h3 class="card-heading">Reaches further</h3>
+          <p class="body-3">Messages hop from phone to phone for up to 7 days. Wi-Fi routers and LoRa radios stretch the range, and any phone that gets internet passes them on worldwide.</p>
+        </article>
+        <article class="chap reveal">
+          <span class="chap-n dots">(05)</span>
+          <div class="frame"><svg viewBox="0 0 400 400" aria-hidden="true"><rect class="d" x="110" y="110" width="180" height="180" rx="28"/><path class="d" d="M150 66V110M200 66V110M250 66V110M150 290V334M200 290V334M250 290V334M66 150H110M66 200H110M66 250H110M290 150H334M290 200H334M290 250H334"/><use class="s" href="#i-sys-sparkles" x="152" y="152" width="96" height="96"/><text x="110" y="364">[ runs on the phone ]</text></svg></div>
+          <h3 class="card-heading">Answers with no internet</h3>
+          <p class="body-3">An assistant that runs on the phone answers first aid and survival questions, once you have downloaded its model. It can be wrong, so check anything important.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" aria-labelledby="how-title">
+    <div class="container">
+      <div class="sec-head reveal">
+        <h2 class="display" id="how-title">How it works</h2>
+        <p class="body-3">Three steps, and the first two take a minute.</p>
+      </div>
+      <ol class="steps reveal">
+        <li><span class="n dots" aria-hidden="true">01</span><h3 class="heading-6">Create a group</h3><p class="body-3">DarkProof makes a secret code for your family, friends or building. There is nothing to sign up for.</p></li>
+        <li><span class="n dots" aria-hidden="true">02</span><h3 class="heading-6">Invite your people</h3><p class="body-3">They scan a QR code or open a link, and an admin of the group lets them in.</p></li>
+        <li><span class="n dots" aria-hidden="true">03</span><h3 class="heading-6">Open it when the network is down</h3><p class="body-3">Phones with DarkProof nearby link by themselves and carry your messages, one phone at a time.</p></li>
+      </ol>
+      <p class="aside body-3 reveal">Install it before you need it, and ask your family to do the same.</p>
+    </div>
+  </section>
+
+  <section class="stage" id="online" aria-labelledby="online-title">
+    <div class="container travel">
+      <div class="travel-globe reveal">
+        <canvas id="home-globe" role="img" aria-label="A turning globe of dots, with points of light where phones pass messages on."></canvas>
+      </div>
+      <div class="travel-copy">
+        <p class="label reveal">[ How it travels ]</p>
+        <h2 class="display pair reveal" id="online-title">Phone to phone when everything is down. <span>Through sealed relays when there is internet.</span></h2>
+        <div class="way reveal" id="offline">
+          <h3 class="heading-6">When everything is down</h3>
+          <p class="body-3 soft">No towers, no internet, no power. Phones with DarkProof find each other and carry the messages themselves.</p>
+          <details class="faq more"><summary>The five things that make it work<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+            <ol class="points">
+          <li><h4 class="heading-6">Phones link directly</h4><p class="body-3">Over Bluetooth within about 10 to 50 m, and over Wi-Fi when phones share a network, even a router or hotspot with no internet. iPhone and Android link to each other.</p></li>
+          <li><h4 class="heading-6">Every phone is a carrier</h4><p class="body-3">A phone keeps the sealed messages it hears and passes them to the next phone it meets. Phones from other groups carry them too, without being able to read them.</p></li>
+          <li><h4 class="heading-6">Hop by hop</h4><p class="body-3">A message can be passed on up to 16 times and keeps travelling for 7 days. It arrives when a chain of phones, or one person walking across town, connects you.</p></li>
+          <li><h4 class="heading-6">Further with a radio</h4><p class="body-3">Pair a small Meshtastic or MeshCore LoRa radio and short messages reach other radios kilometers away.</p></li>
+          <li><h4 class="heading-6">Nothing to switch on</h4><p class="body-3">The app does all of this by itself. What you write with nobody in range waits on the phone and leaves when someone comes near.</p></li>
+        </ol>
+          </details>
+        </div>
+        <div class="way reveal">
+          <h3 class="heading-6">When there is internet</h3>
+          <p class="body-3 soft">Your phone still talks to the phones around it. It also hands the same sealed messages to public relays, so they reach people in another city or another country.</p>
+          <details class="faq more"><summary>The five things that keep it private<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+            <ol class="points">
+          <li><h4 class="heading-6">Sealed before it leaves</h4><p class="body-3">Every group message is encrypted on your phone. A relay only ever holds sealed packets it can't open.</p></li>
+          <li><h4 class="heading-6">Public Nostr relays, none of ours</h4><p class="body-3">DarkProof uses relays of the open Nostr network, run by other people. There is no DarkProof server to shut down or to ask for your data.</p></li>
+          <li><h4 class="heading-6">Through Tor</h4><p class="body-3">The app connects through Tor unless you turn that off, with its own route for each group, so a relay doesn't learn your internet address.</p></li>
+          <li><h4 class="heading-6">Kept for a week</h4><p class="body-3">Packets stay on the relays for up to 7 days. A phone that was offline catches up when it gets a connection again.</p></li>
+          <li><h4 class="heading-6">One phone can connect a street</h4><p class="body-3">A phone that gets internet also passes on the sealed messages it carries for others, so it links the phones around it to the rest of the network.</p></li>
+        </ol>
+            <p class="caption-2 fine">What a relay can still see: about when a packet was sent and which of a few fixed sizes it has. Anyone can download the sealed packets, but only your group can read them.</p>
+          </details>
+        </div>
+        <a class="link reveal" href="outages.html">See where the internet is down today<svg class="ic" aria-hidden="true"><use href="#i-caret-right-bold"></use></svg></a>
+      </div>
+    </div>
+  </section>
+
+  <section class="stage" id="install" aria-labelledby="install-title">
+    <div class="container install">
+      <div class="install-copy reveal">
+        <p class="label">[ Install ]</p>
+        <h2 class="display" id="install-title">Build it from GitHub today.</h2>
+        <p class="body-3">The App Store and Google Play versions are on their way. Until then the whole app is on GitHub, and you can put it on your own phone. Let an AI assistant do the work, or follow the steps by hand. On Android, Windows and Mac you can also download a ready test build.</p>
+        <a class="link" href="https://github.com/DEV-ENT/DarkProof" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-github-logo-fill"></use></svg>DEV-ENT/DarkProof</a>
+        <div class="apk">
+          <p class="label">[ Android · early access test build ]</p>
+          <a class="act act-light" href="downloads/darkproof-0.4.apk" download>Download Android APK<svg class="ic" aria-hidden="true"><use href="#i-arrow-down-bold"></use></svg></a>
+          <p class="caption-2 fine">Version 0.4, 49 MB. For phones on Android 8 or newer that have Google Play Services. Remove older DarkProof versions first.</p>
+          <ol class="apk-steps caption-2">
+            <li>Open this page on your Android phone and tap the button.</li>
+            <li>Open the downloaded file. If Android asks, allow your browser to install unknown apps.</li>
+            <li>Tap Install, then open DarkProof.</li>
+          </ol>
+          <p class="caption-2 fine">This is a test build, not a Google Play release, and it will not update by itself. DarkProof is not on Google Play yet. When its closed test opens there, installing this file will not count as taking part: testers have to join through Google Play.</p>
+          <p class="apk-sum">SHA256 54544dfde6f92527c82c5f1b96cc9469e377524cc020bee05747e0f0dd6e648e</p>
+        </div>
+        <div class="apk">
+          <p class="label">[ Windows · early access test build ]</p>
+          <a class="act act-light" href="downloads/darkproof-0.4.13-windows.msi" download>Download for Windows<svg class="ic" aria-hidden="true"><use href="#i-arrow-down-bold"></use></svg></a>
+          <p class="caption-2 fine">Version 0.4.13, 152 MB. For Windows 10 and Windows 11.</p>
+          <ol class="apk-steps caption-2">
+            <li>Download the file on your PC and open it.</li>
+            <li>Windows shows a blue warning, because the installer is not signed. Click “More info”, then “Run anyway”.</li>
+            <li>Follow the installer. It needs no administrator password. If you have the earlier test build, install this one over it.</li>
+            <li>If Windows asks, allow DarkProof on private networks. Without that it can't find phones.</li>
+          </ol>
+          <p class="caption-2 fine">Today it has the same groups and chats as the phones, and links with them over the same Wi-Fi network. Not on the desktop yet: Bluetooth, internet relays and Tor, and the map.</p>
+          <p class="caption-2 fine">It has an offline AI on the Ask page. You choose one of five models in the app and download it once, from 1.3 GB to 16.8 GB; each says how much memory it needs, from 4 GB to 32 GB. After that it works with no internet. They are uncensored versions of the open models Qwen 3.5 and Gemma 4, made by other people: they answer anything and they can be wrong, also about medicine doses.</p>
+          <p class="caption-2 fine">New in this build: a “Think first” switch in the Ask page's menu. With it on, the AI reasons before it answers, which takes longer. And on a PC with a suitable graphics card, the app asks once whether the card should do the AI's work. If the card can't be used, it goes back to the processor by itself.</p>
+          <p class="caption-2 fine">This build has so far only run on test machines, not on a real PC with a real phone. No AI model has been loaded on Windows yet, and nothing has run on a real graphics card. Tell us what breaks.</p>
+          <p class="apk-sum">SHA256 2e305e28dd8ce1c07c605aec2ee833b800f6a72e399375d34f01674e69cb4835</p>
+        </div>
+        <div class="apk">
+          <p class="label">[ Mac · early access test build ]</p>
+          <a class="act act-light" href="downloads/darkproof-1.4.13-mac.dmg" download>Download for Mac<svg class="ic" aria-hidden="true"><use href="#i-arrow-down-bold"></use></svg></a>
+          <p class="caption-2 fine">Build 13, 142 MB. Only for Macs with Apple Silicon (M1 or later), not Intel. It has only run on macOS 26.</p>
+          <ol class="apk-steps caption-2">
+            <li>Download the file on your Mac and open it.</li>
+            <li>Drag DarkProof to Applications, then open it there.</li>
+            <li>The Mac refuses the first time, because the app is not signed with Apple and Apple has not checked it. Open System Settings, Privacy &amp; Security, and click “Open Anyway”.</li>
+            <li>If the Mac asks, allow DarkProof to find devices on your local network. Without that it can't find phones.</li>
+          </ol>
+          <p class="caption-2 fine">It has what the Windows app has: the same groups and chats as the phones over the same Wi-Fi network, and the offline AI with the same five uncensored models and “Think first”. The models can be wrong, also about medicine doses. The AI uses the Mac's graphics chip by itself. On the Mac it shows as version 1.4.13.</p>
+          <p class="caption-2 fine">Its engine and its AI engine have started from the opened disk image on two test Macs. Nobody has yet seen its window, opened it with a double click or linked a phone, so the steps above are what a Mac normally asks, not what we have seen. Tell us what breaks.</p>
+          <p class="apk-sum">SHA256 8ec6912ecae231c648ea2cc2f5244146d9f0d9d4f329d11169928e63493133a0</p>
+        </div>
+        <ul class="stores label" aria-label="App stores">
+        <li><svg class="ic" aria-hidden="true"><use href="#i-sys-app-store"></use></svg><b>App Store</b><span>Coming soon</span></li>
+        <li><svg class="ic" aria-hidden="true"><use href="#i-sys-google-play"></use></svg><b>Google Play</b><span>Coming soon</span></li>
+      </ul>
+        <p class="caption-2 fine">An early build for people who are comfortable with a little setup. It has had no outside security audit yet.</p>
+      </div>
+
+      <div class="term reveal">
+        <div class="term-tabs">
+          <div class="tabs" role="tablist" aria-label="How to install">
+            <button type="button" role="tab" data-way="ai" aria-selected="true">With AI</button>
+            <button type="button" role="tab" data-way="hand" aria-selected="false">By hand</button>
+          </div>
+          <div class="tabs" role="tablist" aria-label="Which phone">
+            <button type="button" role="tab" data-os="android" aria-selected="true">Android</button>
+            <button type="button" role="tab" data-os="iphone" aria-selected="false">iPhone</button>
+          </div>
+        </div>
+
+        <div class="how" data-how="ai-android">
+          <p class="body-3">Paste this into Claude Code, Codex, Cursor or any assistant that can run commands on your computer. Connect your phone by USB first.</p>
+          <div class="code"><button class="act act-sm" type="button" data-copy="p-ai-android">Copy</button><pre id="p-ai-android">Build DarkProof for Android and install it on my phone.
+
+1. Clone https://github.com/<wbr><span class="nb">DEV-ENT/DarkProof</span> and read the Build section of its README.
+2. Check that I have the Android SDK (platform 35) and JDK 17 or newer. If something is missing, tell me what, and ask before you install it.
+3. Create local.properties with the path to my Android SDK, then run ./gradlew assembleDebug
+4. My phone is connected by USB with USB debugging on. Install the app with: adb install -r app/<wbr>build/<wbr>outputs/<wbr>apk/<wbr>debug/<wbr>app-debug.apk
+5. Tell me when it is on the phone and how to create my first group.
+
+Ask before you change any system setting, and don't change the app's code.</pre></div>
+          <p class="caption-2 fine">For phones on Android 8 or newer that have Google Play Services.</p>
+        </div>
+
+        <div class="how" data-how="ai-iphone" hidden>
+          <p class="body-3">Paste this into Claude Code, Codex, Cursor or any assistant that can run commands on your Mac. You need Xcode and an Apple ID.</p>
+          <div class="code"><button class="act act-sm" type="button" data-copy="p-ai-iphone">Copy</button><pre id="p-ai-iphone">Help me put DarkProof on my iPhone. I am on a Mac with Xcode.
+
+1. Clone https://github.com/<wbr><span class="nb">DEV-ENT/DarkProof</span> and read the Build section of its README.
+2. Run ios/Vendor/fetch-llama.sh once.
+3. Open ios/Blackout.xcodeproj in Xcode and walk me through it step by step: choose my Team under Signing &amp; Capabilities, pick my iPhone, press Run.
+4. If Xcode says the bundle identifier is not available, change it to one of my own and try again.
+5. If the iPhone refuses to open the app, tell me where to trust the developer in Settings.
+
+Ask before you install anything, and don't change the app's code.</pre></div>
+          <p class="caption-2 fine">Needs a Mac with Xcode 27 or newer and an iPhone on iOS 26 or newer. With a free Apple ID the app has to be reinstalled every 7 days.</p>
+        </div>
+
+        <div class="how" data-how="hand-android" hidden>
+          <ol class="by-hand body-3">
+            <li>Install Android Studio, or the Android SDK with platform 35 and JDK 17 or newer.</li>
+            <li>Get the code.<div class="code"><pre>git clone https://github.com/DEV-ENT/DarkProof.git
+cd DarkProof</pre></div></li>
+            <li>Create a file called local.properties that says where your Android SDK is.<div class="code"><pre>sdk.dir=/path/to/your/Android/sdk</pre></div></li>
+            <li>Build the app.<div class="code"><pre>./gradlew assembleDebug</pre></div></li>
+            <li>Turn on USB debugging on the phone, connect it, and install.<div class="code"><pre>adb install -r app/build/outputs/apk/debug/app-debug.apk</pre></div></li>
+          </ol>
+          <p class="caption-2 fine">Needs Android 8 or newer with Google Play Services. Remove older DarkProof versions first.</p>
+        </div>
+
+        <div class="how" data-how="hand-iphone" hidden>
+          <ol class="by-hand body-3">
+            <li>You need a Mac with Xcode 27 or newer and an iPhone on iOS 26 or newer.</li>
+            <li>Get the code and the AI engine it uses.<div class="code"><pre>git clone https://github.com/DEV-ENT/DarkProof.git
+cd DarkProof
+ios/Vendor/fetch-llama.sh</pre></div></li>
+            <li>Open ios/Blackout.xcodeproj. Xcode downloads the packages it needs, including Tor (141 MB).</li>
+            <li>Under Signing &amp; Capabilities, pick your Team. A free Apple ID works, but the app then has to be reinstalled every 7 days.</li>
+            <li>Select your iPhone and press Run.</li>
+          </ol>
+          <p class="caption-2 fine">If Xcode says the bundle identifier is not available, change it to one of your own.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="stage" id="questions" aria-labelledby="questions-title">
+    <div class="container reading">
+      <div class="sec-head reveal">
+        <h2 class="display" id="questions-title">Questions</h2>
+      </div>
+      <div class="reveal">
+        <details class="faq"><summary>Does it really work with no internet?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>Yes. Phones with DarkProof link directly over Bluetooth and Wi-Fi and pass messages along from one phone to the next. With a LoRa radio paired, short messages reach other radios kilometers away.</p></details>
+        <details class="faq"><summary>How far and how fast do messages travel?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>As far as there are phones to carry them. A message waits on each phone and moves on when another DarkProof phone comes in range, so it can take seconds or hours. Phones keep passing a message on for 7 days.</p></details>
+        <details class="faq"><summary>Who can read my messages?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>Only the people in your group. Other phones carry your messages but can't open them. Messages you send to Everyone are public: anyone with DarkProof can read them.</p></details>
+        <details class="faq"><summary>Has DarkProof had a security audit?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>Not yet. No outside expert has reviewed DarkProof so far. The code and the message format are public so that anyone can check them.</p></details>
+        <details class="faq"><summary>What do you know about me?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>Nothing. We run no servers and receive no data. There are no ads, no analytics and no tracking. Your name and group codes stay on your phone.</p></details>
+        <details class="faq"><summary>Does it share where I am?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>Only if you turn that on, and only with your group, or with everyone for a place you choose to share.</p></details>
+        <details class="faq"><summary>Do I need an account or a phone number?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>No. You pick a name and create or join a group, and that is all.</p></details>
+        <details class="faq"><summary>What happens when there is internet?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>Phones that have internet also pass messages through public relays, so they reach people far away. They connect through Tor unless you turn that off. Nothing goes through servers of ours, because we have none.</p></details>
+        <details class="faq"><summary>Does it work between iPhone and Android?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>Yes. The two apps use the same message format and talk to each other.</p></details>
+        <details class="faq"><summary>What does it cost?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>Nothing. DarkProof is free and has no ads.</p></details>
+        <details class="faq"><summary>Is the phone on this page the real app?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>It has two modes. The demo is a simulation that runs in your browser, with made up people and scripted answers. The recordings show the real app running in the iPhone Simulator. Nothing you type is sent anywhere.</p></details>
+        <details class="faq"><summary>When can I download it?<svg class="ic" aria-hidden="true"><use href="#i-caret-down-bold"></use></svg></summary>
+          <p>On Android, Windows and Mac you can download an early test build today, from the install section of this page. You can also build the app from GitHub, for Android or iPhone, with the steps there. The App Store and Google Play versions are coming soon.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <section class="stage ending" aria-labelledby="final-title">
+    <div class="container">
+      <h2 class="display reveal" id="final-title">Try it before you need it.</h2>
+      <p class="body-3 reveal">Free. No account. Nothing to cancel.</p>
+      <a class="act act-light reveal" href="#stage" data-start-demo>Try the demo<svg class="ic" aria-hidden="true"><use href="#i-arrow-up-bold"></use></svg></a>
+      <ul class="stores label reveal" aria-label="App stores">
+        <li><svg class="ic" aria-hidden="true"><use href="#i-sys-app-store"></use></svg><b>App Store</b><span>Coming soon</span></li>
+        <li><svg class="ic" aria-hidden="true"><use href="#i-sys-google-play"></use></svg><b>Google Play</b><span>Coming soon</span></li>
+      </ul>
+      <a class="ph reveal" href="https://www.producthunt.com/products/darkproof?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-darkproof" target="_blank" rel="noopener noreferrer"><svg class="ic ph-mark" aria-hidden="true"><use href="#i-sys-product-hunt"></use></svg><span class="ph-text"><span class="label">Find us on</span><b>Product Hunt</b></span><svg class="ic out" aria-hidden="true"><use href="#i-arrow-up-right-bold"></use></svg></a>
+      <ul class="dest" aria-label="Where to go">
+        <li><a href="#stage"><span class="dots">Demo</span></a></li>
+        <li><a href="#install"><span class="dots">Install</span></a></li>
+        <li><a href="#questions"><span class="dots">Questions</span></a></li>
+        <li><a href="outages.html"><span class="dots">Outages</span></a></li>
+        <li><a href="privacy.html"><span class="dots">Privacy</span></a></li>
+      </ul>
+      <ul class="service label">
+        <li><a href="https://github.com/DEV-ENT/DarkProof" rel="noopener">GitHub<svg class="ic" aria-hidden="true"><use href="#i-arrow-up-right-bold"></use></svg></a></li>
+        <li><a href="mailto:support@darkproof.app">support@darkproof.app<svg class="ic" aria-hidden="true"><use href="#i-envelope-simple-bold"></use></svg></a></li>
+      </ul>
+      <div class="legal label">
+        <span>This site uses no cookies, no trackers and no outside fonts or scripts.</span>
+        <span class="legal-links"><a href="privacy.html">Privacy policy</a><a href="terms.html">Terms of use</a></span>
+      </div>
+    </div>
+  </section>
 </main>
-
-<footer class="site">
-  <nav aria-label="Footer">
-    <a href="privacy.html">Privacy policy</a>
-    <a href="mailto:support@darkproof.app">support@darkproof.app</a>
-  </nav>
-  <p>This site uses no cookies, no trackers and no outside fonts or scripts.</p>
-</footer>
-</div>
 </body>
 </html>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What the signed Mac app asks the system to allow (desktop/mac-sign.sh). One thing only: Java turns the app's code
+  into machine code while it runs, which a signed app with Apple's "hardened runtime" may not do unless it says so.
+  Left out on purpose, though most Java apps ask for them: running memory that was never marked as code, and loading
+  libraries somebody else signed. Every library in the app is signed with the app's own certificate, so it needs neither.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+</dict>
+</plist>

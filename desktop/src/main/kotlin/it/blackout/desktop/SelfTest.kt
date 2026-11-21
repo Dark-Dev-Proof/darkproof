@@ -37,19 +37,24 @@ object SelfTest {
                 Llama.program(graphics = true) == null -> "in this copy, and not offered on this computer (it has no Vulkan, which comes with a graphics card's driver)"
                 else -> Llama.version(graphics = true)?.let { "runs: $it" } ?: ("does not start on this computer: " + Llama.whyNot(graphics = true))
             })
-            // Tor is a program of its own too: that it is in this copy and runs here. Whether it gets through to the Tor network
-            // from this computer is said, not required: a network can block Tor, and then the app's relays simply wait.
+            // Tor is a program of its own too: that it is in this copy and runs here, by asking it for its version. It is
+            // NOT started for real here. On 2026-11-21 a self-test that connected Tor to its network ran on GitHub's build
+            // machines, and the GitHub account was suspended within minutes (GitHub gave no reason; the timing points at
+            // this). A build machine is not the place to reach the Tor network from. A person at their own computer can
+            // ask for that check with DARKPROOF_SELF_TEST_TOR=1.
             if (it.blackout.mesh.Tor.program() == null) say("no Tor in this copy") else {
                 val (version, why) = it.blackout.mesh.Tor.version()
                 say("Tor runs: " + (version ?: error("the Tor in this copy does not run on this computer: $why")))
-                val t0 = System.currentTimeMillis(); it.blackout.mesh.Tor.start(a)
-                while (it.blackout.mesh.Tor.socksPort() == null && System.currentTimeMillis() - t0 < 90_000) { Thread.sleep(250); it.blackout.mesh.Tor.start(a) }
-                val port = it.blackout.mesh.Tor.socksPort()
-                if (port == null) say("Tor did not get through to its network from here in 90 seconds; it last said: ${it.blackout.mesh.Tor.said}") else {
-                    val through = okhttp3.OkHttpClient.Builder().socketFactory(it.blackout.mesh.Socks5.factory(port, "self-test")).dns(it.blackout.mesh.Socks5.noDns).build()
-                    say("Tor connected in ${(System.currentTimeMillis() - t0) / 1000} s; the Tor Project says traffic leaves through Tor: ${it.blackout.mesh.Tor.check(through, "self-test")}")
+                if (System.getenv("DARKPROOF_SELF_TEST_TOR") == "1") {
+                    val t0 = System.currentTimeMillis(); it.blackout.mesh.Tor.start(a)
+                    while (it.blackout.mesh.Tor.socksPort() == null && System.currentTimeMillis() - t0 < 90_000) { Thread.sleep(250); it.blackout.mesh.Tor.start(a) }
+                    val port = it.blackout.mesh.Tor.socksPort()
+                    if (port == null) say("Tor did not get through to its network from here in 90 seconds; it last said: ${it.blackout.mesh.Tor.said}") else {
+                        val through = okhttp3.OkHttpClient.Builder().socketFactory(it.blackout.mesh.Socks5.factory(port, "self-test")).dns(it.blackout.mesh.Socks5.noDns).build()
+                        say("Tor connected in ${(System.currentTimeMillis() - t0) / 1000} s; the Tor Project says traffic leaves through Tor: ${it.blackout.mesh.Tor.check(through, "self-test")}")
+                    }
+                    it.blackout.mesh.Tor.stop(a)
                 }
-                it.blackout.mesh.Tor.stop(a)
             }
             MeshEngine.shutdown()
         }.onFailure { say("FAILED: $it"); it.stackTrace.take(12).forEach { l -> say("    at $l") } }.isSuccess

@@ -208,6 +208,7 @@ Small models can be wrong. In a real medical emergency, use the AI's answers car
 ## Privacy and TestFlight
 
 - Privacy policy: [PRIVACY.md](PRIVACY.md), to be published at https://darkproof.app/privacy (the apps link there from Settings). DarkProof has no servers of its own and collects no data.
+- Terms of use: [TERMS.md](TERMS.md), published at https://darkproof.app/terms.
 - Contact, including abuse reports: support@darkproof.app.
 - How to put the iPhone app on TestFlight: [docs/TESTFLIGHT.md](docs/TESTFLIGHT.md).
 

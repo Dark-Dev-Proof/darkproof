@@ -8,7 +8,8 @@
 #
 # -PaiEngine has the build fetch the AI engine (llama.cpp's server, one pinned build, checked by SHA-256: see
 # desktop/build.gradle.kts) into the app, and -Ptor the Tor Project's Tor program, pinned and checked the same way.
-# No model is fetched. The self-tests start Tor and say whether it got through to the Tor network from the build machine. Installers and pictures are kept for 14 days.
+# No model is fetched. Tor is only asked for its version here: it must never be started for real on a build machine
+# (it was once, on 2026-11-21, and the GitHub account was suspended within minutes). Installers and pictures are kept for 14 days.
 # Every run gives its builds the next build number (0.4.<run>), so a newer installer replaces an older DarkProof.
 # This file's name stays as it is: a workflow under a new name would start counting from 1 again.
 name: Desktop app (Windows and Mac)
