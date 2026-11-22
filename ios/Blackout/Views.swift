@@ -248,6 +248,7 @@ struct MainView: View {
     @CurrentCode private var code
     @AppStorage("askedNotifications") private var askedNotifications = false
     @State private var asking = false
+    @State private var keyboardUp = false // the reach line hides under the keyboard
 
     var body: some View {
         TabView(selection: $nav.tab) {
@@ -261,6 +262,9 @@ struct MainView: View {
             AiView(engine: engine).tabItem { Label("Ask", systemImage: "sparkles") }.tag(Nav.Tab.ask)
         }
         .tint(Theme.text)
+        .reachAccessory(engine, shown: nav.sheet == nil && !keyboardUp) // above the tab bar: how far messages reach (ReachLine.swift)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardUp = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardUp = false }
         .modifier(Overlays())
         .sheet(item: $nav.sheet) { s in
             switch s {
