@@ -22,7 +22,7 @@ object OfflineMap {
     fun torChanged(on: Boolean) {}
 }
 
-data class Pin(val title: String, val spot: Spot, val ts: Long, val color: String)
+data class Pin(val title: String, val spot: Spot, val ts: Long, val color: String, val icon: Int? = null, val help: Boolean = false)
 
 @Composable
 fun StreetMap(pins: List<Pin>, me: Spot?, modifier: Modifier, open: (Sheet) -> Unit, onCenter: (Spot?) -> Unit = {}) {

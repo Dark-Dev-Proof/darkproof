@@ -1,7 +1,13 @@
 package it.blackout.mesh
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PointF
+import android.graphics.Typeface
+import android.view.View
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -14,6 +20,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.ViewCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import okhttp3.Dispatcher
@@ -21,6 +28,7 @@ import okhttp3.OkHttpClient
 import org.json.JSONObject
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
@@ -35,6 +43,8 @@ import org.maplibre.android.offline.OfflineTilePyramidRegionDefinition
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
@@ -165,30 +175,142 @@ object OfflineMap {
     }
 }
 
-/** A pin on the map: a place, a person, or me. */
-data class Pin(val title: String, val spot: Spot, val ts: Long, val color: String)
+/**
+ * A pin on the map: a place, shown with its kind's [icon], or a person, shown with the first letter of [title]. [color]
+ * is the ring: white, grey for an old place, green for "I'm safe", red for help. Someone asking for [help] is never
+ * merged into a cluster.
+ */
+data class Pin(val title: String, val spot: Spot, val ts: Long, val color: String, @DrawableRes val icon: Int? = null, val help: Boolean = false)
 
 /**
- * The street map with pins. Tapping a pin opens the compass to it. [onCenter] gets the middle of the map after each
- * move, or null while the map shows too large an area to save (zoomed out).
+ * How pins look on the map, drawn here as pictures so the map needs nothing from the internet for them (no sprite, no
+ * font): a charcoal disc with a white glyph and a coloured ring, like the iPhone's MapView.swift, and for nearby pins
+ * merged together, a charcoal bubble with the count. Each picture has a name that says everything needed to draw it
+ * again, so the map can ask for it again at any time.
+ */
+object PinArt {
+    const val PIN = "dp-pin|"
+    const val CLUSTER = "dp-cluster-"
+    private const val SIZE = 38f   // dp, as the iPhone's pins (points)
+    private const val RING = 2.5f
+    private const val GLYPH = 20f
+    private const val CHARCOAL = 0xFF212121.toInt() // Theme.tile
+
+    /** The picture name of [p]. */
+    fun nameOf(p: Pin): String = PIN + (p.icon ?: 0) + "|" + p.color + "|" + (if (p.icon == null) initial(p.title) else "")
+
+    /** The first letter of a name as one drawn character (an emoji or accented letter stays whole), "?" for none. */
+    fun initial(name: String): String {
+        val t = name.trim()
+        if (t.isEmpty()) return "?"
+        val b = java.text.BreakIterator.getCharacterInstance().apply { setText(t) }
+        val end = b.next().takeIf { it != java.text.BreakIterator.DONE } ?: t.length
+        return t.substring(0, end).uppercase()
+    }
+
+    /** What a bubble of [n] pins says: the number, shortened from a thousand on. */
+    fun count(n: Int): String = when {
+        n < 1_000 -> "$n"
+        n < 10_000 -> "${n / 1_000}.${n % 1_000 / 100}k"
+        else -> "${n / 1_000}k"
+    }
+
+    /** The picture for [name], or null when the name is not one of ours (the map style's own icons). */
+    fun image(ctx: Context, name: String): Bitmap? = runCatching {
+        when {
+            name.startsWith(CLUSTER) -> name.removePrefix(CLUSTER).toIntOrNull()?.let { cluster(ctx, it) }
+            name.startsWith(PIN) -> name.removePrefix(PIN).split("|", limit = 3).takeIf { it.size == 3 }?.let { (icon, ring, letter) ->
+                pin(ctx, icon.toIntOrNull()?.takeIf { it != 0 }, android.graphics.Color.parseColor(ring), letter)
+            }
+            else -> null
+        }
+    }.getOrNull()
+
+    private fun pin(ctx: Context, icon: Int?, ring: Int, letter: String): Bitmap {
+        val d = ctx.resources.displayMetrics.density
+        val s = (SIZE * d).roundToInt()
+        val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp); val mid = s / 2f; val w = RING * d
+        c.drawCircle(mid, mid, mid - w / 2, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = CHARCOAL })
+        c.drawCircle(mid, mid, mid - w / 2, Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = w; color = ring })
+        val glyph = icon?.let { ctx.getDrawable(it)?.mutate() }
+        if (glyph != null) {
+            val g = (GLYPH * d).roundToInt(); val at = ((s - g) / 2f).roundToInt()
+            glyph.setTint(android.graphics.Color.WHITE); glyph.setBounds(at, at, at + g, at + g); glyph.draw(c)
+        } else text(c, letter, 16 * d, mid, mid)
+        return bmp
+    }
+
+    private fun cluster(ctx: Context, n: Int): Bitmap {
+        val d = ctx.resources.displayMetrics.density
+        val label = count(n)
+        val paint = textPaint(15 * d)
+        val disc = max(40 * d, paint.measureText(label) + 24 * d); val halo = 5 * d
+        val s = ceil(disc + 2 * halo).toInt()
+        val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp); val mid = s / 2f
+        c.drawCircle(mid, mid, mid, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.argb(41, 255, 255, 255) })
+        c.drawCircle(mid, mid, disc / 2, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = CHARCOAL })
+        c.drawCircle(mid, mid, disc / 2 - 0.75f * d, Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d; color = android.graphics.Color.WHITE })
+        text(c, label, 15 * d, mid, mid)
+        return bmp
+    }
+
+    private fun textPaint(size: Float) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE; textSize = size; typeface = Typeface.DEFAULT_BOLD; textAlign = Paint.Align.CENTER
+    }
+
+    private fun text(c: Canvas, s: String, size: Float, x: Float, y: Float) {
+        val p = textPaint(size)
+        c.drawText(s, x, y - (p.fontMetrics.ascent + p.fontMetrics.descent) / 2, p)
+    }
+}
+
+private const val SRC_PINS = "dp-pins"     // places and people, merged into clusters when they are close on screen
+private const val SRC_HELP = "dp-help"     // people asking for help: never merged
+private const val SRC_ME = "dp-me"
+private const val LAYER_CLUSTERS = "dp-clusters"
+private const val LAYER_PINS = "dp-pins"
+private const val LAYER_HELP = "dp-help"
+private const val MAX_ACTIONS = 25         // TalkBack actions on the map (Android has room for about 30 per view)
+
+/**
+ * The street map with pins. Tapping a pin opens the compass to it; tapping a count bubble zooms in on it. [onCenter]
+ * gets the middle of the map after each move, or null while the map shows too large an area to save (zoomed out).
+ * Everything on it is drawn on the phone, so with the saved area it works with no internet.
  */
 @Composable
 fun StreetMap(pins: List<Pin>, me: Spot?, modifier: Modifier, open: (Sheet) -> Unit, onCenter: (Spot?) -> Unit = {}) {
     val centerNow by rememberUpdatedState(onCenter)
+    val openNow by rememberUpdatedState(open)
     val ctx = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var centered by remember { mutableStateOf(false) }
+    val added = remember { mutableSetOf<String>() } // pin pictures given to the map
     val view = remember {
         MapView(ctx).apply {
             onCreate(null)
             getMapAsync { m ->
                 m.uiSettings.isRotateGesturesEnabled = false
+                // Count bubbles, and any pin picture the map dropped while unused, are drawn when the map asks for them.
+                addOnStyleImageMissingListener { name -> m.style?.let { st -> PinArt.image(ctx, name)?.let { st.addImage(name, it) } } }
                 m.setStyle(Style.Builder().fromUri(OfflineMap.STYLE)) { style ->
-                    style.addSource(GeoJsonSource("pins"))
-                    style.addLayer(CircleLayer("pins", "pins").withProperties(
-                        PropertyFactory.circleRadius(9f), PropertyFactory.circleColor(Expression.toColor(Expression.get("color"))),
-                        PropertyFactory.circleStrokeColor("#000000"), PropertyFactory.circleStrokeWidth(2.5f)))
+                    style.addSource(GeoJsonSource(SRC_PINS, GeoJsonOptions().withCluster(true).withClusterMaxZoom(14).withClusterRadius(50)))
+                    style.addSource(GeoJsonSource(SRC_HELP))
+                    style.addSource(GeoJsonSource(SRC_ME))
+                    fun icons(l: SymbolLayer, image: Expression) = l.withProperties(
+                        PropertyFactory.iconImage(image), PropertyFactory.iconAllowOverlap(true), PropertyFactory.iconIgnorePlacement(true))
+                    style.addLayer(icons(SymbolLayer(LAYER_PINS, SRC_PINS).withFilter(Expression.not(Expression.has("point_count"))), Expression.get("icon")))
+                    style.addLayer(icons(SymbolLayer(LAYER_CLUSTERS, SRC_PINS).withFilter(Expression.has("point_count")),
+                        Expression.concat(Expression.literal(PinArt.CLUSTER), Expression.toString(Expression.get("point_count")))))
+                    style.addLayer(icons(SymbolLayer(LAYER_HELP, SRC_HELP), Expression.get("icon")))
+                    // You: a white dot with a soft halo, on top.
+                    style.addLayer(CircleLayer("dp-me-halo", SRC_ME).withProperties(
+                        PropertyFactory.circleRadius(15f), PropertyFactory.circleColor("#FFFFFF"), PropertyFactory.circleOpacity(0.18f)))
+                    style.addLayer(CircleLayer("dp-me", SRC_ME).withProperties(
+                        PropertyFactory.circleRadius(6.5f), PropertyFactory.circleColor("#FFFFFF"),
+                        PropertyFactory.circleStrokeColor("#000000"), PropertyFactory.circleStrokeWidth(2f)))
                     map = m
                 }
                 m.addOnCameraIdleListener {
@@ -196,10 +318,20 @@ fun StreetMap(pins: List<Pin>, me: Spot?, modifier: Modifier, open: (Sheet) -> U
                     centerNow(cp.target?.takeIf { cp.zoom >= 9 }?.let { t -> Spot(t.latitude, t.longitude) })
                 }
                 m.addOnMapClickListener { ll ->
-                    val f = m.queryRenderedFeatures(m.projection.toScreenLocation(ll), "pins").firstOrNull() ?: return@addOnMapClickListener false
-                    val p = f.geometry() as? Point ?: return@addOnMapClickListener false
-                    if (f.getStringProperty("title") == "You") return@addOnMapClickListener false
-                    open(Sheet.Find(f.getStringProperty("title"), Spot(p.latitude(), p.longitude()), f.getNumberProperty("ts").toLong())); true
+                    val at = m.projection.toScreenLocation(ll)
+                    val f = m.queryRenderedFeatures(at, LAYER_HELP, LAYER_PINS).firstOrNull()
+                    if (f != null) {
+                        val p = f.geometry() as? Point ?: return@addOnMapClickListener false
+                        openNow(Sheet.Find(f.getStringProperty("title"), Spot(p.latitude(), p.longitude()), f.getNumberProperty("ts").toLong()))
+                        return@addOnMapClickListener true
+                    }
+                    val c = m.queryRenderedFeatures(at, LAYER_CLUSTERS).firstOrNull() ?: return@addOnMapClickListener false
+                    val p = c.geometry() as? Point ?: return@addOnMapClickListener false
+                    val zoom = runCatching { m.style?.getSourceAs<GeoJsonSource>(SRC_PINS)?.getClusterExpansionZoom(c)?.toDouble() }.getOrNull()
+                        ?: (m.cameraPosition.zoom + 2)
+                    val to = CameraUpdateFactory.newLatLngZoom(LatLng(p.latitude(), p.longitude()), zoom)
+                    if (Motion.calm) m.moveCamera(to) else m.animateCamera(to, 350)
+                    true
                 }
             }
         }
@@ -215,14 +347,41 @@ fun StreetMap(pins: List<Pin>, me: Spot?, modifier: Modifier, open: (Sheet) -> U
         lifecycle.addObserver(obs)
         onDispose { lifecycle.removeObserver(obs); view.onPause(); view.onStop(); view.onDestroy() }
     }
+    LaunchedEffect(map, pins) {
+        val st = map?.style ?: return@LaunchedEffect
+        fun features(list: List<Pin>) = FeatureCollection.fromFeatures(list.map { p ->
+            val name = PinArt.nameOf(p)
+            if (added.add(name)) PinArt.image(ctx, name)?.let { st.addImage(name, it) }
+            Feature.fromGeometry(Point.fromLngLat(p.spot.lon, p.spot.lat)).apply {
+                addStringProperty("title", p.title); addNumberProperty("ts", p.ts); addStringProperty("icon", name)
+            }
+        })
+        st.getSourceAs<GeoJsonSource>(SRC_PINS)?.setGeoJson(features(pins.filter { !it.help }))
+        st.getSourceAs<GeoJsonSource>(SRC_HELP)?.setGeoJson(features(pins.filter { it.help }))
+    }
+    LaunchedEffect(map, me) {
+        val st = map?.style ?: return@LaunchedEffect
+        st.getSourceAs<GeoJsonSource>(SRC_ME)?.setGeoJson(FeatureCollection.fromFeatures(listOfNotNull(me?.let { Feature.fromGeometry(Point.fromLngLat(it.lon, it.lat)) })))
+    }
+    // TalkBack: drawn pins are not items it can reach, so the map says what is on it and offers each pin as an action
+    // (people asking for help first). The list shows every place too.
+    val actions = remember { mutableListOf<Int>() }
+    LaunchedEffect(pins) {
+        actions.forEach { ViewCompat.removeAccessibilityAction(view, it) }; actions.clear()
+        val places = pins.count { it.icon != null }; val people = pins.size - places; val help = pins.count { it.help }
+        view.contentDescription = "Street map: " + listOfNotNull(
+            "$places ${if (places == 1) "place" else "places"}", "$people ${if (people == 1) "person" else "people"}",
+            if (help > 0) "$help asking for help" else null).joinToString(", ") +
+            if (pins.isEmpty()) "." else ". Use actions to open one, or switch to List."
+        (pins.filter { it.help } + pins.filter { !it.help }).take(MAX_ACTIONS).forEach { p ->
+            val id = ViewCompat.addAccessibilityAction(view, if (p.help) "${p.title}, asking for help" else p.title) { _, _ ->
+                openNow(Sheet.Find(p.title, p.spot, p.ts)); true
+            }
+            if (id != View.NO_ID) actions += id
+        }
+    }
     LaunchedEffect(map, pins, me) {
         val m = map ?: return@LaunchedEffect
-        val all = pins + listOfNotNull(me?.let { Pin("You", it, 0, "#4C8DFF") })
-        m.style?.getSourceAs<GeoJsonSource>("pins")?.setGeoJson(FeatureCollection.fromFeatures(all.map { p ->
-            Feature.fromGeometry(Point.fromLngLat(p.spot.lon, p.spot.lat)).apply {
-                addStringProperty("title", p.title); addNumberProperty("ts", p.ts); addStringProperty("color", p.color)
-            }
-        }))
         if (!centered) {
             val c = me ?: (OfflineMap.state as? OfflineMap.State.Ready)?.center ?: pins.firstOrNull()?.spot
             if (c != null) { centered = true; m.cameraPosition = CameraPosition.Builder().target(LatLng(c.lat, c.lon)).zoom(13.0).build() }

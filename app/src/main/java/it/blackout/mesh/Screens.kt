@@ -598,8 +598,8 @@ fun PlacesTab(s: AppState, messages: List<Message>, open: (Sheet) -> Unit) {
         var center by remember { mutableStateOf<Spot?>(null) }
         val people = remember(messages) { Person.all(messages, MeshEngine.deviceId) }
         val pins = remember(all, people) {
-            all.mapNotNull { sh -> sh.place.spot?.let { Pin(sh.place.kind.word + if (sh.place.note.isNotEmpty()) ": " + Cut.units(sh.place.note, 40) else "", it, sh.ts, if (sh.old) "#6B6B6B" else "#FFFFFF") } } +
-                people.mapNotNull { p -> p.spot?.let { Pin(p.name, it, p.spotTs, when (p.checkIn) { CheckIn.HELP -> "#FF453B"; CheckIn.SAFE -> "#33D64A"; null -> "#949494" }) } }
+            all.mapNotNull { sh -> sh.place.spot?.let { Pin(sh.place.kind.word + if (sh.place.note.isNotEmpty()) ": " + Cut.units(sh.place.note, 40) else "", it, sh.ts, if (sh.old) "#6B6B6B" else "#FFFFFF", icon = kindIcon(sh.place.kind)) } } +
+                people.mapNotNull { p -> p.spot?.let { Pin(p.name, it, p.spotTs, when (p.checkIn) { CheckIn.HELP -> "#FF453B"; CheckIn.SAFE -> "#33D64A"; null -> "#FFFFFF" }, help = p.checkIn == CheckIn.HELP) } }
         }
         Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 8.dp, bottom = if (Here.tabBar) 100.dp else 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             ScreenTitle("Places", "Shared by anyone with DarkProof, nearby or online")

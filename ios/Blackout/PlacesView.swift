@@ -130,7 +130,8 @@ struct PlacesView: View {
             MapPin(id: "person-\(p.id)", lat: p.spot!.lat, lon: p.spot!.lon, title: p.name,
                    subtitle: "\(p.checkIn?.label ?? "Checked in") \(ago(p.spotTs, now))", symbol: nil,
                    letter: String(p.name.prefix(1)).uppercased(),
-                   tint: p.checkIn == .help ? UIColor(Theme.help) : p.checkIn == .safe ? UIColor(Theme.safe) : .white)
+                   tint: p.checkIn == .help ? UIColor(Theme.help) : p.checkIn == .safe ? UIColor(Theme.safe) : .white,
+                   help: p.checkIn == .help)
         }
         var center = me
         if center == nil, case .ready(_, let c, _) = offline.state { center = c }
