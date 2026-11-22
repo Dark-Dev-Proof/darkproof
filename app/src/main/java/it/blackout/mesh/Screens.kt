@@ -39,7 +39,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.Text
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -104,6 +107,8 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
         eventsUpTo(Long.MAX_VALUE)
         out
     }
+    // What is in the list when the chat opens or switches channel simply shows; what comes after comes in moving.
+    val arrivals = remember(everyone, g.code) { Arrivals(rows.map { it.key }) }
     val lastMine = remember(shown) { shown.lastOrNull { it.sender == MeshEngine.deviceId && CheckIn.of(it.text) != null } }
     // Replies and reactions are for groups only (spec "Replies and reactions"): on Everyone nothing of them is read.
     val shownTargets = remember(shown, everyone, g) { if (everyone) emptyMap() else About.targets(shown, g.code) }
@@ -168,7 +173,8 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(rows, key = { it.key }) { r ->
-                when (r) {
+                // A row that came while the chat was open fades and rises in, once (not in calm mode).
+                Arriving(remember(arrivals, r.key) { arrivals.take(r.key) }) { when (r) {
                     is ChatRow.Day -> Txt(r.label, 13, FontWeight.SemiBold, Theme.dim, Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 4.dp).wrapContentWidth())
                     is ChatRow.Event -> Txt(r.text, 14, FontWeight.Medium, Theme.dim, Modifier.fillMaxWidth().padding(vertical = 6.dp).wrapContentWidth())
                     is ChatRow.Msg -> MessageRow(r.m, r.firstOfRun, deliveries[r.m.id], s.name,
@@ -179,7 +185,7 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
                                 scope.launch { pinned = false; list.animateScrollToItem(i); flashed = id; kotlinx.coroutines.delay(1_400); if (flashed == id) flashed = null } } })) { c ->
                         if (c == CheckIn.SAFE) checkIn(a, s, CheckIn.SAFE, group = r.m.group) else { s.helpGroup = r.m.group; s.askHelp = true }
                     }
-                }
+                } }
             }
             // No message: under the group's last lines, if any. With a timer, or in high-risk mode, an empty chat may be one
             // whose messages have left: it doesn't say "yet".
@@ -481,9 +487,12 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
             Column(horizontalAlignment = if (me && !card) Alignment.End else Alignment.Start) { body(true) }
         }
     }
-    Box(Modifier.fillMaxWidth()) {
+    // Dragged to the right, a message that can be answered starts a reply; TalkBack has the same as the row's "Reply" action.
+    SwipeToReply(if (x.canAnswer) x.reply else null) {
     options()
-    Column(Modifier.fillMaxWidth().then(hold).padding(top = if (firstOfRun) 8.dp else 0.dp)
+    Column(Modifier.fillMaxWidth().then(hold)
+        .semantics { if (x.canAnswer) customActions = listOf(CustomAccessibilityAction("Reply") { x.reply(); true }) }
+        .padding(top = if (firstOfRun) 8.dp else 0.dp)
         .then(if (x.flash) Modifier.background(Theme.text.copy(alpha = 0.10f), RoundedCornerShape(24.dp)) else Modifier),
         horizontalAlignment = if (me && !card) Alignment.End else Alignment.Start) {
         body(false)

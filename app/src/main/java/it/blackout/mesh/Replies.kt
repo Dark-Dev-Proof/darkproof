@@ -2,7 +2,17 @@ package it.blackout.mesh
 
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -20,8 +30,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -35,7 +49,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 // Replies, reactions and "How it got there" in the chat (spec/FORMAT.md, "Replies and reactions", "Journey notes"). The
 // rules are in About.kt and Journey.kt (About, Reactions, Quote, Journey); these are only the views. Same as the iPhone's Replies.swift.
@@ -122,6 +139,80 @@ fun ReplyStrip(to: String, text: String, modifier: Modifier = Modifier, cancel: 
         Box(Modifier.size(44.dp).tap(Press(down = 0.9f, buzz = Buzz.Tap), label = "Cancel the reply", onClick = cancel)
             .semantics { contentDescription = "Cancel the reply" }, contentAlignment = Alignment.Center) { Ic(R.drawable.ic_close, Theme.dim, 18.dp) }
     }
+
+/** How far a message is dragged before letting go of it starts a reply ([SwipeToReply]). */
+private val SwipeReplyAt = 48.dp
+
+/**
+ * Swipe to reply: a group message dragged toward the end (to the right) past [SwipeReplyAt] starts a reply when it is let
+ * go, as the held menu's "Reply" does. A reply arrow comes in at the start as it moves, and the motor ticks once when it
+ * passes the threshold. Only a drag that begins sideways and toward the end is taken: a scroll, or a drag the other way,
+ * stays with the chat. [reply]: null where "Reply" isn't offered (Everyone, a message that can't be answered, a group that
+ * can't be written to); then, and on a computer ([Here.swipe]), the message doesn't move. The row's "Reply" action does
+ * the same for TalkBack, so the drag is never the only way.
+ */
+@Composable
+fun SwipeToReply(reply: (() -> Unit)?, content: @Composable () -> Unit) {
+    if (reply == null || !Here.swipe) { Box(Modifier.fillMaxWidth()) { content() }; return }
+    val answer by rememberUpdatedState(reply)
+    val at = with(LocalDensity.current) { SwipeReplyAt.toPx() }
+    val toEnd = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1f else 1f
+    var moved by remember { mutableFloatStateOf(0f) } // how far the message is drawn toward the end, in pixels
+    var armed by remember { mutableStateOf(false) }   // past the threshold: letting go replies
+    val scope = rememberCoroutineScope()
+    var back by remember { mutableStateOf<Job?>(null) }
+    Box(Modifier.fillMaxWidth().pointerInput(toEnd, at) {
+        awaitEachGesture {
+            // Not only an unused touch: holding the message (its menu) has taken the touch's first moment already.
+            val down = awaitFirstDown(requireUnconsumed = false)
+            var way = 0f // how far the finger has gone toward the end
+            val first = awaitHorizontalTouchSlopOrCancellation(down.id) { c, over -> if (over * toEnd > 0f) { c.consume(); way = over * toEnd } }
+                ?: return@awaitEachGesture
+            back?.cancel()
+            fun follow(to: Float) {
+                way = to.coerceAtLeast(0f)
+                // With the finger up to the threshold, then a little more slowly, and never more than half as far again.
+                moved = if (way <= at) way else minOf(at * 1.5f, at + (way - at) * 0.35f)
+                val past = way >= at
+                if (past != armed) { armed = past; if (past) Buzz.play(Buzz.Tick) }
+            }
+            follow(way)
+            val letGo = horizontalDrag(first.id) { c -> follow(way + c.positionChange().x * toEnd); c.consume() }
+            if (letGo && armed) answer()
+            armed = false
+            val from = moved
+            back = scope.launch { animate(from, 0f, animationSpec = if (Motion.calm) snap() else spring(1f, Spring.StiffnessMedium)) { v, _ -> moved = v } }
+        }
+    }) {
+        Box(Modifier.align(Alignment.CenterStart).padding(start = 6.dp).size(34.dp)
+            .graphicsLayer { val p = (moved / at).coerceIn(0f, 1f); alpha = p; val sc = 0.6f + 0.4f * p; scaleX = sc; scaleY = sc }
+            .background(Theme.tile, CircleShape), contentAlignment = Alignment.Center) {
+            Ic(R.drawable.ic_reply, if (armed) Theme.text else Theme.dim, 18.dp)
+        }
+        Box(Modifier.fillMaxWidth().offset { IntOffset(moved.roundToInt(), 0) }) { content() }
+    }
+}
+
+/**
+ * Which chat rows come in moving: a row that joins the list while the chat is open fades in and rises a little, once.
+ * What is there when the chat opens or switches channel ([known]: the rows' keys then) simply shows, and in calm mode
+ * ([Motion.calm]) every row does.
+ */
+class Arrivals(known: Collection<String>) {
+    private val known = HashSet(known)
+    private val played = HashSet<String>()
+    /** Whether row [key] comes in moving. Asking marks it, so it moves once, not again when it scrolls back into view. */
+    fun take(key: String): Boolean = !Motion.calm && key !in known && played.add(key)
+}
+
+/** A row coming in ([Arrivals]): from nothing to there in about a fifth of a second, rising 12 dp, with no bounce. */
+@Composable
+fun Arriving(play: Boolean, content: @Composable () -> Unit) {
+    if (!play) { content(); return }
+    val p = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { p.animateTo(1f, tween(220, easing = LinearOutSlowInEasing)) }
+    Box(Modifier.fillMaxWidth().graphicsLayer { val v = p.value; alpha = v; translationY = (1f - v) * 12.dp.toPx() }) { content() }
+}
 
 /** One line of the menu on a held message. [danger]: in red, last, after a thicker gap. */
 class HoldItem(val label: String, @DrawableRes val icon: Int, val danger: Boolean = false, val act: () -> Unit)

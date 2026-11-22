@@ -69,6 +69,7 @@ object Here {
     val background = false    // the app passes messages on only while its window is open
     val tabBar = false        // no tabs along the bottom: a rail and a sidebar at the side
     val wide = true           // panes side by side; pages open as a panel in the middle of the window
+    val swipe = false         // no dragging a message to answer it: a mouse right-clicks it for Reply, and a screen reader has the row's Reply action
     /** A keyboard moved the focus last (Tab, arrows), not the mouse: only then is the focus ring shown. Set at the window's root. */
     var keys by mutableStateOf(false)
 }
