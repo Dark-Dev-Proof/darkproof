@@ -100,6 +100,7 @@ struct PeopleView: View {
     @ObservedObject private var nav = Nav.shared
     @AppStorage("groupName") private var groupName = "My group"
     @CurrentCode private var code
+    @State private var safeSent = 0 // "I'm safe" sent from the tile: each one plays the sent moment once
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { t in
@@ -115,9 +116,10 @@ struct PeopleView: View {
                     }
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 12) {
-                            BigCheckIn(checkIn: .safe, sending: engine.checkInSending == .safe) {
+                            BigCheckIn(checkIn: .safe, sending: engine.checkInSending == .safe, sent: safeSent) {
                                 let e = engine
-                                e.checkIn(.safe) { nav.toast(e.queuedToast("“I'm safe”")) }
+                                let taken = e.checkIn(.safe, haptic: false) { nav.toast(e.queuedToast("“I'm safe”")) }
+                                if taken { safeSent += 1 } // the sent moment and its haptic (SafeSent.swift)
                             }
                             BigCheckIn(checkIn: .help, sending: engine.checkInSending == .help) { nav.sheet = .help }
                         }
@@ -146,20 +148,24 @@ struct PeopleView: View {
             }
             .background(Theme.bg.ignoresSafeArea())
         }
+        .sensoryFeedback(.success, trigger: safeSent) // the sent moment's one haptic, also when calm
     }
 }
 
-/// Big green "I'm safe" or red "I need help" tile, in the logo's shape.
+/// Big green "I'm safe" or red "I need help" tile, in the logo's shape. `sent` ("I'm safe" only): how many were sent
+/// from here; each one plays the sent moment (SafeSent.swift), the ring growing from the tile's own outline.
 struct BigCheckIn: View {
     let checkIn: CheckIn
     var sending = false
+    var sent: Int? = nil
     let action: () -> Void
 
     var body: some View {
         let safe = checkIn == .safe
         Button(action: action) {
             VStack(alignment: .leading, spacing: 18) {
-                Image(systemName: safe ? "checkmark.shield.fill" : "sos").scaledFont(30, .bold)
+                if let sent { SafeCheck(sent: sent).scaledFont(30, .bold) }
+                else { Image(systemName: safe ? "checkmark.shield.fill" : "sos").scaledFont(30, .bold) }
                 Text(sending ? "Sending…" : safe ? "I'm safe" : "I need help").scaledFont(21, .heavy)
                     .lineLimit(1).minimumScaleFactor(0.7)
             }
@@ -169,6 +175,7 @@ struct BigCheckIn: View {
             .contentShape(VaultShape(cut: 28, radius: 32, small: 6))
         }
         .buttonStyle(PressScale())
+        .safeRing(VaultShape(cut: 28, radius: 32, small: 6), grow: 0.1, sent: sent ?? 0) // outside the press: it doesn't shrink or dim with it
         .accessibilityLabel(sending ? "Sending" : safe ? "I'm safe" : "I need help")
         .accessibilityHint(safe ? "Tells your group you're safe" : "Asks your group for help")
     }

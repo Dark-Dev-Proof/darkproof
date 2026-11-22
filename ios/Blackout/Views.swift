@@ -319,6 +319,7 @@ struct HomeView: View {
     @AppStorage("groupName") private var groupName = "My group"
     @CurrentCode private var code
     @State private var details = false
+    @State private var safeSent = 0 // "I'm safe" sent from the tile: each one plays the sent moment once
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { t in
@@ -333,9 +334,11 @@ struct HomeView: View {
                     if engine.reach == .none && engine.setupProblem == nil { ConnectionHelp(engine: engine) }
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 10) {
-                            QuickAction(symbol: "checkmark.shield.fill", label: engine.checkInSending == .safe ? "Sending…" : "I'm safe", tint: Theme.safe) {
+                            QuickAction(symbol: "checkmark.shield.fill", label: engine.checkInSending == .safe ? "Sending…" : "I'm safe", tint: Theme.safe,
+                                        sent: safeSent) {
                                 let e = engine
-                                e.checkIn(.safe) { nav.toast(e.queuedToast("“I'm safe”")) }
+                                let taken = e.checkIn(.safe, haptic: false) { nav.toast(e.queuedToast("“I'm safe”")) }
+                                if taken { safeSent += 1 } // the sent moment and its haptic (SafeSent.swift)
                             }
                             .disabled(engine.checkInSending != nil)
                             QuickAction(symbol: "sos", label: engine.checkInSending == .help ? "Sending…" : "Need help", tint: Theme.help) { nav.sheet = .help }
@@ -362,6 +365,7 @@ struct HomeView: View {
             }
             .background(Theme.bg.ignoresSafeArea())
         }
+        .sensoryFeedback(.success, trigger: safeSent) // the sent moment's one haptic, also when calm
     }
 
     /// Other saved groups with something new: a dot next to the group name.
@@ -460,13 +464,21 @@ struct QuickAction: View {
     let symbol: String
     let label: String
     let tint: Color
+    /// "I'm safe" only: how many were sent from here. Each one plays the sent moment (SafeSent.swift).
+    var sent: Int? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             VStack(spacing: 10) {
-                Image(systemName: symbol).scaledFont(20, .semibold).foregroundStyle(tint)
-                    .frame(width: 44, height: 44).background(Circle().fill(tint.opacity(0.14)))
+                if let sent {
+                    SafeCheck(sent: sent).scaledFont(20, .semibold).foregroundStyle(tint)
+                        .frame(width: 44, height: 44).background(Circle().fill(tint.opacity(0.14)))
+                        .safeRing(Circle(), grow: 0.8, sent: sent)
+                } else {
+                    Image(systemName: symbol).scaledFont(20, .semibold).foregroundStyle(tint)
+                        .frame(width: 44, height: 44).background(Circle().fill(tint.opacity(0.14)))
+                }
                 Text(label).scaledFont(13, .semibold).foregroundStyle(Theme.text).lineLimit(1).minimumScaleFactor(0.7)
             }
             .frame(maxWidth: .infinity).padding(.vertical, 16)
@@ -546,6 +558,9 @@ struct ChatView: View {
     @State private var showingRequests = false      // the list behind "3 people ask to join"
     @State private var showingTray = false          // the "+" tray
     @State private var trayChoice: ChatTray.Choice? // picked in the tray, done once the tray has closed
+    @State private var safeSent = 0                 // "I'm safe" sent from the tray: each one plays the sent moment once
+    @State private var trayLeaving = false          // the tray stays for that moment, then closes
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var voice = VoiceComposer() // the mic in the composer: recording, and the questions before it
     @ObservedObject private var loc = LocationService.shared
     @AppStorage("groupName") private var groupName = "My group"
@@ -789,12 +804,21 @@ struct ChatView: View {
         .sheet(item: $viewing) { PhotoViewer(jpeg: $0.jpeg, caption: $0.caption, from: $0.from) }
         .sheet(isPresented: $showingRequests) { JoinRequestsSheet(engine: engine) }
         .sheet(isPresented: $showingTray, onDismiss: afterTray) {
-            ChatTray(engine: engine) { c in
-                // "I'm safe" goes out at once, like Home's tile; the rest open something, which waits until the tray has closed.
-                if c == .safe { let e = engine; e.checkIn(.safe) { nav.toast(e.queuedToast("“I'm safe”")) } } else { trayChoice = c }
-                showingTray = false
+            ChatTray(engine: engine, sent: safeSent) { c in
+                // "I'm safe" goes out at once, like Home's tile, and the tray stays for its sent moment (SafeSent.swift),
+                // then closes (at once when calm); the rest open something, which waits until the tray has closed.
+                if c == .safe {
+                    guard !trayLeaving else { return }
+                    let e = engine
+                    let taken = e.checkIn(.safe, haptic: false) { nav.toast(e.queuedToast("“I'm safe”")) }
+                    if taken { safeSent += 1 }
+                    if !taken || SafeSent.calm(reduceMotion) { showingTray = false; return }
+                    trayLeaving = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + SafeSent.seconds) { showingTray = false; trayLeaving = false }
+                } else { trayChoice = c; showingTray = false }
             }
         }
+        .sensoryFeedback(.success, trigger: safeSent) // the sent moment's one haptic, also when calm
         .confirmationDialog("Block \(blocking?.name ?? "")?", isPresented: Binding(get: { blocking != nil }, set: { if !$0 { blocking = nil } }),
                             titleVisibility: .visible, presenting: blocking) { m in
             Button("Block", role: .destructive) {

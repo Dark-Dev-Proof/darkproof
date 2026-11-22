@@ -30,6 +30,8 @@ struct FittedSheet<Content: View>: View {
 struct ChatTray: View {
     enum Choice { case photo, camera, voice, safe, help, askSafe, timer }
     @ObservedObject var engine: Engine
+    /// "I'm safe" sent from the tray so far: each one plays the sent moment on its button (SafeSent.swift).
+    var sent = 0
     let pick: (Choice) -> Void
 
     var body: some View {
@@ -41,7 +43,7 @@ struct ChatTray: View {
                     item("Camera", "camera.fill", Theme.text) { pick(.camera) }
                 }
                 if VoiceAudio.shared.canRecord { item("Voice note", "mic.fill", Theme.text) { pick(.voice) } }
-                item(engine.checkInSending == .safe ? "Sending…" : "I'm safe", "checkmark.shield.fill", Theme.safe) { pick(.safe) }
+                item(engine.checkInSending == .safe ? "Sending…" : "I'm safe", "checkmark.shield.fill", Theme.safe, sent: sent) { pick(.safe) }
                     .disabled(busy)
                 // The widest symbol: smaller, so it stays inside its circle with large text.
                 item("I need help", "sos", Theme.help, size: 16) { pick(.help) }
@@ -53,11 +55,18 @@ struct ChatTray: View {
         }
     }
 
-    private func item(_ label: String, _ symbol: String, _ tint: Color, size: CGFloat = 22, _ action: @escaping () -> Void) -> some View {
+    /// `sent`: this is "I'm safe", whose symbol and ring play the sent moment.
+    private func item(_ label: String, _ symbol: String, _ tint: Color, size: CGFloat = 22, sent: Int? = nil, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 8) {
-                Image(systemName: symbol).scaledFont(size, size < 20 ? .heavy : .semibold).foregroundStyle(tint)
-                    .frame(width: 58, height: 58).background(Circle().fill(Theme.tile))
+                if let sent {
+                    SafeCheck(sent: sent).scaledFont(size, .semibold).foregroundStyle(tint)
+                        .frame(width: 58, height: 58).background(Circle().fill(Theme.tile))
+                        .safeRing(Circle(), grow: 0.55, sent: sent)
+                } else {
+                    Image(systemName: symbol).scaledFont(size, size < 20 ? .heavy : .semibold).foregroundStyle(tint)
+                        .frame(width: 58, height: 58).background(Circle().fill(Theme.tile))
+                }
                 Text(label).scaledFont(13, .semibold).foregroundStyle(Theme.dim)
                     .multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.8)
             }

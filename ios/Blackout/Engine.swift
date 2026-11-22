@@ -1931,12 +1931,14 @@ final class Engine: ObservableObject {
     }
 
     /// Sends a check-in with this phone's battery level and, if you share it, your position (a fresh GPS fix can take
-    /// up to 10 s: `checkInSending` is set meanwhile and a second tap is ignored). The haptic comes right away.
-    /// `group`: a saved group other than the one on screen. Main thread.
-    func checkIn(_ c: CheckIn, needs: Set<Need> = [], people: Int? = nil, group: String? = nil, done: (() -> Void)? = nil) {
-        guard !stopped, checkInSending == nil else { return }
+    /// up to 10 s: `checkInSending` is set meanwhile and a second tap is ignored). The haptic comes right away, unless
+    /// `haptic` is false: the screens that play the "I'm safe" moment give it themselves (SafeSent.swift).
+    /// `group`: a saved group other than the one on screen. True if it was taken. Main thread.
+    @discardableResult
+    func checkIn(_ c: CheckIn, needs: Set<Need> = [], people: Int? = nil, group: String? = nil, haptic: Bool = true, done: (() -> Void)? = nil) -> Bool {
+        guard !stopped, checkInSending == nil else { return false }
         checkInSending = c
-        UINotificationFeedbackGenerator().notificationOccurred(c == .safe ? .success : .warning)
+        if haptic { UINotificationFeedbackGenerator().notificationOccurred(c == .safe ? .success : .warning) }
         let battery = Self.batteryPercent
         LocationService.shared.forCheckIn { [weak self] spot in
             guard let self else { return }
@@ -1944,6 +1946,7 @@ final class Engine: ObservableObject {
             self.checkInSending = nil
             done?()
         }
+        return true
     }
 
     private func setStatus(_ key: String, _ line: String?) {
