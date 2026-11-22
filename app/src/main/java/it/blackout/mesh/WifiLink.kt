@@ -24,9 +24,11 @@ class WifiLink(c: Context, private val nodeId: String, router: () -> MeshRouter?
     private var registration: NsdManager.RegistrationListener? = null
     private var discovery: NsdManager.DiscoveryListener? = null
     var running = false; private set
+    /** Stopped for good: the Wi-Fi switch makes a new WifiLink. A start still on its way when this one was stopped does nothing. */
+    @Volatile private var stopped = false
 
     fun start() {
-        if (running) return
+        if (running || stopped) return
         running = true
         val port = links.listen()
         if (port == 0) return
@@ -49,6 +51,7 @@ class WifiLink(c: Context, private val nodeId: String, router: () -> MeshRouter?
     }
 
     fun stop() {
+        stopped = true
         if (!running) return
         running = false
         h.removeCallbacksAndMessages(null)

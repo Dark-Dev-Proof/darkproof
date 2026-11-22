@@ -131,6 +131,9 @@ struct ModelPicker: View {
         SheetPage(title: "AI model") {
             Text("Models run entirely on this iPhone. Bigger ones answer better but slower. This iPhone has \(LocalAi.memoryGB) GB of memory: only models that fit are shown.")
                 .scaledFont(15).foregroundStyle(Theme.dim)
+            // The relays wait for Tor; a model download doesn't use it. Said here, where the download starts.
+            Text("Model downloads don't go through Tor.")
+                .scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
             if ai.onMobileData {
                 Label("You're on mobile data. Models are big: use Wi-Fi if you can.", systemImage: "antenna.radiowaves.left.and.right")
                     .scaledFont(15, .semibold).foregroundStyle(Theme.help)

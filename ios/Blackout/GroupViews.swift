@@ -157,7 +157,7 @@ struct InviteSheet: View {
                 if showCode {
                     Text(code).scaledFont(22, .bold, design: .monospaced).foregroundStyle(Theme.text)
                         .textSelection(.enabled)
-                    Button("Copy code") { UIPasteboard.general.setItems([["public.utf8-plain-text": code]], options: [.expirationDate: Date().addingTimeInterval(60), .localOnly: true]); didInvite = true; Nav.shared.toast("Code copied") }
+                    Button("Copy code") { Clipboard.copy(code); didInvite = true; Nav.shared.toast("Code copied") }
                         .buttonStyle(GhostButton())
                 } else {
                     Button("Show code") { showCode = true }.buttonStyle(GhostButton())

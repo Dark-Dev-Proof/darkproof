@@ -4,6 +4,7 @@ import BlackoutCore
 @main
 struct BlackoutApp: App {
     init() {
+        Wipe.atLaunch() // an "Erase everything" the app's end cut short is finished before anything else starts
         Vault.wipeAfterReinstall() // before anything reads the Keychain
         OfflineMap.shared.setUp()
         Notifier.shared.setUp() // before launch ends, so tapping an alert that relaunched the app is handled
@@ -22,6 +23,7 @@ struct BlackoutApp: App {
         }
         if args.contains("found"), let c = GroupSecrets.shared.current { Engine.found(c) } // with join: as if this phone created the group
         if let i = args.firstIndex(of: "ahead"), args.indices.contains(i + 1), let days = Int64(args[i + 1]) { Engine.ahead = days * 86_400_000 } // ahead 8
+        if let i = args.firstIndex(of: "quietAhead"), args.indices.contains(i + 1), let m = Int64(args[i + 1]) { Engine.quietAhead = m * 60_000 } // quietAhead 35: check-in clocks judged 35 minutes ahead
         for i in args.indices where args[i] == "set" && args.indices.contains(i + 2) { // set wifiNetwork 0 (repeatable)
             UserDefaults.standard.set(args[i + 2] == "1", forKey: args[i + 1])
         }
@@ -46,14 +48,41 @@ struct BlackoutApp: App {
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { DebugLog.write("pins " + (GroupSecrets.shared.current.flatMap { Mesh.shared.engine?.invitePins($0) } ?? "none")) }
         }
         if args.contains("samples") { InteropTest.samples(after: 8) } // no link: the messages go by whatever is up, e.g. relays
+        if let i = args.firstIndex(of: "redeliver"), args.indices.contains(i + 1), let s = Double(args[i + 1]) { // redeliver 12: see `Engine.debugRedeliver`
+            DispatchQueue.main.asyncAfter(deadline: .now() + s) { Mesh.shared.engine?.debugRedeliver() }
+        }
+        if args.contains("dumpChat") { // with the chat: what the store holds, every 3 s (counts only)
+            Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in Mesh.shared.engine?.debugStore() }
+        }
+        if let i = args.firstIndex(of: "timer"), args.indices.contains(i + 1), let s = Int(args[i + 1]) { // timer 3600: an admin sets the group's timer (0: off)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) { Mesh.shared.engine?.setTimer(GroupSecrets.shared.current, seconds: s) { DebugLog.write("timer \(s): \($0)") } }
+        }
+        if let i = args.firstIndex(of: "quietStart"), args.indices.contains(i + 1), let m = Int(args[i + 1]) { // quietStart 30: a check-in clock to the group on screen (0: stop it)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+                Mesh.shared.engine?.sendClock(GroupSecrets.shared.current, deadline: { m == 0 ? 0 : QuietClock.deadline(minutes: m, now: $0) }, spot: false) { DebugLog.write("quietStart \(m): \($0)") }
+            }
+        }
         if let i = args.firstIndex(of: "say"), args.indices.contains(i + 1) { // say Hello: to the group on screen only
             DispatchQueue.main.asyncAfter(deadline: .now() + 12) { Mesh.shared.engine?.send(args[i + 1]); DebugLog.write("said") }
+        }
+        if args.contains("declineAsking") { // the asking list of a test group is full: everyone on it is turned down
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { Mesh.shared.engine?.debugDeclineAsking() }
         }
         if let i = args.firstIndex(of: "approve"), args.indices.contains(i + 1) { // approve Bea: lets them in, by name
             DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
                 guard let e = Mesh.shared.engine, let r = e.joinRequests(GroupSecrets.shared.current).first(where: { $0.name == args[i + 1] }) else { DebugLog.write("approve: nobody with that name is asking"); return }
                 e.approveJoin(GroupSecrets.shared.current, r.id) { DebugLog.write("approve \(args[i + 1]): \($0)") }
             }
+        }
+        if let i = args.firstIndex(of: "voiceFeed"), args.indices.contains(i + 1) { // voiceFeed <audio file>: stands in for the microphone (the Simulator's is silent)
+            VoiceAudio.shared.fakeInput = OpusCodec.samples(of: URL(fileURLWithPath: args[i + 1]))
+            DebugLog.write("voiceFeed: \(VoiceAudio.shared.fakeInput?.count ?? 0) samples at 48 kHz")
+        }
+        if let i = args.firstIndex(of: "voiceDecode"), args.indices.contains(i + 1) { // voiceDecode <.voicefield>: a fixture through the app's decoder
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { VoiceDebug.decode(args[i + 1]) }
+        }
+        if let i = args.firstIndex(of: "voiceSend"), args.indices.contains(i + 1), let s = Double(args[i + 1]) { // voiceSend 4: records the feed for 4 s and sends it, without the button
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) { VoiceDebug.send(seconds: s) }
         }
         for (arg, change) in [("makeAdmin", Engine.makeAdmin), ("removeMember", Engine.remove)] as [(String, (Engine) -> (String?, String, @escaping (Bool) -> Void) -> Void)] {
             guard let i = args.firstIndex(of: arg), args.indices.contains(i + 1) else { continue } // makeAdmin Ben, removeMember Marco: by name
@@ -71,6 +100,40 @@ struct BlackoutApp: App {
 }
 
 #if DEBUG
+/// Debug builds only: voice notes without a microphone or a finger (`voiceDecode`, `voiceSend` above).
+enum VoiceDebug {
+    /// A field as the codec experiment wrote it (type byte, then every packet as it came), trimmed as a writer trims it,
+    /// then decoded by the app's own path.
+    static func decode(_ path: String) {
+        guard let raw = try? Data(contentsOf: URL(fileURLWithPath: path)) else { DebugLog.write("voiceDecode: can't read \(path)"); return }
+        let b = [UInt8](raw); var all: [Data] = [], i = 1
+        while i < b.count { let n = Int(b[i]); all.append(Data(b[(i + 1)..<min(b.count, i + 1 + n)])); i += 1 + n }
+        let kept = Voice.forSending(all)
+        guard case .ok(let ps) = kept, let frames = kept.frames else { DebugLog.write("voiceDecode: \(all.count) packets, not kept: \(kept)"); return }
+        let start = Date()
+        guard let pcm = VoiceAudio.shared.pcm(id: "fixture", frames: frames) else { DebugLog.write("voiceDecode: \(ps.count) packets, decoder failed"); return }
+        let rms = (pcm.reduce(0.0) { $0 + Double($1) * Double($1) } / Double(pcm.count)).squareRoot()
+        DebugLog.write(String(format: "voiceDecode %@: %d packets as written (reader: %@), %d kept, %d samples = %.3f s (expected %d), shown %@, rms %.4f, %.0f ms",
+                              URL(fileURLWithPath: path).lastPathComponent, all.count, Voice.packets(raw) == nil ? "ignored" : "read", ps.count, pcm.count,
+                              Double(pcm.count) / Double(Voice.sampleRate), Voice.expectedSamples(ps.count), Voice.label(Voice.seconds(ps.count)), rms, Date().timeIntervalSince(start) * 1000))
+    }
+
+    /// Records the debug feed for `seconds` through VoiceAudio and sends it to the group on screen.
+    static func send(seconds: Double) {
+        guard VoiceAudio.shared.startRecording(full: {}) else { DebugLog.write("voiceSend: can't record"); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            guard let pcm = VoiceAudio.shared.finishRecording() else { return }
+            DispatchQueue.global().async {
+                let r = VoiceAudio.forSending(pcm)
+                DispatchQueue.main.async {
+                    if case .ready(let frames, let s) = r { Mesh.shared.engine?.send(Voice.placeholder, voice: frames); DebugLog.write("voiceSend: sent \(s) s") }
+                    else { DebugLog.write("voiceSend: \(r)") }
+                }
+            }
+        }
+    }
+}
+
 /// Debug builds only: `simctl launch booted it.darkproof.mesh interopTest 127.0.0.1:7777` links to the Android app's
 /// LAN test listener, then sends a check-in with battery and position, a place and a small photo, for the mixed-group test.
 enum InteropTest {
@@ -96,6 +159,7 @@ enum InteropTest {
             }
             if let jpeg = PhotoShrinker.jpeg(img) { e.send(Photo.text(caption: "From the iPhone"), photo: jpeg) }
             e.send("Hello from the iPhone")
+            e.debugConversation() // a reply, a reply to a message that isn't here, reactions, a confirmed message with journey notes
             DebugLog.write("interop: sent check-in, place, photo, text")
         }
     }

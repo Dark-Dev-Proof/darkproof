@@ -80,6 +80,17 @@ object Groups {
         MeshEngine.switchGroup(g.code)
     }
 
+    /**
+     * "Leave": forgets the saved group [code], with the admins its invite named. If it was the one in use, the other
+     * group used last takes its place. Returns the group now in use, or null if none is left (the name stays).
+     */
+    @Synchronized fun forget(c: Context, code: String): SavedGroup? = saved(c).let { s ->
+        val rest = s.others.filter { it.code.isNotEmpty() && it.code != code && it.code != s.code }
+        val next = if (s.code == code) rest.firstOrNull() else current(c)
+        write(c, s.copy(code = next?.code, name = next?.name, others = rest.filter { it.code != next?.code }, founded = s.founded - code, pins = s.pins - code))
+        next
+    }
+
     /** Groups made on this phone, or saved before v0.6, that have no first epoch yet (spec "Making the first epoch"). */
     fun founded(c: Context) = saved(c).founded
     @Synchronized fun setFounded(c: Context, codes: Set<String>) = write(c, saved(c).copy(founded = codes))
@@ -113,5 +124,7 @@ object ReadMarks {
         return all.count { !it.public && it.group == code && it.ts > since && it.sender != MeshEngine.deviceId }
     }
     fun rename(c: Context, old: String, new: String) { prefs(c).edit().putLong(key(new), lastRead(c, old)).remove(key(old)).apply() }
+    /** The group [code] was left: its mark goes too. */
+    fun forget(c: Context, code: String) { prefs(c).edit().remove(key(code)).apply() }
     private fun key(code: String) = code.hashCode().toString() // not the code itself
 }

@@ -181,14 +181,14 @@ class MessageKeysTest {
 
     @Test fun theCopyKeepsTheMessage() {
         val key = ByteArray(32) { 3 }; val e = epoch(); val o = e.open(sealedBy(epoch(), 4))!!
-        val s = History.open(key, id, History.seal(key, id, "00112233445566778899aabbccddeeff", e.hash, o, 1, 4))!!
+        val s = History.open(key, id, History.seal(key, id, "00112233445566778899aabbccddeeff", e.hash, o, 1, 4)!!)!!
         assertEquals("message 4", s.opened.message.text); assertEquals(ts, s.opened.message.ts); assertEquals(e.hash, s.epoch)
         assertArrayEquals(o.digest, s.opened.digest); assertArrayEquals(o.signature, s.opened.signature); assertEquals(1, s.index); assertEquals(4, s.counter)
     }
 
     @Test fun theCopyNeedsItsKeyAndId() {
         val key = ByteArray(32) { 3 }; val e = epoch(); val o = e.open(sealedBy(epoch(), 4))!!
-        val b = History.seal(key, id, "00112233445566778899aabbccddeeff", e.hash, o, 1, 4)
+        val b = History.seal(key, id, "00112233445566778899aabbccddeeff", e.hash, o, 1, 4)!!
         assertNull(History.open(ByteArray(32), id, b)); assertNull(History.open(key, "6a4400000000000a", b))
     }
 

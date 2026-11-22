@@ -283,18 +283,62 @@ object Photo {
     fun shape(width: Int, height: Int): Float = if (width <= 0 || height <= 0) 1f else (width.toFloat() / height).coerceIn(1f / 3, 3f)
 }
 
-/** Delivery receipts: the ids of confirmed messages, separated by spaces, at most 200 per receipt. */
+/**
+ * Delivery receipts (spec/FORMAT.md, "Delivery receipts"): the ids of confirmed messages, separated by spaces, at most 200
+ * per receipt. An id may be followed by one journey note (spec "Journey notes"), which a reader that doesn't know notes
+ * skips like anything else that isn't an id.
+ */
 object Receipt {
     const val MAX_IDS = 200
     fun text(ids: List<String>) = ids.joinToString(" ")
-    /** The message ids a receipt confirms: its first [MAX_IDS]. Whatever follows them is not read. */
-    fun ids(text: String): List<String> =
-        text.splitToSequence(' ').filter { id -> id.length == 16 && id.all { it in '0'..'9' || it in 'a'..'f' } }.take(MAX_IDS).toList()
+    private fun isId(t: String) = t.length == 16 && t.all { it in '0'..'9' || it in 'a'..'f' }
+    /**
+     * The message ids a receipt confirms: its first [MAX_IDS]. Whatever follows them is not read. Anything that isn't 16
+     * lowercase hex characters is skipped. This is the whole rule of a reader that doesn't know journey notes.
+     */
+    fun ids(text: String): List<String> = text.splitToSequence(' ').filter(::isId).take(MAX_IDS).toList()
     fun batches(ids: List<String>) = ids.chunked(MAX_IDS)
+
+    /** A confirmed message and, if the receipt says it, how it reached the reader. */
+    data class Entry(val id: String, val note: Journey.Note? = null)
+
+    /**
+     * What a receipt confirms, with journey notes: the same ids as [ids], in the same order, each with the note in the token
+     * right after it, if that token is one. A note anywhere else is skipped: at the start, after something that is no id,
+     * or after another note. A note doesn't count towards [MAX_IDS]; nothing is read after the token that follows the last
+     * id counted. Tokens are what stands between spaces (0x20); empty ones don't count.
+     */
+    fun entries(text: String): List<Entry> {
+        val out = ArrayList<Entry>()
+        var afterId = false // the token before this one was an id
+        for (t in text.splitToSequence(' ')) {
+            if (t.isEmpty()) continue
+            if (isId(t)) {
+                if (out.size == MAX_IDS) break
+                out += Entry(t); afterId = true
+            } else {
+                if (afterId) Journey.Note.parse(t)?.let { n -> out[out.size - 1] = out[out.size - 1].copy(note = n) }
+                afterId = false
+            }
+        }
+        return out
+    }
+
+    /**
+     * A receipt's text. [highRisk]: this phone is in high-risk mode, where it adds no journey notes: the receipt is then
+     * exactly what [text] makes of the ids.
+     */
+    fun text(entries: List<Entry>, highRisk: Boolean): String = entries.joinToString(" ") { e ->
+        val n = if (highRisk) null else e.note?.token
+        if (n == null) e.id else "${e.id} $n"
+    }
+
+    /** Splits what is to confirm into receipt-sized batches. */
+    fun batchesOf(entries: List<Entry>) = entries.chunked(MAX_IDS)
 }
 
-/** Someone who confirmed getting a message. */
-data class Reader(val id: String, val name: String, val ts: Long)
+/** Someone who confirmed getting a message. [note]: what their receipt said about the way the message took to them, if anything. */
+data class Reader(val id: String, val name: String, val ts: Long, val note: Journey.Note? = null)
 
 /**
  * Who got which of this phone's own group messages, built from checked receipts (spec "Delivery receipts").
@@ -313,14 +357,16 @@ class Deliveries {
 
     /**
      * A checked receipt opened with a receipt key of the group whose id is [group]. A reader counts once per message,
-     * with the time and name of their earliest receipt for it.
+     * with the time, name and journey note of their earliest receipt for it; an id named twice in one receipt counts as
+     * it is named first.
      */
     fun add(group: String, r: Message) {
-        for (id in Receipt.ids(r.text)) {
-            if (groups[id] != group) continue
-            val list = byMessage.getOrPut(id) { mutableListOf() }
+        for (e in Receipt.entries(r.text)) {
+            if (groups[e.id] != group) continue
+            val list = byMessage.getOrPut(e.id) { mutableListOf() }
+            val reader = Reader(r.sender, r.name, r.ts, e.note)
             val i = list.indexOfFirst { it.id == r.sender }
-            if (i < 0) list += Reader(r.sender, r.name, r.ts) else if (r.ts < list[i].ts) list[i] = Reader(r.sender, r.name, r.ts) else continue
+            if (i < 0) list += reader else if (r.ts < list[i].ts) list[i] = reader else continue
             list.sortBy { it.ts }
         }
     }
@@ -369,7 +415,30 @@ object Checked {
         val key = Vouch.key(name)
         return checked.filterNot { it.startsWith("$group|") && (it.startsWith("$group|$id|") || nameOf(it, group) == key) }.toSet() + entry(group, id, name)
     }
+
+    /**
+     * The entries of people checked in person, kept next to [marked]'s set: [inPerson] as it was, [checked] as it is now
+     * that [id] was checked [how]. The last check decides: someone checked in person whose emoji are compared later is
+     * "checked by emoji" from then on. An entry that is no longer checked goes too (a new key for the name took its
+     * place). Marks from before there were two ways are not in this set: they count as emoji.
+     */
+    fun inPerson(inPerson: Collection<String>, checked: Collection<String>, group: String, id: String, how: CheckedHow): Set<String> =
+        inPerson.filter { it in checked && !it.startsWith("$group|$id|") }.toSet() +
+            if (how == CheckedHow.IN_PERSON) checked.filter { it.startsWith("$group|$id|") } else emptyList()
+
+    /** [checked] (or the in-person set) without [id] of [group]: their emoji turned out not to match, so an earlier mark goes. */
+    fun unmarked(checked: Collection<String>, group: String, id: String): Set<String> = checked.filterNot { it.startsWith("$group|$id|") }.toSet()
+
+    /** How [id] of [group] is checked, or null if they aren't. */
+    fun how(checked: Collection<String>, inPerson: Collection<String>, group: String, id: String): CheckedHow? = when {
+        checked.none { it.startsWith("$group|$id|") } -> null
+        inPerson.any { it.startsWith("$group|$id|") } -> CheckedHow.IN_PERSON
+        else -> CheckedHow.EMOJI
+    }
 }
+
+/** How a person was checked: their emoji were compared, or their code was scanned with both in the same place (the stronger check). */
+enum class CheckedHow { EMOJI, IN_PERSON }
 
 /**
  * Someone in the group, known from the messages they sent, or from someone else's report about them (a Vouch). A report

@@ -21,20 +21,20 @@ plugins {
 // stand-ins under Android's names (src/main/java/android) and with its own versions of the phone-only objects they
 // name (src/main/kotlin/it/blackout/desktop/standin).
 val shared = listOf(
-    "App", "AppState", "BleProtocol", "Contact", "Core", "EncKeys", "Fingerprint", "Groups", "Help", "Hpke",
-    "LockRules", "MeshCore", "MeshEngine", "MessageKeys", "Meshtastic", "Moderation", "Nostr", "NostrLink", "P256",
-    "PlusCode", "Protocol", "QuickCheckIn", "Ready", "Schnorr", "ScreenRules", "Screens", "Scrypt", "Socks5",
-    "Times", "Ui", "WifiLinks", "WordFilter",
+    "About", "App", "AppState", "BleProtocol", "Contact", "Core", "Dials", "EncKeys", "Fingerprint", "Groups", "Help", "HighRisk", "Hpke",
+    "Joins", "Journey", "LockRules", "MeshCore", "MeshEngine", "MessageKeys", "Meshtastic", "Moderation", "Nostr", "NostrLink", "Notices", "P256",
+    "PersonCode", "PlusCode", "Protocol", "QuickCheckIn", "Ready", "Replies", "Schnorr", "ScreenRules", "Screens", "Scrypt", "Security", "Socks5",
+    "Times", "Ui", "VoiceNotes", "VoiceViews", "WifiLinks", "WordFilter",
 )
 
 // The Android app's unit tests: all of them run again here, on a desktop JVM with no Android.
 val sharedTests = listOf(
-    "AppLockFixTest", "AuthorshipTest", "BleProtocolTest", "CheckInExtrasTest", "CoreTest", "DoorStoreFixTest",
-    "FaultTest", "FirstCopyTest", "FormatVectorsTest", "HpkeTest", "HybridTest", "InviteFixTest", "KeyChangesTest",
-    "KeyringTest", "LinkLimitsFixTest", "MeshCoreTest", "MessageKeysTest", "MiscFixTest", "NostrTest",
-    "PaddingTest", "PlusCodeTest", "PrivacyTest", "ProtocolTest", "RekeyTest", "RelayAttackTest", "RelayIntakeTest",
-    "RelayLimitsFixTest", "RelayLinksTest", "SchnorrTest", "ScryptTest", "SharedVectorsTest", "StoredDataFixTest",
-    "TestSigning", "WifiLinksTest", "WordFilterTest",
+    "AboutTest", "AppLockFixTest", "AuthorshipTest", "BleProtocolTest", "CheckInExtrasTest", "CoreTest", "DoorStoreFixTest",
+    "FaultTest", "FirstCopyTest", "FormatVectorsTest", "HighRiskTest", "HpkeTest", "HybridTest", "InviteFixTest", "JourneyTest", "KeyChangesTest",
+    "KeyringTest", "LeaveTest", "LeaveVectorsTest", "LinkLimitsFixTest", "MeshCoreTest", "MessageKeysTest", "MiscFixTest", "NostrTest",
+    "PaddingTest", "PersonCodeTest", "PlusCodeTest", "PrivacyTest", "ProtocolTest", "RekeyTest", "RelayAttackTest", "RelayIntakeTest",
+    "RelayLimitsFixTest", "RelayLinksTest", "RepliesVectorsTest", "SchnorrTest", "ScryptTest", "SecurityWordsTest", "SharedVectorsTest", "StoredDataFixTest",
+    "TestSigning", "TimerTest", "TimerVectorsTest", "VoiceNotesTest", "WifiLinksTest", "WordFilterTest",
 )
 
 // The phone's pictures (app/src/main/res/drawable*) go on the desktop's classpath as they are, and the build writes an

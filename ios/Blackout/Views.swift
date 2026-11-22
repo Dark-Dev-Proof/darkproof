@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 import BlackoutCore
 
 struct RootView: View {
@@ -7,6 +8,7 @@ struct RootView: View {
     @CurrentCode private var code
     @AppStorage("groupName") private var groupName = "My group"
     @ObservedObject private var mesh = Mesh.shared
+    @ObservedObject private var erased = EraseResult.shared // "This phone is empty", once, after "Erase everything"
     private var engine: Engine? { mesh.engine }
     @State private var invite: PendingInvite?   // from an invite link, before setup
     @State private var linkInvite: PendingInvite? // from an invite link, once in a group: asks before switching
@@ -25,10 +27,12 @@ struct RootView: View {
                     mesh.start(name: n, code: c)
                     invite = nil
                 }
+                .modifier(ToastOverlay()) // "You left <group>", when the last group was left (Settings)
             } else {
                 Theme.bg.ignoresSafeArea().onAppear { mesh.startIfSetUp() }
             }
         }
+        .overlay { if let lines = erased.lines, engine == nil { EmptyScreen(lines: lines) { erased.lines = nil } } }
         .tint(Theme.text)
         .onAppear { if !code.isEmpty { AppLock.shared.phaseChanged(.active) } }
         .onChange(of: phase) { AppLock.shared.phaseChanged($0) }
@@ -53,7 +57,7 @@ struct SetupView: View {
     enum Mode { case welcome, create, join, ready }
     @State private var mode = Mode.welcome
     @State private var before = Mode.welcome // where "back" goes from the last step
-    @State private var name = ""
+    @State private var name = UserDefaults.standard.string(forKey: "name") ?? "" // kept when the last group was left (Settings)
     @State private var groupName = ""
     @State private var code = ""
     @State private var result: (String, String, String, Bool)?
@@ -235,7 +239,7 @@ struct InputField<Field: View>: View {
 // MARK: - Main
 
 struct MainView: View {
-    enum Sheet: String, Identifiable { case invite, settings, radio, groups, help, practice, askSafe, vouch, shortcut, models; var id: String { rawValue } }
+    enum Sheet: String, Identifiable { case invite, settings, radio, groups, help, practice, askSafe, vouch, shortcut, models, security, timer, quiet; var id: String { rawValue } }
     @ObservedObject var engine: Engine
     @ObservedObject private var nav = Nav.shared
     @ObservedObject private var unread = Unread.shared
@@ -270,6 +274,9 @@ struct MainView: View {
             case .vouch: VouchSheet(engine: engine)
             case .shortcut: ShortcutSheet()
             case .models: ModelPicker(ai: LocalAi.shared)
+            case .security: GroupSecuritySheet(engine: engine)
+            case .timer: TimerSheet(engine: engine)
+            case .quiet: QuietView(engine: engine)
             }
         }
         .onAppear { firstRun() }
@@ -315,12 +322,14 @@ struct HomeView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { t in
-            let people = Person.all(in: engine.messages, me: engine.deviceId)
+            let wrote = Person.all(in: engine.messages, me: engine.deviceId)
+            let people = wrote + engine.silentMembers(code, besides: wrote) // members who haven't written yet come last, as in People
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     header
                     SetupProblemCard(engine: engine)
                     hero
+                    HomeSecurityRow(engine: engine)
                     if engine.reach == .none && engine.setupProblem == nil { ConnectionHelp(engine: engine) }
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 10) {
@@ -340,6 +349,7 @@ struct HomeView: View {
                                 .scaledFont(14).foregroundStyle(h < 4 ? Theme.help : Theme.dim).padding(.horizontal, 4)
                         }
                     }
+                    HomeQuietRow(engine: engine, now: t.date) // under the check-in buttons, as on the approved board
                     GetReadyCard(engine: engine, hasPeople: !people.isEmpty)
                     SectionTitle(title: "Your people", action: people.count > 3 ? "See all" : nil) { nav.tab = .people }
                     if people.isEmpty {
@@ -397,7 +407,8 @@ struct HomeView: View {
             case .none: return "Looking for phones"
             }
         }()
-        return Button { withAnimation(.easeOut(duration: 0.2)) { details.toggle() } } label: {
+        // The number and its texts are one button (it shows the details); the dials under them are buttons of their own.
+        let summary = Button { withAnimation(.easeOut(duration: 0.2)) { details.toggle() } } label: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Circle().fill(on ? Theme.safe : Theme.dim).frame(width: 9, height: 9)
@@ -430,12 +441,17 @@ struct HomeView: View {
                         .scaledFont(14).foregroundStyle(Theme.dim).padding(.top, 10)
                 }
             }
-            .padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            .background(VaultShape().fill(Theme.card))
-            .contentShape(VaultShape())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityHint(details ? "Hides connection details" : "Shows connection details")
+        return VStack(alignment: .leading, spacing: 20) {
+            summary
+            LinkDials(engine: engine).padding(.horizontal, -8) // four dials side by side need most of the card's width
+        }
+        .padding(24).frame(maxWidth: .infinity, alignment: .leading)
+        .background(VaultShape().fill(Theme.card))
     }
 }
 
@@ -510,8 +526,13 @@ struct ChatView: View {
     @ObservedObject private var nav = Nav.shared
     @ObservedObject private var drafts = Drafts.shared
     @ObservedObject private var unread = Unread.shared
+    @ObservedObject private var risk = HighRisk.shared // "Keeps less": the line under the title says so
     @State private var tooLong = false
-    @State private var readers: ReaderList?
+    @State private var journey: JourneyItem?        // "How it got there", for one of the user's own group messages
+    @State private var replyingTo: String?          // the row being answered: the strip above the composer
+    @State private var jumpTo: String?              // a quote was tapped: the row to scroll to
+    @State private var flashed: String?             // that row, lit for a moment
+    @FocusState private var typing: Bool            // the message field: "Reply" puts the cursor there
     @State private var findingPlace: SharedPlace?
     @State private var photoItem: PhotosPickerItem?
     @State private var choosingPhoto = false
@@ -522,6 +543,10 @@ struct ChatView: View {
     @State private var photoFailed = false
     @State private var atBottom = true
     @State private var newBelow = 0
+    @State private var showingRequests = false      // the list behind "3 people ask to join"
+    @State private var showingTray = false          // the "+" tray
+    @State private var trayChoice: ChatTray.Choice? // picked in the tray, done once the tray has closed
+    @StateObject private var voice = VoiceComposer() // the mic in the composer: recording, and the questions before it
     @ObservedObject private var loc = LocationService.shared
     @AppStorage("groupName") private var groupName = "My group"
     @CurrentCode private var code
@@ -531,6 +556,56 @@ struct ChatView: View {
     private var toPublic: Bool { nav.chatEveryone }
     private var channel: String { toPublic ? Unread.everyone : code }
     private var shown: [Message] { engine.messages.filter { $0.isPublic == toPublic } }
+
+    /// The row the user is answering, while it is still shown in this group's chat.
+    private var replyTarget: Message? {
+        guard !toPublic, let id = replyingTo else { return nil }
+        return engine.messages.first { $0.id == id && !$0.isPublic && $0.group == code }
+    }
+
+    /// The quote above a reply (spec "Replies"): from this phone's own copy of the target, found by what the reply
+    /// names. Nothing is quoted from the reply itself, and nothing while the reply isn't checked.
+    private func quote(of m: Message, _ targets: [String: Message]) -> QuoteLine? {
+        guard !m.isPublic, m.verified, case .reply(let t)? = m.about else { return nil }
+        if let target = targets[t.key] { return QuoteLine(name: Quote.name(of: target, me: engine.deviceId), text: Quote.line(of: target), row: target.id) }
+        return QuoteLine(name: nil, text: engine.hiddenTargets.contains(t.key) ? Quote.hidden : Quote.missing)
+    }
+
+    private func react(_ m: Message, _ emoji: String) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        engine.react(to: m, emoji)
+    }
+
+    /// What holding a message offers. A group message: the reactions in one row, Reply, Copy, for the user's own
+    /// "How it got there", then what was there before, last. An Everyone message keeps the menu it had.
+    @ViewBuilder private func messageMenu(_ m: Message, mine: Bool, canAnswer: Bool) -> some View {
+        if !m.isPublic {
+            if canAnswer {
+                ControlGroup {
+                    ForEach(Reaction.offered, id: \.self) { e in
+                        Button { react(m, e) } label: { Text(e) }.accessibilityLabel("React with \(e)")
+                    }
+                }
+                .controlGroupStyle(.palette)
+                Button {
+                    replyingTo = m.id
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { if replyingTo == m.id { typing = true } } // once the menu has closed
+                } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+            }
+            // A voice note has no text to copy (its text only says what it is).
+            let text = m.voice != nil ? "" : m.photo == nil ? m.text : Photo.caption(m.text)
+            if !text.isEmpty {
+                Button {
+                    Clipboard.copy(text) // stays on this iPhone, and for a minute
+                    nav.toast("Copied")
+                } label: { Label("Copy", systemImage: "doc.on.doc") }
+            }
+            if mine {
+                Button { journey = JourneyItem(id: m.id) } label: { Label("How it got there", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }
+            }
+        }
+        moderationMenu(m, mine: mine)
+    }
 
     @ViewBuilder private func moderationMenu(_ m: Message, mine: Bool) -> some View {
         if mine {
@@ -571,13 +646,24 @@ struct ChatView: View {
 
     var body: some View {
         let list = shown
+        // What a reply or a reaction in this chat can be about: this group's checked messages, by what names each (`About.Target`).
+        let targets = toPublic ? [:] : About.targets(in: list, group: code)
+        let blocked = toPublic ? [] : Set(Moderation.blocked.keys)
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 14) {
-                ScreenTitle(title: toPublic ? "Everyone" : groupName, subtitle: engine.reachLine)
+                HStack(alignment: .top, spacing: 12) {
+                    // The group's timer shows next to the reach line only while one is set.
+                    ScreenTitle(title: toPublic ? "Everyone" : groupName, subtitle: engine.reachLine,
+                                timer: toPublic ? nil : engine.timer(code).seconds.flatMap { $0 > 0 ? GroupTimer.label($0) : nil })
+                    Spacer(minLength: 0)
+                    if !toPublic {
+                        Button { nav.sheet = .security } label: { RoundIcon(symbol: "shield.fill") }.accessibilityLabel("Group security")
+                    }
+                }
                 ChannelSwitch(toPublic: $nav.chatEveryone, groupName: groupName,
                               groupNew: unread.count(code, in: engine.allMessages, me: engine.deviceId),
                               everyoneNew: unread.count(Unread.everyone, in: engine.allMessages, me: engine.deviceId))
-                Text(toPublic ? "Anyone with DarkProof can read these, nearby or online." : "Only people in \(groupName) can read these. They disappear after one to two weeks.")
+                Text(toPublic ? "Anyone with DarkProof can read these, nearby or online." : "Only people in \(groupName) can read these. " + GroupTimer.chatLine(engine.timer(code).seconds, highRisk: risk.isOn))
                     .scaledFont(13).foregroundStyle(Theme.faint)
                 if !toPublic && engine.removed(code) {
                     NoteCard(title: "You were removed from \(groupName)", text: "You can still read what's here, but you can't write or see anything new. To come back, ask for a new invite.")
@@ -588,15 +674,26 @@ struct ChatView: View {
                 } else if !toPublic && engine.joining(code) {
                     NoteCard(title: "Asking to join \(groupName)…", text: "An admin of the group has to let you in, and their phone needs to be in reach, nearby or online. You can write here once they have.")
                 }
-                if !toPublic { ForEach(engine.joinRequests(code)) { r in JoinRequestCard(engine: engine, code: code, groupName: groupName, request: r) } }
+                if !toPublic { // admins only: for everyone else the engine lists no requests
+                    let asking = engine.joinRequests(code)
+                    if !asking.isEmpty { JoinRequestsRow(requests: asking) { showingRequests = true } }
+                }
             }
             .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 8)
 
             if list.isEmpty {
+                // With a timer, or in high-risk mode, an empty chat may be one whose messages have left: it doesn't say "yet".
+                let leaves = !toPublic && (risk.isOn || (engine.timer(code).seconds ?? 0) > 0)
+                // With no message to place them between, what last happened in the group still shows: a join, the timer.
+                if !toPublic {
+                    ForEach(Array(engine.groupLines(code).suffix(3).enumerated()), id: \.offset) { _, j in GroupLine(text: j.text) }
+                        .padding(.horizontal, 16)
+                }
                 EmptyState(symbol: toPublic ? "megaphone.fill" : "bubble.left.and.bubble.right.fill",
-                           title: "No messages yet",
+                           title: leaves ? "No messages here now" : "No messages yet",
                            text: toPublic ? "Messages for everyone show up here, nearby or online, from any group."
-                                          : "Write the first one. It reaches everyone in \(groupName) who is in range, or later when they are.")
+                                          : leaves ? "What you write reaches everyone in \(groupName) who is in range, or later when they are."
+                                                   : "Write the first one. It reaches everyone in \(groupName) who is in range, or later when they are.")
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -611,7 +708,7 @@ struct ChatView: View {
                                         .padding(.horizontal, 12).padding(.vertical, 5).background(Theme.tile, in: Capsule())
                                         .padding(.vertical, 8).accessibilityAddTraits(.isHeader)
                                 }
-                                row(m, prev: prev, first: i == 0)
+                                row(m, prev: prev, first: i == 0, targets: targets, blocked: blocked)
                             }
                             ForEach(Array(joins.filter { $0.ts > (list.last?.ts ?? .min) }.enumerated()), id: \.offset) { _, j in GroupLine(text: j.text) }
                             Color.clear.frame(height: 1).id("bottom")
@@ -645,6 +742,13 @@ struct ChatView: View {
                         newBelow = 0
                         DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom); markRead() }
                     }
+                    // A quote was tapped: its message comes into view and is lit for a moment.
+                    .onChange(of: jumpTo) { id in
+                        guard let id else { return }
+                        jumpTo = nil
+                        withAnimation(Theme.lowPower ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center); flashed = id }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { if flashed == id { withAnimation(Theme.lowPower ? nil : .easeOut(duration: 0.4)) { flashed = nil } } }
+                    }
                     .onAppear { // open on the newest messages, once the list has been laid out
                         DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom); markRead() }
                     }
@@ -657,29 +761,40 @@ struct ChatView: View {
                     Label("To everyone: anyone with DarkProof can read it", systemImage: "megaphone.fill")
                         .scaledFont(13, .semibold).foregroundStyle(Theme.text).padding(.horizontal, 6)
                 }
+                if let t = replyTarget {
+                    ReplyStrip(to: t.sender == engine.deviceId ? "yourself" : Quote.name(of: t, me: engine.deviceId), text: Quote.line(of: t)) { replyingTo = nil }
+                }
                 HStack(alignment: .bottom, spacing: 10) {
                     if !toPublic {
-                        Menu {
-                            if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                                Button { takingPhoto = true } label: { Label("Take photo", systemImage: "camera") }
-                            }
-                            Button { choosingPhoto = true } label: { Label("Choose photo", systemImage: "photo.on.rectangle") }
-                        } label: {
-                            Image(systemName: "camera.fill").scaledFont(18, .semibold).foregroundStyle(Theme.text)
+                        Button { showingTray = true } label: {
+                            Image(systemName: "plus").scaledFont(20, .semibold).foregroundStyle(Theme.text)
                                 .frame(width: 50, height: 50).background(Circle().fill(Theme.tile))
                         }
-                        .accessibilityLabel("Send a photo")
+                        .accessibilityLabel("Add something")
+                        .accessibilityHint("Photo, voice note, I'm safe, I need help, ask if safe")
                     }
+                    // A voice note goes only to the group (never Everyone), from a phone with an Opus encoder.
                     Composer(draft: drafts.binding(channel), placeholder: toPublic ? "Message everyone" : "Message \(groupName)",
-                             isPublic: toPublic, send: send)
+                             isPublic: toPublic, focused: $typing, voice: toPublic || !VoiceAudio.shared.canRecord ? nil : voice, recording: voice.on, send: send)
                 }
             }
             .padding(.horizontal, 16).padding(.vertical, 10) }
         }
         .background(Theme.bg.ignoresSafeArea())
-        .sheet(item: $readers) { DeliveredSheet(readers: $0.readers) }
+        .onChange(of: toPublic) { _ in replyingTo = nil } // a reply belongs to the chat it was started in
+        .onChange(of: code) { _ in replyingTo = nil }
+        .modifier(VoiceHooks(voice: voice, place: "\(toPublic)|\(code)", shown: phase == .active && nav.tab == .chat, send: sendVoice))
+        .sheet(item: $journey) { JourneySheet(engine: engine, id: $0.id) }
         .sheet(item: $findingPlace) { FindSheet(place: $0.place, by: $0.by, ts: $0.ts) }
         .sheet(item: $viewing) { PhotoViewer(jpeg: $0.jpeg, caption: $0.caption, from: $0.from) }
+        .sheet(isPresented: $showingRequests) { JoinRequestsSheet(engine: engine) }
+        .sheet(isPresented: $showingTray, onDismiss: afterTray) {
+            ChatTray(engine: engine) { c in
+                // "I'm safe" goes out at once, like Home's tile; the rest open something, which waits until the tray has closed.
+                if c == .safe { let e = engine; e.checkIn(.safe) { nav.toast(e.queuedToast("“I'm safe”")) } } else { trayChoice = c }
+                showingTray = false
+            }
+        }
         .confirmationDialog("Block \(blocking?.name ?? "")?", isPresented: Binding(get: { blocking != nil }, set: { if !$0 { blocking = nil } }),
                             titleVisibility: .visible, presenting: blocking) { m in
             Button("Block", role: .destructive) {
@@ -692,7 +807,8 @@ struct ChatView: View {
         }
         .sheet(item: $pending) { p in
             PhotoSendSheet(photo: p, groupName: groupName) { caption in
-                engine.send(Photo.text(caption: caption), photo: p.jpeg)
+                engine.send(Photo.text(caption: caption), photo: p.jpeg, replyTo: replyTarget)
+                replyingTo = nil
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
         }
@@ -713,20 +829,37 @@ struct ChatView: View {
         }
     }
 
-    @ViewBuilder private func row(_ m: Message, prev: Message?, first: Bool) -> some View {
+    @ViewBuilder private func row(_ m: Message, prev: Message?, first: Bool, targets: [String: Message], blocked: Set<String>) -> some View {
         let mine = m.sender == engine.deviceId
         let newRun = prev == nil || prev!.sender != m.sender || prev!.name != m.name || CheckIn.of(prev!.text) != nil
             || !ChatTime.sameDay(prev!.ts, m.ts)
         let time = ChatTime.time.string(from: ChatTime.date(m.ts))
         let delivery = engine.delivery(of: m)
-        let showReaders: () -> Void = {
-            if case .delivered(let r) = delivery { readers = ReaderList(id: m.id, readers: r) }
-        }
+        // The line under one of the user's own group messages opens "How it got there", wherever the message is.
+        let showReaders: () -> Void = { if mine && !m.isPublic { journey = JourneyItem(id: m.id) } }
         // Check-ins, reports and "Are you safe?" are group messages: an Everyone post that looks like one is plain text (`ChatCard`).
         let card = ChatCard.of(m)
+        // A check-in clock (spec "If I go quiet"): a card here; apps without the feature show its text as a bubble.
+        let clock: Int64? = if !m.isPublic, case .clock(let d)? = m.notice { d } else { nil }
+        // Replies and reactions are for groups only (spec "Replies and reactions"): on Everyone nothing of them is read.
+        let quote = quote(of: m, targets)
+        let chips = m.isPublic ? [] : engine.chips(for: m, blocked: blocked)
+        let canAnswer = !m.isPublic && engine.canAnswer(m)
+        let tapChip: ((String) -> Void)? = canAnswer ? { react(m, $0) } : nil
+        let tapQuote: () -> Void = { jumpTo = quote?.row }
         VStack(alignment: mine ? .trailing : .leading, spacing: 3) {
+        if let quote, card != .text || clock != nil { // a card has no bubble to hold the quote: it sits above the card
+            QuoteView(quote: quote, tap: tapQuote).padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
         Group {
-            if case .place(let place) = card {
+            if let clock {
+                VStack(alignment: .trailing, spacing: 4) {
+                    // Named as the alert names them (rule Q13): "Anna (not checked)", or with emoji where two share a name.
+                    QuietCard(deadline: clock, name: mine ? nil : (engine.quietName(m.group, m.sender) ?? m.name), time: time, spot: QuietClock.spot(in: m.text))
+                    if let delivery { StatusLine(time: nil, delivery: delivery).padding(.horizontal, 6).onTapGesture(perform: showReaders) }
+                }
+            } else if case .place(let place) = card {
                 let shared = SharedPlace(id: m.id, place: place, by: mine ? "you" : m.name, ts: m.ts)
                 VStack(alignment: .trailing, spacing: 4) {
                     PlaceRow(shared: shared, me: loc.location?.spot, now: Date())
@@ -752,20 +885,44 @@ struct ChatView: View {
                     else { nav.sheet = .help }
                 }
             } else {
+                // A voice note only from a group packet whose signature checked (Voice.playable); until then, or if its
+                // field was ignored, the message is its text ("Can't play this voice note." under the ignored one).
                 Bubble(text: m.photo == nil ? m.text : Photo.caption(m.text), mine: mine,
                        name: newRun && !mine ? m.name : nil, time: time,
-                       delivery: delivery, tapStatus: showReaders, photo: m.photo) {
+                       delivery: delivery, tapStatus: showReaders, photo: m.photo,
+                       quote: quote, tapQuote: tapQuote, chips: chips, tapChip: tapChip,
+                       voice: Voice.playable(m) ? m.voice : nil, voiceId: m.id,
+                       cantPlay: m.voice == nil && !m.isPublic && m.text == Voice.placeholder) {
                     if let p = m.photo {
                         viewing = ViewedPhoto(id: m.id, jpeg: p, caption: Photo.caption(m.text), from: mine ? "You" : m.name)
                     }
                 }
             }
         }
+        if !chips.isEmpty, card != .text || clock != nil { ReactionChips(chips: chips, tap: tapChip) } // under a card; a bubble shows its own
         if !mine { VerifyNote(engine: engine, message: m) }
         }
         .padding(.top, newRun && !first ? 10 : 0)
-        .contextMenu { moderationMenu(m, mine: mine) } // hold: Block, Report on Everyone, Remove your place
+        .background { // lit for a moment after a quote of it was tapped
+            if flashed == m.id { RoundedRectangle(cornerRadius: 26, style: .continuous).fill(Theme.text.opacity(0.12)).padding(-6) }
+        }
+        .contextMenu { messageMenu(m, mine: mine, canAnswer: canAnswer) } // hold: react, reply, copy; then Block, Report on Everyone, Remove your place
         .id(m.id)
+    }
+
+    /// What was picked in the "+" tray, once the tray has closed: nothing else can open while it is still closing.
+    private func afterTray() {
+        guard let c = trayChoice else { return }
+        trayChoice = nil
+        switch c {
+        case .photo: choosingPhoto = true
+        case .camera: takingPhoto = true
+        case .help: nav.sheet = .help
+        case .askSafe: nav.sheet = .askSafe
+        case .timer: nav.sheet = .timer
+        case .voice: nav.toast("Hold the mic to record, 10 seconds at most")
+        case .safe: break // sent when it was tapped
+        }
     }
 
     /// Shrinks a picked or taken photo and opens the send sheet.
@@ -775,13 +932,23 @@ struct ChatView: View {
         pending = PendingPhoto(jpeg: jpeg, image: small)
     }
 
+    /// A finished voice note: to the group on screen, as a reply when one is being written. Never on LoRa, so no
+    /// "too long for the radio" for it.
+    private func sendVoice(_ frames: Data) {
+        let target = replyTarget
+        replyingTo = nil
+        engine.send(Voice.placeholder, replyTo: target, voice: frames)
+    }
+
     private func send() {
         let d = drafts.binding(channel)
         let t = String(d.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1000))
         guard !t.isEmpty else { return }
         d.wrappedValue = ""
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        if !engine.send(t, isPublic: toPublic) { tooLong = true }
+        let target = replyTarget
+        replyingTo = nil
+        if !engine.send(t, isPublic: toPublic, replyTo: target) { tooLong = true }
     }
 }
 
@@ -830,6 +997,17 @@ struct Bubble: View {
     var delivery: Delivery? = nil
     var tapStatus: () -> Void = {}
     var photo: Data? = nil
+    /// The message this one answers, above its text; tapping it shows that message when it is in the chat.
+    var quote: QuoteLine? = nil
+    var tapQuote: () -> Void = {}
+    /// The reactions under it; `tapChip` is nil where they can only be looked at.
+    var chips: [Reactions.Chip] = []
+    var tapChip: ((String) -> Void)? = nil
+    /// A voice note that may be played (`Voice.playable`), shown instead of the text; `voiceId` names its message.
+    var voice: Data? = nil
+    var voiceId = ""
+    /// The text says it is a voice note, but its field was ignored: a small line under the text says so.
+    var cantPlay = false
     var tapPhoto: () -> Void = {}
     var isError = false
     var busy = false
@@ -839,6 +1017,7 @@ struct Bubble: View {
             if let name { Text(name).scaledFont(13, .semibold).foregroundStyle(Theme.dim).padding(.horizontal, 6) }
             if let photo, let ui = PhotoShrinker.received(photo) {
                 VStack(alignment: .leading, spacing: 0) {
+                    if let quote { QuoteView(quote: quote, onWhite: mine, tap: tapQuote).padding(.horizontal, 14).padding(.top, 11).padding(.bottom, 9) }
                     // The sender chooses the picture: the row keeps its shape between 1:3 and 3:1 and crops the rest
                     // (Photo.shape), so one a pixel wide and very tall can't make a row hundreds of screens high.
                     Color.clear.aspectRatio(CGFloat(Photo.shape(width: Double(ui.size.width), height: Double(ui.size.height))), contentMode: .fit)
@@ -859,16 +1038,24 @@ struct Bubble: View {
                 .accessibilityLabel(text.isEmpty ? "Photo" : "Photo: \(text)")
                 .accessibilityAddTraits(.isButton)
             } else {
-            Group {
-                if busy && text.isEmpty { Text("Thinking…").foregroundStyle(Theme.dim) }
-                else { Text(text).textSelection(.enabled) }
+            VStack(alignment: .leading, spacing: 6) {
+                if let quote { QuoteView(quote: quote, onWhite: mine, tap: tapQuote) }
+                if let voice { VoiceNoteRow(id: voiceId, frames: voice, onWhite: mine) }
+                else {
+                Group {
+                    if busy && text.isEmpty { Text("Thinking…").foregroundStyle(Theme.dim) }
+                    else { Text(text).textSelection(.enabled) }
+                }
+                .scaledFont(17)
+                .foregroundStyle(mine ? Color.black : (isError ? Theme.help : Theme.text))
+                .fixedSize(horizontal: false, vertical: true)
+                if cantPlay { Text("Can't play this voice note.").scaledFont(13).foregroundStyle((mine ? Color.black : Theme.text).opacity(0.6)) }
+                }
             }
-            .scaledFont(17)
-            .foregroundStyle(mine ? Color.black : (isError ? Theme.help : Theme.text))
-            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 16).padding(.vertical, 11)
             .background(mine ? Color.white : Theme.tile, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             }
+            if !chips.isEmpty { ReactionChips(chips: chips, tap: tapChip).padding(.horizontal, 8).padding(.top, -9) } // they sit on the bubble's lower edge
             if time != nil || delivery != nil {
                 StatusLine(time: time, delivery: delivery).padding(.horizontal, 6).onTapGesture(perform: tapStatus)
             }
@@ -878,27 +1065,7 @@ struct Bubble: View {
     }
 }
 
-/// Time and, for your own messages, where the message is: waiting, sent, or delivered to whom.
-/// "Marco joined" (v0.6): from the group's epochs, not a message.
 /// A note above the chat: asking to join, removed, an invite that no longer works.
-/// Someone asking to join: for an admin to let in or turn down (spec "Joining").
-struct JoinRequestCard: View {
-    @ObservedObject var engine: Engine
-    let code: String, groupName: String, request: JoinRequest
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("\(request.name) wants to join \(groupName)").scaledFont(16, .semibold).foregroundStyle(Theme.text)
-            Text(Fingerprint.emojiLines(MemberKey.emoji(request.pub))).scaledFont(22)
-            Text("Let them in only if you know it's them. Their phone shows these same emoji.").scaledFont(14).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 10) {
-                Button("Let in") { engine.approveJoin(code, request.id) { ok in if !ok { Nav.shared.toast("Not everyone's keys have reached this phone yet. Try again when they're in reach.") } } }.buttonStyle(PrimaryButton())
-                Button("Not now") { engine.declineJoin(code, request.id) }.buttonStyle(SecondaryButton())
-            }
-        }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading).background(Theme.tile, in: RoundedRectangle(cornerRadius: 16))
-    }
-}
-
 struct NoteCard: View {
     let title: String, text: String
     var body: some View {
@@ -911,6 +1078,7 @@ struct NoteCard: View {
     }
 }
 
+/// "Marco joined" (v0.6): from the group's epochs, not a message.
 struct GroupLine: View {
     let text: String
     var body: some View { Text(text).scaledFont(14, .medium).foregroundStyle(Theme.dim).frame(maxWidth: .infinity).padding(.vertical, 6) }
@@ -929,6 +1097,7 @@ struct VerifyNote: View {
     }
 }
 
+/// Time and, for your own messages, where the message is: waiting, sent, or delivered to whom.
 struct StatusLine: View {
     let time: String?
     let delivery: Delivery?
@@ -969,32 +1138,7 @@ extension Delivery {
     }
 }
 
-struct ReaderList: Identifiable { let id: String; let readers: [Reader] }
 struct ViewedPhoto: Identifiable { let id: String; let jpeg: Data; let caption: String; let from: String }
-
-/// Everyone whose phone confirmed one of your messages.
-struct DeliveredSheet: View {
-    let readers: [Reader]
-
-    var body: some View {
-        SheetPage(title: "Delivered") {
-            VStack(spacing: 0) {
-                ForEach(readers, id: \.id) { r in
-                    HStack {
-                        Text(r.name).scaledFont(17, .semibold).foregroundStyle(Theme.text)
-                        Spacer()
-                        Text(ChatTime.stamp(r.ts)).scaledFont(15).foregroundStyle(Theme.dim)
-                    }
-                    .padding(.horizontal, 20).padding(.vertical, 14)
-                    if r.id != readers.last?.id { Rectangle().fill(Theme.line).frame(height: 1).padding(.leading, 20) }
-                }
-            }
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-            Text("Delivered means their phone got the message. It doesn't mean they have read it.")
-                .scaledFont(14).foregroundStyle(Theme.dim)
-        }
-    }
-}
 
 /// "Injured · Need water · 3 people": what a check-in or report says someone needs.
 func needsText(_ needs: Set<Need>, people: Int?) -> String {
@@ -1106,7 +1250,7 @@ struct PlusCodeLabel: View {
     var body: some View {
         if let code = spot.plusCode {
             Button {
-                UIPasteboard.general.string = code
+                Clipboard.copy(code) // someone's position: on this iPhone only, and for a minute
                 Nav.shared.toast("Plus Code copied")
             } label: {
                 HStack(spacing: 5) {
@@ -1128,11 +1272,23 @@ struct Composer: View {
     let placeholder: String
     var enabled = true
     var isPublic = false
+    /// Lets the screen put the cursor in the field (the chat does, after "Reply").
+    var focused: FocusState<Bool>.Binding? = nil
+    /// Voice notes (a group's chat): the send button is a mic while the field is empty, and `recording` shows the strip.
+    var voice: VoiceComposer? = nil
+    var recording = false
     let send: () -> Void
     private var canSend: Bool { enabled && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
+    private struct Focus: ViewModifier {
+        let binding: FocusState<Bool>.Binding?
+        func body(content: Content) -> some View { if let binding { content.focused(binding) } else { content } }
+    }
+
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
+            // While recording, the strip covers the field, which stays (with its keyboard): nothing moves under the finger.
+            ZStack {
             TextField("", text: $draft, prompt: Text(placeholder).foregroundColor(Theme.faint), axis: .vertical)
                 .lineLimit(1...5)
                 .scaledFont(17).foregroundStyle(Theme.text).tint(Theme.text)
@@ -1140,6 +1296,11 @@ struct Composer: View {
                 .background(Theme.tile, in: RoundedRectangle(cornerRadius: 25, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 25, style: .continuous).stroke(isPublic ? Theme.text.opacity(0.7) : .clear, lineWidth: 1.5))
                 .accessibilityLabel(placeholder)
+                .modifier(Focus(binding: focused))
+                .opacity(recording ? 0 : 1).allowsHitTesting(!recording).accessibilityHidden(recording)
+            if let voice, recording { RecordingStrip(voice: voice) }
+            }
+            if let voice, recording || (enabled && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) { MicButton(voice: voice) } else {
             Button(action: send) {
                 Image(systemName: isPublic ? "megaphone.fill" : "arrow.up").scaledFont(isPublic ? 17 : 19, .bold)
                     .foregroundStyle(canSend ? Color.black : Theme.faint)
@@ -1148,6 +1309,7 @@ struct Composer: View {
             }
             .disabled(!canSend)
             .accessibilityLabel(isPublic ? "Send to everyone" : "Send")
+            }
         }
     }
 }

@@ -108,12 +108,22 @@ class Leaf(val epoch: Keyring.Epoch, val index: Int, val counter: Int) {
 object History {
     class Saved(val group: String, val epoch: String, val opened: GroupCrypto.Opened, val index: Int, val counter: Int)
 
-    fun seal(key: ByteArray, id: String, group: String, epoch: String, o: GroupCrypto.Opened, index: Int, counter: Int): ByteArray {
+    /**
+     * Null for a type 0x02 message that is no reaction ([About.Nothing]), for the timer's notice (spec "Disappearing
+     * messages") and for a leave note (spec "Leaving the group", L6): nothing of them is ever shown, so no copy is kept, and
+     * a note read again from a copy at a later start would bring back a leaving record that had ended. A check-in clock
+     * message is an ordinary one here: its copy keeps the text it is shown with ([QuietClock.shown]).
+     */
+    fun seal(key: ByteArray, id: String, group: String, epoch: String, o: GroupCrypto.Opened, index: Int, counter: Int): ByteArray? {
+        if (o.message.about == About.Nothing || o.message.notice?.isSilent == true) return null
         val plain = ByteArrayOutputStream().also { b ->
             DataOutputStream(b).run {
+                val text = o.message.text.toByteArray(Charsets.UTF_8)
                 write(Rekey.hex(group)); writeUTF(epoch); writeLong(o.message.ts); write(o.digest); write(o.signature)
-                writeShort(index); writeInt(counter); writeUTF(o.message.sender); writeUTF(o.message.name); writeInt(o.message.text.toByteArray().size); write(o.message.text.toByteArray())
+                writeShort(index); writeInt(counter); writeUTF(o.message.sender); writeUTF(o.message.name); writeInt(text.size); write(text)
                 val extra = o.extra ?: ByteArray(0); writeInt(extra.size); write(extra)
+                // The 5th field (spec "Replies and reactions"), after everything an older copy holds: a copy without it reads as before.
+                o.aboutField?.let { writeInt(it.size); write(it) }
             }
         }.toByteArray()
         val c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES")); c.updateAAD(id.toByteArray())
@@ -126,9 +136,15 @@ object History {
             val group = ByteArray(16).also(::readFully).joinToString("") { "%02x".format(it) }; val epoch = readUTF(); val ts = readLong()
             val digest = ByteArray(32).also(::readFully); val signature = ByteArray(64).also(::readFully)
             val index = readUnsignedShort(); val counter = readInt(); val sender = readUTF(); val name = readUTF()
-            val text = String(ByteArray(readInt()).also(::readFully)); val extra = ByteArray(readInt()).also(::readFully).takeIf { it.isNotEmpty() }
+            val text = ByteArray(readInt()).also(::readFully); val extra = ByteArray(readInt()).also(::readFully).takeIf { it.isNotEmpty() }
             val photo = extra?.takeIf { it.size > 1 && it[0] == Photo.JPEG && it.size - 1 <= Photo.MAX_BYTES }?.copyOfRange(1, extra.size)
-            Saved(group, epoch, GroupCrypto.Opened(Message(id, ts, sender, name, text, photo = photo), signature, digest, extra), index, counter)
+            val voice = Voice.of(extra, text) // the same rules as the packet's: a copy shows only what the packet showed
+            // Read like the packet was: a copy is kept of a reply or a reaction, whose text is a listed one or empty, never of a
+            // type 0x02 message that isn't one, so the text read back here has the bytes the packet had.
+            val fifth = if (available() >= 4) runCatching { ByteArray(readInt()).also(::readFully) }.getOrNull() else null
+            val about = About.read(fifth, text)
+            Saved(group, epoch, GroupCrypto.Opened(Message(id, ts, sender, name, String(text, Charsets.UTF_8), photo = photo, about = about, voice = voice), signature, digest, extra,
+                if (about == null) null else fifth), index, counter)
         }
     }.getOrNull()
 

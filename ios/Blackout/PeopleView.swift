@@ -1,4 +1,6 @@
 import SwiftUI
+import AVFoundation
+import CoreImage.CIFilterBuiltins
 import BlackoutCore
 
 // MARK: - Model
@@ -23,6 +25,61 @@ extension Engine {
     var myLastCheckIn: Message? {
         messages.last { !$0.isPublic && $0.sender == deviceId && CheckIn.of($0.text) != nil }
     }
+
+    /// The members of `code`'s group who haven't written yet (`people`: those who have). They read everything too, so
+    /// the People list shows them and each can be checked. Not someone blocked: they stay hidden here, as before.
+    func silentMembers(_ code: String?, besides people: [Person]) -> [Person] {
+        let seen = Set(people.map(\.id))
+        return otherMembers(code).filter { !seen.contains($0.id) && !isBlocked(code, $0.id) }
+            .map { Person.silent(id: $0.id, name: $0.name.isEmpty ? "Someone" : $0.name) }
+    }
+
+    /// The one badge under a person's name. A new key for a checked person's name comes first: that is the warning.
+    func personCheck(_ code: String?, _ id: String, _ name: String) -> PersonCheck {
+        if newKeyFor(code, id, name) { return .newKey }
+        switch checkedHow(code, id) {
+        case .inPerson?: return .inPerson
+        case .emoji?: return .emoji
+        case nil: return .none
+        }
+    }
+}
+
+/// How a person's key stands on this phone (spec/FORMAT.md, "Person emoji", "Person code").
+enum PersonCheck: Equatable { case inPerson, emoji, newKey, none }
+
+/// "Checked in person", "Checked by emoji", "New key. Check again." or "Not checked": one line, under a name.
+struct CheckBadge: View {
+    let check: PersonCheck
+
+    var body: some View {
+        switch check {
+        case .inPerson: label("Checked in person", Theme.safe, shield: true)
+        case .emoji: label("Checked by emoji", Theme.dim, shield: true)
+        case .newKey: label("New key. Check again.", Theme.help, shield: false)
+        case .none: label("Not checked", Theme.faint, shield: false)
+        }
+    }
+
+    private func label(_ text: String, _ color: Color, shield: Bool) -> some View {
+        HStack(spacing: 4) {
+            if shield { Image(systemName: "shield.fill").accessibilityHidden(true) }
+            Text(text)
+        }
+        .scaledFont(13, .semibold).foregroundStyle(color)
+    }
+}
+
+extension PersonCode {
+    /// Black-on-white QR code of exactly `text` (like `Invite.qr`), sharp at any size.
+    static func qr(_ text: String) -> UIImage? {
+        let f = CIFilter.qrCodeGenerator()
+        f.message = Data(text.utf8)
+        f.correctionLevel = "M"
+        guard let out = f.outputImage?.transformed(by: CGAffineTransform(scaleX: 12, y: 12)),
+              let cg = CIContext().createCGImage(out, from: out.extent) else { return nil }
+        return UIImage(cgImage: cg)
+    }
 }
 
 /// "just now", "5 min ago", "2 h ago", "3 d ago".
@@ -42,10 +99,12 @@ struct PeopleView: View {
     @ObservedObject var engine: Engine
     @ObservedObject private var nav = Nav.shared
     @AppStorage("groupName") private var groupName = "My group"
+    @CurrentCode private var code
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { t in
-            let people = Person.all(in: engine.messages, me: engine.deviceId)
+            let wrote = Person.all(in: engine.messages, me: engine.deviceId)
+            let people = wrote + engine.silentMembers(code, besides: wrote) // members who haven't written yet come last
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     HStack(alignment: .top) {
@@ -159,8 +218,9 @@ struct PeopleList: View {
         VStack(spacing: 0) {
             ForEach(people) { p in
                 PersonRow(person: p, byMe: p.reporterId == engine.deviceId, now: now,
-                          newKey: !p.isReport && engine.newKeyFor(code, p.id, p.name), find: { finding = p },
-                          open: p.isReport ? nil : { checking = p })
+                          check: p.isReport ? nil : engine.personCheck(code, p.id, p.name), find: { finding = p },
+                          open: p.isReport ? nil : { checking = p },
+                          clock: p.isReport ? nil : QuietLine.of(engine.quietState(code, p.id, now: Engine.quietNow())))
                 if p.id != people.last?.id { Rectangle().fill(Theme.line).frame(height: 1).padding(.leading, 76) }
             }
         }
@@ -174,11 +234,13 @@ struct PersonRow: View {
     let person: Person
     var byMe = false
     let now: Date
-    var newKey = false        // a checked person's name with another key (spec "Person emoji")
+    var check: PersonCheck? = nil // how their key stands here; reports have no key
     var find: () -> Void = {} // opens the compass, for people who shared their position
-    var open: (() -> Void)? = nil // their emoji check; reports have none
+    var open: (() -> Void)? = nil // their page, with the check; reports have none
+    var clock: (String, Color)? = nil // their check-in clock as this phone holds it (spec "If I go quiet"); reports have none
 
     private var status: (String, Color) {
+        if person.lastTs == 0 && person.checkIn == nil { return ("No check-in yet", Theme.dim) } // in the group, nothing written yet
         guard let c = person.checkIn else { return ("Last heard \(ago(person.lastTs, now))", Theme.dim) }
         if person.isReport {
             let by = byMe ? "by you" : "by \(person.reportedBy ?? "someone")"
@@ -205,9 +267,10 @@ struct PersonRow: View {
             .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 Text(person.name).scaledFont(17, .semibold).foregroundStyle(Theme.text).lineLimit(1)
+                if let check { CheckBadge(check: check) }
                 Text(s.0).scaledFont(14, .medium).foregroundStyle(s.1).fixedSize(horizontal: false, vertical: true)
+                if let clock { Label(clock.0, systemImage: "timer").scaledFont(14, .semibold).foregroundStyle(clock.1).fixedSize(horizontal: false, vertical: true) }
                 if !extra.isEmpty { Text(extra).scaledFont(14, .semibold).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true) }
-                if newKey { Text("New key: check their emoji").scaledFont(14, .semibold).foregroundStyle(Theme.help) }
             }
             Spacer(minLength: 8)
             VStack(alignment: .trailing, spacing: 6) {
@@ -223,7 +286,7 @@ struct PersonRow: View {
         .onTapGesture { if let open { open() } else if person.spot != nil { find() } }
         .accessibilityElement(children: .combine)
         .accessibilityAction(named: "Find \(person.name)") { if person.spot != nil { find() } }
-        .accessibilityAction(named: "Check \(person.name)'s emoji") { open?() }
+        .accessibilityAction(named: "Check \(person.name)") { open?() }
     }
 }
 
@@ -270,14 +333,17 @@ struct ConnectionHelp: View {
     }
 }
 
-/// A person's 8 emoji (spec/FORMAT.md, "Person emoji"): compared with the emoji on their phone, then marked as checked.
+// MARK: - A person, and checking them
+
+/// A person's page: the big initial, the name and how their key stands on this phone, then what you can do: find them,
+/// check them, ask if they are safe. An admin can also make them an admin or remove them, as before.
 /// Warns when a checked person's name now comes with another key.
 struct PersonCheckSheet: View {
     @ObservedObject var engine: Engine
     let person: Person
     let code: String
-    @State private var checked = false
     @State private var finding = false
+    @State private var checking = false
     @State private var askAdmin = false
     @State private var askRemove = false
     @Environment(\.dismiss) private var dismiss
@@ -285,48 +351,53 @@ struct PersonCheckSheet: View {
     private func note(_ ok: Bool, _ done: String) { Nav.shared.toast(ok ? done : "Not everyone's keys have reached this phone yet. Try again when they're in reach.") }
 
     var body: some View {
-        let pub = engine.publicKey(of: person.id, in: code)
-        let newKey = engine.newKeyFor(code, person.id, person.name)
-        SheetPage(title: person.name) {
-            Card {
-                HStack {
-                    Text(newKey ? "New key for \(person.name)" : "Check \(person.name)").scaledFont(18, .bold)
-                        .foregroundStyle(newKey ? Theme.help : Theme.text)
-                    Spacer()
-                    if checked { Chip("Checked", Theme.safe) }
+        let name = person.name
+        let check = engine.personCheck(code, person.id, name)
+        let admin = engine.isAdmin(code, person.id)
+        SheetPage(title: "") {
+            VStack(spacing: 6) {
+                Text(String(name.prefix(1)).uppercased()).scaledFont(32, .bold).foregroundStyle(Theme.text)
+                    .frame(width: 88, height: 88).background(Circle().fill(Theme.tile)).padding(.bottom, 6)
+                    .accessibilityHidden(true)
+                Text(name).scaledFont(26, .heavy).foregroundStyle(Theme.text)
+                    .multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.6)
+                    .accessibilityAddTraits(.isHeader)
+                CheckBadge(check: check)
+                if admin {
+                    Text("\(name) is an admin of this group.").scaledFont(14).foregroundStyle(Theme.dim).multilineTextAlignment(.center)
                 }
-                if newKey {
-                    Text("You checked \(person.name) before, with another key. If \(person.name) didn't reinstall DarkProof or reset their phone, someone else may be using their name. Check their emoji before you trust these messages.")
-                        .scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
-                }
-                if let pub {
-                    let ix = MemberKey.emoji(pub)
-                    Text(Fingerprint.emojiLines(ix)).scaledFont(30)
-                    Text(Fingerprint.spoken(ix)).scaledFont(13).foregroundStyle(Theme.dim)
-                    if checked {
-                        Text("You compared these with \(person.name)'s phone.").scaledFont(15).foregroundStyle(Theme.dim)
-                    } else {
-                        Text("Meet \(person.name) or call them. They open Settings › Groups and read you “Your emoji”. If they're the same as these, tap They match.")
-                            .scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
-                        Button("They match") { engine.markChecked(code, person.id, person.name); checked = true }.buttonStyle(GhostButton())
-                    }
-                } else {
-                    Text("\(person.name)'s key hasn't reached this phone yet, so their messages show “Not verified yet”. It comes by itself when their phone or the internet is in reach.")
+            }
+            .frame(maxWidth: .infinity)
+            if check == .newKey {
+                Card {
+                    Text("New key for \(name)").scaledFont(18, .bold).foregroundStyle(Theme.help)
+                    Text("You checked \(name) before, with another key. If \(name) didn't reinstall DarkProof or reset their phone, someone else may be using their name. Check again before you trust these messages.")
                         .scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if person.spot != nil {
-                Button { finding = true } label: { Label("Find \(person.name)", systemImage: "location.north.fill") }.buttonStyle(PrimaryButton())
+            HStack(alignment: .top, spacing: 6) {
+                if person.spot != nil { PersonAction(label: "Find", symbol: "location.north.fill") { finding = true } }
+                PersonAction(label: "Check", symbol: "qrcode") { checking = true }
+                // Asking one person, as "Are you safe?" does. Not once this phone was removed (it can't write there any
+                // more), nor someone whose name hasn't come yet: the question is addressed by name.
+                if !engine.removed(code), person.lastTs != 0 || engine.publicKey(of: person.id, in: code) != nil {
+                    PersonAction(label: "Ask if safe", symbol: "questionmark.bubble.fill") { askIfSafe() }
+                }
             }
-            let admin = engine.isAdmin(code, person.id)
-            if admin { Text("\(person.name) is an admin of this group.").scaledFont(15).foregroundStyle(Theme.dim) }
+            .padding(.vertical, 4)
             if person.id != engine.deviceId, engine.isAdmin(code, engine.deviceId), engine.inGroup(code, person.id), !engine.removed(code) {
-                if !admin { Button("Make admin") { askAdmin = true }.buttonStyle(SecondaryButton()) }
-                Button("Remove from group") { askRemove = true }.buttonStyle(SecondaryButton())
+                VStack(spacing: 0) {
+                    if !admin {
+                        option("Make admin", "key.fill", Theme.text) { askAdmin = true }
+                        Rectangle().fill(Theme.line).frame(height: 1).padding(.leading, 16)
+                    }
+                    option("Remove from group", "rectangle.portrait.and.arrow.right", Theme.help) { askRemove = true }
+                }
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             }
         }
-        .onAppear { checked = engine.isChecked(code, person.id) }
         .sheet(isPresented: $finding) { FindSheet(person: person) }
+        .sheet(isPresented: $checking) { CheckPersonSheet(engine: engine, person: person, code: code) }
         .alert("Make \(person.name) an admin?", isPresented: $askAdmin) {
             Button("Make admin") { engine.makeAdmin(code, person.id) { note($0, "\(person.name) is now an admin") } }
             Button("Cancel", role: .cancel) {}
@@ -335,5 +406,281 @@ struct PersonCheckSheet: View {
             Button("Remove", role: .destructive) { engine.remove(code, person.id) { ok in note(ok, "\(person.name) was removed"); if ok { dismiss() } } }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Everyone else gets a new key and a new invite code, and old invites stop working. \(person.name) can't read anything from now on. The group sees who removed them.") }
+    }
+
+    /// One line of the admin's choices: its words, then its icon.
+    private func option(_ title: String, _ symbol: String, _ color: Color, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title).scaledFont(17, .semibold)
+                Spacer(minLength: 8)
+                Image(systemName: symbol).scaledFont(16, .semibold).accessibilityHidden(true)
+            }
+            .foregroundStyle(color)
+            .padding(.horizontal, 18).frame(minHeight: 54).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// "Marco, are you safe?" to the group, exactly as the "Are you safe?" sheet sends it for one person.
+    private func askIfSafe() {
+        engine.send(AreYouSafe(to: person.name).text)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        Nav.shared.toast(engine.queuedToast("the question to \(person.name)"))
+    }
+}
+
+/// A round action with its word under it, like the ones in the chat's "+" tray.
+private struct PersonAction: View {
+    let label: String
+    let symbol: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: symbol).scaledFont(22, .semibold).foregroundStyle(Theme.text)
+                    .frame(width: 58, height: 58).background(Circle().fill(Theme.tile))
+                Text(label).scaledFont(13, .semibold).foregroundStyle(Theme.dim)
+                    .multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScale())
+        .accessibilityLabel(label)
+    }
+}
+
+/// A person's sixteen emoji (spec/FORMAT.md, "Person emoji"), eight to a line and never cut: each line shrinks to the
+/// width it gets. VoiceOver says their names, the words people read out.
+private struct PersonEmoji: View {
+    let pub: Data
+
+    var body: some View {
+        let ix = MemberKey.emoji(pub)
+        let lines = Fingerprint.emojiLines(ix).components(separatedBy: "\n")
+        VStack(spacing: 8) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                Text(line).scaledFont(30).lineLimit(1).minimumScaleFactor(0.4)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Fingerprint.spoken(ix))
+    }
+}
+
+/// Checking a person, two ways. Scan: this phone shows its own person code (spec/FORMAT.md, "Person code") and scans
+/// theirs with the camera; every byte of the key is compared, nothing is read out or typed. Compare emoji: the sixteen
+/// emoji, as before. Only a match marks the person, and the mark remembers which way it was.
+private struct CheckPersonSheet: View {
+    @ObservedObject var engine: Engine
+    let person: Person
+    let code: String
+    @AppStorage("groupName") private var groupName = "My group"
+    @State private var byEmoji = false     // the tab: Scan comes first, it is the stronger check
+    @State private var scanning = false
+    @State private var done: Checked.How?  // just checked: the closing page
+    @State private var notTheirs = false   // the last scan was a person code, of another key
+    @State private var qr: UIImage?        // this phone's own person code
+    @State private var hasCamera = true
+    @Environment(\.dismiss) private var dismiss
+
+    private var name: String { person.name }
+
+    var body: some View {
+        let theirs = engine.publicKey(of: person.id, in: code)
+        SheetPage(title: "Check \(name)", close: done == nil ? "Cancel" : "Done") {
+            if let how = done {
+                donePage(how)
+            } else if let theirs {
+                PillSwitch(left: "Scan", right: "Compare emoji", isRight: $byEmoji)
+                if byEmoji { emojiTab(theirs) } else { scanTab }
+            } else {
+                Card {
+                    Text("\(name)'s key hasn't reached this phone yet, so their messages show “Not verified yet”. It comes by itself when their phone or the internet is in reach.")
+                        .scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .sheet(isPresented: $scanning) { PersonScanSheet(name: name) { read($0) } }
+        .task(id: code) {
+            hasCamera = Self.cameraOrTestCode
+            guard let mine = engine.myPublicKey(code), let text = PersonCode.encode(mine) else { qr = nil; return }
+            qr = PersonCode.qr(text)
+            #if DEBUG
+            DebugLog.write("person code shown \(text)") // tests give it to the other test phone as "debugPersonScan"
+            #endif
+        }
+    }
+
+    // MARK: Scan
+
+    @ViewBuilder private var scanTab: some View {
+        VStack(spacing: 16) {
+            if let qr {
+                Image(uiImage: qr).interpolation(.none).resizable().scaledToFit()
+                    .padding(16)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .frame(maxWidth: 240)
+                    .accessibilityLabel("Your person code in \(groupName)")
+            }
+            Text("In the same place: \(name) scans this, then you scan \(name)'s code. This is the strongest check.")
+                .scaledFont(15).foregroundStyle(Theme.dim).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+        if notTheirs {
+            Card {
+                Text("This is not \(name)'s key.").scaledFont(18, .bold).foregroundStyle(Theme.help)
+                Text("Someone else may be using the name. Do not trust this person's messages until you have sorted it out together.")
+                    .scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        if hasCamera {
+            Button("Scan \(name)'s code") { startScan() }.buttonStyle(PrimaryButton())
+        } else {
+            Text("This device has no camera. Compare the emoji instead.")
+                .scaledFont(15).foregroundStyle(Theme.dim).multilineTextAlignment(.center).frame(maxWidth: .infinity)
+        }
+    }
+
+    /// The Simulator has no camera. In test builds, a text saved under "debugPersonScan"
+    /// (`simctl spawn <device> defaults write it.darkproof.mesh debugPersonScan "DPK1:…"`) is read instead of opening it.
+    private static var testCode: String? {
+        #if DEBUG
+        return UserDefaults.standard.string(forKey: "debugPersonScan")
+        #else
+        return nil
+        #endif
+    }
+    private static var cameraOrTestCode: Bool { testCode != nil || AVCaptureDevice.default(for: .video) != nil }
+
+    private func startScan() {
+        if let test = Self.testCode {
+            if let hint = read(test) { Nav.shared.toast(hint) }
+            return
+        }
+        scanning = true
+    }
+
+    /// What the camera read. Says what to tell the user while the camera stays open, or nil once it is settled and the
+    /// scanner closes: their key (marked checked in person), or a person code of another key (nothing is marked).
+    private func read(_ text: String) -> String? {
+        guard let theirs = engine.publicKey(of: person.id, in: code) else { return nil } // the page then says their key isn't here yet
+        switch PersonCode.check(text, theirs: theirs, mine: engine.myPublicKey(code)) {
+        case .same:
+            engine.markChecked(code, person.id, name, how: .inPerson)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            notTheirs = false; done = .inPerson
+            return nil
+        case .own:
+            return "That is your own code. Scan \(name)'s phone."
+        case .other:
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            notTheirs = true
+            return nil
+        case .notACode:
+            return "That is not a DarkProof person code."
+        }
+    }
+
+    // MARK: Compare emoji
+
+    @ViewBuilder private func emojiTab(_ theirs: Data) -> some View {
+        PersonEmoji(pub: theirs)
+            .padding(.vertical, 18).padding(.horizontal, 12)
+            .background(Theme.tile, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        Text(Fingerprint.spoken(MemberKey.emoji(theirs))).scaledFont(13).foregroundStyle(Theme.dim)
+            .multilineTextAlignment(.center).frame(maxWidth: .infinity).fixedSize(horizontal: false, vertical: true)
+            .accessibilityHidden(true) // the emoji above already say these names
+        Text("Ask \(name) to read these out. If \(name)'s phone shows the same sixteen, nobody is in between.")
+            .scaledFont(15).foregroundStyle(Theme.dim).multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity).fixedSize(horizontal: false, vertical: true)
+        Text("They open Settings › Groups and read you “Your emoji”.")
+            .scaledFont(13).foregroundStyle(Theme.faint).multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity).fixedSize(horizontal: false, vertical: true)
+        Button("They match") { engine.markChecked(code, person.id, name, how: .emoji); done = .emoji }.buttonStyle(PrimaryButton())
+        Button { noMatch() } label: {
+            Text("They don't match").scaledFont(17, .semibold).foregroundStyle(Theme.help)
+                .frame(maxWidth: .infinity, minHeight: 48).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Nothing is marked, and a mark made earlier goes: the person is unchecked from here on, as the toast says.
+    private func noMatch() {
+        engine.unmarkChecked(code, person.id)
+        Nav.shared.toast("\(name) stays unchecked")
+        dismiss()
+    }
+
+    // MARK: Checked
+
+    private func donePage(_ how: Checked.How) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "shield.fill").scaledFont(34, .semibold).foregroundStyle(Theme.safe)
+                .frame(width: 84, height: 84).background(Circle().fill(Theme.tile)).padding(.bottom, 6)
+                .accessibilityHidden(true)
+            Text("\(name) is checked").scaledFont(26, .heavy).foregroundStyle(Theme.text)
+                .multilineTextAlignment(.center).accessibilityAddTraits(.isHeader)
+            Text("\(how == .inPerson ? "Checked in person" : "Checked by emoji"), today. If \(name)'s key ever changes, DarkProof shows it in People and under their messages.")
+                .scaledFont(15).foregroundStyle(Theme.dim).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            Button("Done") { dismiss() }.buttonStyle(PrimaryButton()).padding(.top, 10)
+        }
+        .frame(maxWidth: .infinity).padding(.top, 12)
+    }
+}
+
+/// The camera scanner invites use (`QRCamera`), for a person code. `read` gets what was scanned and says what to tell the
+/// user while the camera stays open, or nil once it is settled: the scanner then closes.
+private struct PersonScanSheet: View {
+    let name: String
+    let read: (String) -> String?
+    @Environment(\.dismiss) private var dismiss
+    @State private var problem: (text: String, settings: Bool)?
+    @State private var hint: String?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if let problem {
+                    VStack(spacing: 16) {
+                        Image(systemName: "camera.fill").scaledFont(30, .semibold).foregroundStyle(Theme.dim)
+                        Text(problem.text).scaledFont(17).foregroundStyle(Theme.text).multilineTextAlignment(.center)
+                        if problem.settings { OpenSettingsButton() }
+                    }
+                    .padding(32)
+                } else {
+                    QRCamera(onCode: { s in
+                        if let h = read(s) { hint = h; UINotificationFeedbackGenerator().notificationOccurred(.warning) } else { dismiss() }
+                    }, onProblem: { p in problem = (Self.text(p), p.settings) })
+                    .ignoresSafeArea()
+                    VStack {
+                        Spacer()
+                        RoundedRectangle(cornerRadius: 28, style: .continuous).stroke(Color.white, lineWidth: 3)
+                            .frame(width: 250, height: 250).accessibilityHidden(true)
+                        Spacer()
+                        Text(hint ?? "Point the camera at the code on \(name)'s phone.")
+                            .scaledFont(16, .semibold).foregroundStyle(Theme.text).multilineTextAlignment(.center)
+                            .padding(.horizontal, 18).padding(.vertical, 12)
+                            .background(Color.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                            .padding(.horizontal, 20).padding(.bottom, 40)
+                    }
+                }
+            }
+            .navigationTitle("Scan \(name)'s code").navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Theme.bg, for: .navigationBar)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+        .preferredColorScheme(.dark)
+        .tint(Theme.text)
+    }
+
+    /// QRCamera's own words are about invites ("type the code instead"); here the other way is the emoji.
+    private static func text(_ p: (text: String, settings: Bool)) -> String {
+        if p.settings { return "Camera access is off for DarkProof. Turn it on in Settings, or compare the emoji instead." }
+        return AVCaptureDevice.default(for: .video) == nil ? "This device has no camera. Compare the emoji instead." : p.text
     }
 }

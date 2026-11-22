@@ -34,6 +34,21 @@ public class Context {
         synchronized (prefs) { return prefs.computeIfAbsent(f.getAbsolutePath(), p -> new FilePreferences(f)); }
     }
 
+    /**
+     * "Erase everything": the preferences kept under {@code dir} are emptied in memory and forgotten, so that nothing
+     * of them is written again, now or when the app closes. Their files go with the folder.
+     */
+    public static void forgetPreferences(File dir) {
+        String under = dir.getAbsolutePath() + File.separator;
+        synchronized (prefs) {
+            prefs.entrySet().removeIf(e -> {
+                if (!e.getKey().startsWith(under)) return false;
+                if (e.getValue() instanceof FilePreferences) ((FilePreferences) e.getValue()).forget();
+                return true;
+            });
+        }
+    }
+
     /** Opens a link or mail address, or puts text to send on the clipboard. Throws if nothing here can act on it. */
     public void startActivity(Intent intent) { it.blackout.desktop.Opener.INSTANCE.open(intent); }
 }

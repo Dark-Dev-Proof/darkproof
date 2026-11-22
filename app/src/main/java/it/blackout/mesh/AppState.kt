@@ -15,6 +15,9 @@ class AppState(a: ComponentActivity) {
     var group by mutableStateOf(Groups.current(a))
     var locked by mutableStateOf(AppLock.due(a)) // "Lock DarkProof" is asking
     var lockOn by mutableStateOf(AppLock.enabled(a))
+    var highRisk by mutableStateOf(HighRisk.on(a)) // "High-risk mode": locks every time, shows less, keeps less
+    /** A check that just ended (Check sheet): kept here, not in the sheet, because the app may lock while the scanner is open. */
+    var checkEnded by mutableStateOf<CheckEnded?>(null)
     var waitingSafe by mutableStateOf(false) // the "I'm safe" shortcut waits for the unlock (MainActivity.justUnlocked)
     var name by mutableStateOf(prefs.getString("name", "") ?: "")
     var invite by mutableStateOf<SavedGroup?>(null)          // an invite link that was opened
@@ -30,6 +33,11 @@ class AppState(a: ComponentActivity) {
     var sheet by mutableStateOf<Sheet?>(null)
     var everyone by mutableStateOf(false)  // Chat shows the Everyone channel
     var placesMap by mutableStateOf(false) // Places shows the map
+    /**
+     * The message being answered (spec "Replies"): the group's code and the row's id, while the strip above the composer
+     * shows. Cleared when the chat switches channel or group. The photo sheet reads it too: a reply can carry a photo.
+     */
+    var replying by mutableStateOf<Pair<String, String>?>(null)
     /** Chat drafts per channel: the group's code, or "" for Everyone. */
     val drafts = mutableStateMapOf<String, String>()
     var banner by mutableStateOf<Notifier.Alert?>(null)
@@ -56,3 +64,9 @@ class AppState(a: ComponentActivity) {
 
 /** Changes when a permission or a phone setting may have changed, so screens that depend on them look again. */
 object Perms { var version by mutableIntStateOf(0) }
+
+/** Changes when a person was marked as checked, so their badges and Group security look again. */
+object Marks { var version by mutableIntStateOf(0) }
+
+/** How checking person [id] ended: [how] they are now checked, or what the scanned code turned out to be ([problem]). */
+class CheckEnded(val id: String, val how: CheckedHow? = null, val problem: PersonCode.Result? = null)

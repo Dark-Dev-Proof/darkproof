@@ -30,6 +30,12 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PersistableBundle
 import android.view.Surface
+import androidx.compose.foundation.background
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
@@ -65,7 +71,54 @@ object Here {
     val aiSwitches = emptyList<AiSwitch>() // what a computer's Ask menu offers besides the model; a phone's AI has no such choices
     val tabBar = true         // the tabs float over the bottom of the screen, so each tab leaves room for them
     val wide = false          // a wide window with panes side by side: pages open in the middle of it, not as a sheet from below
+    val keys = false          // a computer shows a ring where its keyboard is; a phone's finger needs none
 }
+
+/** A short touch on the phone's motor for what the finger just did. The phone's own touch-feedback setting can turn it off; no permission. */
+object Buzz {
+    const val None = 0; const val Key = 1; const val Tap = 2; const val On = 3; const val Off = 4
+    const val Tick = 5; const val Hold = 6; const val Confirm = 7; const val Reject = 8
+    /** The window's view, set by MainActivity while it is there. */
+    var view: android.view.View? = null
+    fun play(kind: Int) {
+        val sdk = androidSdk()
+        val what = when (kind) {
+            Key -> android.view.HapticFeedbackConstants.VIRTUAL_KEY
+            Tap -> android.view.HapticFeedbackConstants.KEYBOARD_TAP
+            On -> if (sdk >= 34) android.view.HapticFeedbackConstants.TOGGLE_ON else android.view.HapticFeedbackConstants.CLOCK_TICK
+            Off -> if (sdk >= 34) android.view.HapticFeedbackConstants.TOGGLE_OFF else android.view.HapticFeedbackConstants.CLOCK_TICK
+            Tick -> if (sdk >= 34) android.view.HapticFeedbackConstants.SEGMENT_TICK else android.view.HapticFeedbackConstants.CLOCK_TICK
+            Hold -> android.view.HapticFeedbackConstants.LONG_PRESS
+            Confirm -> if (sdk >= 30) android.view.HapticFeedbackConstants.CONFIRM else android.view.HapticFeedbackConstants.VIRTUAL_KEY
+            Reject -> if (sdk >= 30) android.view.HapticFeedbackConstants.REJECT else android.view.HapticFeedbackConstants.LONG_PRESS
+            else -> return
+        }
+        view?.performHapticFeedback(what)
+    }
+}
+
+/**
+ * Calm mode ([Motion.calm]): things simply appear instead of moving, when the phone removes animations, saves power, or
+ * DarkProof's own battery saver is on.
+ */
+fun calmNow(c: Context): Boolean =
+    android.provider.Settings.Global.getFloat(c.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f ||
+        c.getSystemService(android.os.PowerManager::class.java)?.isPowerSaveMode == true ||
+        MeshEngine.batterySaver(c)
+
+/** A computer shows [text] (what the button already says to TalkBack) when the mouse rests on it; a phone has no mouse. */
+@Composable
+fun HoverTip(text: String, content: @Composable () -> Unit) = content()
+
+/** Marks what a glass surface floats over. Today nothing: the place a blur's source goes later. */
+fun Modifier.glassSource(): Modifier = this
+
+/**
+ * A glass surface in [shape]: the tint from [from] to [to], solid. Nothing behind it is blurred, so any see-through
+ * would let the text under it show; a blur, when there is one, can make it clear again.
+ */
+fun Modifier.glass(shape: Shape, from: Color, to: Color): Modifier =
+    background(Brush.horizontalGradient(listOf(from, to)), shape)
 
 /** Android's version number (API level). The screens ask through this, so that they also run where there is no Android. */
 fun androidSdk(): Int = Build.VERSION.SDK_INT
@@ -201,19 +254,69 @@ object BatteryLife {
         if (hours < 0.5 || drop < 2) null else (pct * hours / drop).roundToInt().takeIf { it in 1..240 }
 }
 
-/** Copies [text]; a group code is marked sensitive so Android hides it in the clipboard preview. */
+/**
+ * Copies [text] for a minute ([Copied]): a group code, a Plus Code or a message's text. Every copy is marked sensitive,
+ * so Android hides it in its clipboard preview. [sensitive] is kept for the callers; it no longer changes anything.
+ */
+@Suppress("UNUSED_PARAMETER")
 fun copyText(c: Context, label: String, text: String, sensitive: Boolean = false, done: String = "Copied") {
-    val clip = ClipData.newPlainText(label, text)
-    if (sensitive) clip.description.extras = PersistableBundle().apply {
-        putBoolean(if (Build.VERSION.SDK_INT >= 33) ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE", true)
-    }
-    val board = c.getSystemService(ClipboardManager::class.java)
-    board.setPrimaryClip(clip)
-    // A group code doesn't stay on the clipboard for other apps to find later.
-    if (sensitive) android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-        runCatching { if (board.primaryClip?.getItemAt(0)?.text?.toString() == text) { if (Build.VERSION.SDK_INT >= 28) board.clearPrimaryClip() else board.setPrimaryClip(ClipData.newPlainText("", "")) } }
-    }, 60_000)
+    Copied.put(c, label, text)
     if (Build.VERSION.SDK_INT < 33) android.widget.Toast.makeText(c, done, android.widget.Toast.LENGTH_SHORT).show() // Android 13+ shows its own
+}
+
+/**
+ * What the app last put on the clipboard, so that it comes off again: a minute after it was copied, and when
+ * everything is erased ([Wipe]).
+ *
+ * Android gives a copy no expiry of its own and lets an app read the clipboard only while it is in front. So the
+ * minute is kept by the app: when it is over, the clipboard is cleared if it still holds this very text; if another
+ * app is in front then, that is done the next time DarkProof is in front ([expire], from the screen getting the
+ * focus). If the app is ended within that minute the copy stays until Android clears it or something else is copied.
+ * Android has no way to keep a copy on this phone only: a phone that shares its clipboard with other devices shares this too.
+ */
+object Copied {
+    const val KEEP_MS = 60_000L
+    /** The labels the app copies under: how an erase knows a clip is the app's own, after a restart too. */
+    val LABELS = setOf("Group code", "Message", "Plus Code")
+    @Volatile private var text: String? = null
+    @Volatile private var until = 0L
+
+    fun put(c: Context, label: String, text: String) {
+        val clip = ClipData.newPlainText(label, text)
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(if (Build.VERSION.SDK_INT >= 33) ClipDescription.EXTRA_IS_SENSITIVE else "android.content.extra.IS_SENSITIVE", true)
+        }
+        val app = c.applicationContext
+        app.getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
+        this.text = text; until = android.os.SystemClock.elapsedRealtime() + KEEP_MS
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ expire(app) }, KEEP_MS)
+    }
+
+    /** Clears the clipboard if the minute of the app's last copy is over and it is still there. Main thread. */
+    fun expire(c: Context) {
+        val mine = text ?: return
+        if (android.os.SystemClock.elapsedRealtime() < until) return
+        runCatching {
+            val board = c.getSystemService(ClipboardManager::class.java)
+            val there = board.primaryClip ?: return // not readable now (another app is in front), or empty: tried again when this app is in front
+            if (there.itemCount > 0 && there.getItemAt(0).text?.toString() == mine) clear(board)
+            text = null
+        }
+    }
+
+    /** Erase: the clipboard is cleared now if it holds something the app put there (by its text, or by its label after a restart). */
+    fun forget(c: Context) {
+        runCatching {
+            val board = c.getSystemService(ClipboardManager::class.java)
+            val mine = text
+            val isMine = board.primaryClipDescription?.label?.toString() in LABELS ||
+                (mine != null && board.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString() == mine)
+            if (isMine) clear(board)
+        }
+        text = null
+    }
+
+    private fun clear(board: ClipboardManager) { if (Build.VERSION.SDK_INT >= 28) board.clearPrimaryClip() else board.setPrimaryClip(ClipData.newPlainText("", "")) }
 }
 
 /**
@@ -284,22 +387,28 @@ object AppLock {
     private var leftAt = 0L // when the screen was last left; 0: not since the app started
     private fun prefs(c: Context) = c.getSharedPreferences("mesh", 0)
 
-    fun enabled(c: Context) = prefs(c).getBoolean("appLock", false)
+    /** On when the user turned it on, and always while high-risk mode is on: everything that follows the lock follows that too. */
+    fun enabled(c: Context) = prefs(c).getBoolean("appLock", false) || HighRisk.on(c)
     fun set(c: Context, on: Boolean) = prefs(c).edit().putBoolean("appLock", on).apply()
     /** False if the phone has no screen lock: there would be nothing to ask for. */
     fun available(c: Context) = c.getSystemService(android.app.KeyguardManager::class.java).isDeviceSecure
     /** The screen went away. Still locked: it stays locked however the app is opened next, not only for a minute. */
     fun left(stillLocked: Boolean) { leftAt = if (stillLocked) 0L else android.os.SystemClock.elapsedRealtime() }
-    fun due(c: Context) = enabled(c) && (leftAt == 0L || android.os.SystemClock.elapsedRealtime() - leftAt >= GRACE_MS)
+    /** In high-risk mode there is no minute of grace: the app locks every time it was left. */
+    fun due(c: Context) = enabled(c) && (leftAt == 0L || HighRisk.on(c) || android.os.SystemClock.elapsedRealtime() - leftAt >= GRACE_MS)
 
-    /** Asks for the phone's own unlock, then runs [ok]. If the phone has no screen lock any more, nobody is shut out. */
-    fun ask(a: MainActivity, title: String, ok: () -> Unit) {
+    /**
+     * Asks for the phone's own unlock, then runs [ok]; [no] if it didn't go through (cancelled, or failed for good). If
+     * the phone has no screen lock any more, nobody is shut out.
+     */
+    fun ask(a: MainActivity, title: String, no: () -> Unit = {}, ok: () -> Unit) {
         if (!available(a)) { ok(); return }
-        if (Build.VERSION.SDK_INT < 30) { a.confirmCredential(title, ok); return }
+        if (Build.VERSION.SDK_INT < 30) { a.confirmCredential(title, no, ok); return }
         android.hardware.biometrics.BiometricPrompt.Builder(a).setTitle(title)
             .setAllowedAuthenticators(android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_STRONG or android.hardware.biometrics.BiometricManager.Authenticators.DEVICE_CREDENTIAL)
             .build().authenticate(android.os.CancellationSignal(), a.mainExecutor, object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(r: android.hardware.biometrics.BiometricPrompt.AuthenticationResult) = ok()
+                override fun onAuthenticationError(code: Int, why: CharSequence?) = no()
             })
     }
 }
@@ -334,7 +443,9 @@ object Notifier {
         return when {
             check == CheckIn.HELP -> Alert("${m.name} needs help",
                 details(CheckIn.needs(m.text), CheckIn.people(m.text)).ifEmpty { "Open DarkProof to see where they are." } + " · $group", m.group, true, false, m.id)
-            vouch?.status == CheckIn.HELP -> Alert("${vouch.subject} needs help",
+            // In a group whose messages disappear after a day or less, the name a report gives is its sender's own words: kept
+            // out of the alert ("Someone needs help", reported by whom), as the iPhone keeps a message's words out of its alerts there.
+            vouch?.status == CheckIn.HELP -> Alert("${GroupTimer.reported(vouch.subject, MeshEngine.timer(m.group).seconds)} needs help",
                 listOf(details(vouch.needs, vouch.people), "Reported by ${m.name} · $group").filter { it.isNotEmpty() }.joinToString(" · "), m.group, true, false, m.id)
             ask != null && ask.isFor(me) -> Alert(if (ask.to == null) "${m.name} asks: is everyone safe?" else "${m.name} asks: are you safe?",
                 "Answer with one tap · $group", m.group, true, true, m.id)
@@ -357,13 +468,17 @@ object Notifier {
         val id = if (a.urgent) m.id.hashCode() else m.sender.hashCode()
         // With "Lock DarkProof" on, nothing about who or what shows on a locked or borrowed phone.
         val hide = AppLock.enabled(c)
-        val body = if (!hide) a.body else if (a.ask) "Someone asks if you are safe. Open DarkProof." else if (a.urgent) "Someone needs help. Open DarkProof." else "New message"
-        val n = android.app.Notification.Builder(c, if (a.urgent) HELP else MESSAGES)
+        // High-risk mode shows less still: only that there is a new message, or that someone needs help. A question
+        // ("are you safe?") is a new message like any other there, with no answers to tap.
+        val risk = HighRisk.on(c); val plain = risk && a.ask
+        val body = if (!hide) a.body else if (plain) "New message" else if (a.ask) "Someone asks if you are safe. Open DarkProof." else if (a.urgent) "Someone needs help. Open DarkProof." else "New message"
+        val n = android.app.Notification.Builder(c, if (a.urgent && !plain) HELP else MESSAGES)
             .setSmallIcon(R.drawable.ic_notifications).setContentTitle(if (hide) "DarkProof" else a.title).setContentText(body)
             .setStyle(android.app.Notification.BigTextStyle().bigText(body))
             .setContentIntent(open(c, id, m.group)).setAutoCancel(true).setGroup("group")
-        n.setTimeoutAfter(AlertLife.timeout(m.ts, System.currentTimeMillis())) // its text must not outlive the message
-        if (a.ask) {
+        // Its text must not outlive the message: a week at most, and in a group with a timer, until the message is due.
+        n.setTimeoutAfter(AlertLife.timeout(m.ts, System.currentTimeMillis(), MeshEngine.timer(m.group).seconds?.let { it * 1_000L }))
+        if (a.ask && !risk) {
             if (!hide) n.addAction(android.app.Notification.Action.Builder(null, "I'm safe", PendingIntent.getBroadcast(c, id,
                 Intent(c, AnswerReceiver::class.java).putExtra(Actions.EXTRA_GROUP, m.group).putExtra(AnswerReceiver.NOTIFICATION, id),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build())
@@ -381,6 +496,15 @@ object Notifier {
     fun forget(c: Context, ids: Collection<String>) {
         val gone = synchronized(posted) { posted.filterValues { it in ids }.keys.toList().onEach { posted.remove(it) } }
         if (gone.isNotEmpty()) c.getSystemService(NotificationManager::class.java)?.let { nm -> gone.forEach(nm::cancel) }
+    }
+
+    /**
+     * A group was left: its alerts go. Alerts are known by their message only while the app that posted them still runs
+     * ([posted]), so every message alert goes, the other groups' too; their messages are still in the app, counted as new.
+     */
+    fun forgetAll(c: Context) {
+        synchronized(posted) { posted.clear() }
+        c.getSystemService(NotificationManager::class.java)?.cancelAll() // the "DarkProof is on" notice belongs to the running service and stays
     }
 
     /** Opens DarkProof on [group]'s chat. */

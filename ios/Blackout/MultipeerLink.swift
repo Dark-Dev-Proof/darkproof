@@ -15,6 +15,7 @@ final class MultipeerLink: NSObject, MCSessionDelegate, MCNearbyServiceAdvertise
     private let router: MeshRouter
     private let onStatus: (String) -> Void
     private var found: [String: MCPeerID] = [:] // node id -> peer currently in range (q only)
+    private var stopped = false                 // `stopAndWait` was called: nobody is invited again (q only)
 
     /// Connects to every Blackout iPhone, whatever its group: all relay for each other (spec/FORMAT.md).
     init(nodeId: String, router: MeshRouter, onStatus: @escaping (String) -> Void) {
@@ -28,9 +29,21 @@ final class MultipeerLink: NSObject, MCSessionDelegate, MCNearbyServiceAdvertise
     }
 
     func start() {
+        guard !q.sync(execute: { stopped }) else { return }
         advertiser.startAdvertisingPeer()
         browser.startBrowsingForPeers()
         report()
+    }
+
+    /// Ends this link for good (its engine was shut down: a group was left, or everything erased): no advertising, no
+    /// browsing, every iPhone disconnected. Returns once nothing of it is queued any more. From any thread but `q`.
+    func stopAndWait() {
+        advertiser.stopAdvertisingPeer(); browser.stopBrowsingForPeers()
+        advertiser.delegate = nil; browser.delegate = nil
+        let peers = session.connectedPeers.map(Self.key)
+        session.delegate = nil // no call after this one reaches the router
+        session.disconnect()
+        q.sync { stopped = true; found = [:]; peers.forEach(router.peerDown) }
     }
 
     /// Called by the router, possibly while it holds its lock, so only queue the work.
@@ -44,7 +57,7 @@ final class MultipeerLink: NSObject, MCSessionDelegate, MCNearbyServiceAdvertise
 
     /// Only the phone with the smaller node id invites, so two phones never invite each other at once.
     private func invite(_ peer: MCPeerID) {
-        guard me.displayName < peer.displayName, !session.connectedPeers.contains(peer) else { return }
+        guard !stopped, me.displayName < peer.displayName, !session.connectedPeers.contains(peer) else { return }
         browser.invitePeer(peer, to: session, withContext: Self.context, timeout: 20)
     }
 

@@ -40,9 +40,11 @@ class WifiLink(c: Context, private val nodeId: String, router: () -> MeshRouter?
     private val found = FoundDevices(nodeId, LinkLimits.FOUND) { node, host -> links.linkedAt(node, host) } // main thread
     private var finder: Mdns? = null
     var running = false; private set
+    /** Stopped for good: the Wi-Fi switch makes a new WifiLink. A start still on its way when this one was stopped does nothing. */
+    @Volatile private var stopped = false
 
     fun start() {
-        if (running) return
+        if (running || stopped) return
         running = true
         val port = links.listen()
         if (port == 0) return
@@ -52,6 +54,7 @@ class WifiLink(c: Context, private val nodeId: String, router: () -> MeshRouter?
     }
 
     fun stop() {
+        stopped = true
         if (!running) return
         running = false
         h.removeCallbacksAndMessages(null)
@@ -106,4 +109,5 @@ object Notifier {
     var inApp: ((Alert) -> Unit)? = null
     data class Alert(val title: String, val body: String, val group: String?, val urgent: Boolean, val ask: Boolean, val messageId: String)
     fun forget(c: Context, ids: Collection<String>) {}
+    fun forgetAll(c: Context) {}
 }

@@ -37,6 +37,12 @@ object Vault {
         return SecretKeySpec(raw, "AES").also { keys[c.filesDir] = it }
     }
 
+    /**
+     * "Erase everything": the key of data folder [dir] goes, its file and what memory holds of it (the item in the
+     * computer's own key store is [KeyProtect.clear]'s). The erase's first step: nothing the vault holds opens after it.
+     */
+    @Synchronized internal fun forgetKey(dir: File) { keys.remove(dir); runCatching { File(dir, KEY_FILE).delete() } }
+
     /** Saves [data] under [name] (null removes it). */
     fun put(c: Context, name: String, data: ByteArray?) {
         val prefs = c.getSharedPreferences("vault", 0)
@@ -74,4 +80,10 @@ object Vault {
 object MemberKeys {
     private val cache = HashMap<String, KeyPair>()
     @Synchronized fun forGroup(tag: String): KeyPair = Home.context().let { c -> cache.getOrPut("${c.filesDir}|$tag") { Vault.pair(c, "member.$tag") } }
+
+    /** "Erase everything": no member key of data folder [dir] is held in memory any more. */
+    @Synchronized internal fun forgetAll(dir: File) { cache.keys.removeAll { it.startsWith("$dir|") } }
+
+    /** The group [tag] was left: this computer's member key there is deleted. Joining again makes a new one. */
+    @Synchronized fun forget(tag: String) = Home.context().let { c -> cache.remove("${c.filesDir}|$tag"); Vault.put(c, "member.$tag", null) }
 }

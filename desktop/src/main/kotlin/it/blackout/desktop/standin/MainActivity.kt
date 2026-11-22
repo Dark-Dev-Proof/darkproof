@@ -22,7 +22,8 @@ class MainActivity(dir: File) : ComponentActivity(dir) {
     fun started(name: String, g: SavedGroup) {
         Groups.setUp(this, name, g)
         state.name = name; state.group = g
-        startStore()
+        // The engine is already up when the last group was left and this is the next one: it only has to show it.
+        if (MeshEngine.router != null) { MeshEngine.rename(name); MeshEngine.switchGroup(g.code) } else startStore()
     }
 
     fun switchTo(g: SavedGroup) { Groups.switchTo(this, g); state.group = g; state.tick++ }

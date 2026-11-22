@@ -23,9 +23,22 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
         public var since: Int64 { Swift.max(made, taken) }
         /// Each sender's message keys (spec "Message keys"). Nil for an epoch older than them.
         public var messageKeys: MessageKeys?
+        /// The timer its new key carried (spec "Disappearing messages"): the seconds as read, nil if it had none.
+        /// Whether it counts depends on who made the key (`Keyring.retime`).
+        public let timerRaw: Int?
+        /// This phone's user chose that value with this key: then this phone knows who set it.
+        public let timerSetHere: Bool
+        /// The group's timer in this epoch: seconds, 0 for off, nil while this phone doesn't know it. `timerBy`: who
+        /// set it, if this phone saw the change. `timerCounts`: `timerRaw` was its maker's to set, as last judged.
+        /// Worked out by the keyring under its lock, and saved with the epoch.
+        public fileprivate(set) var timer: Int?
+        public fileprivate(set) var timerBy: String?
+        public fileprivate(set) var timerCounts: Bool
         public init(number: Int64, made: Int64, secret: Data, members: [String] = [], admins: [String] = [],
-                    code: String? = nil, via: String? = nil, removes: String? = nil, by: String? = nil, rank: Int = .max, messageKeys: MessageKeys? = nil, taken: Int64? = nil) {
+                    code: String? = nil, via: String? = nil, removes: String? = nil, by: String? = nil, rank: Int = .max, messageKeys: MessageKeys? = nil, taken: Int64? = nil,
+                    timerRaw: Int? = nil, timerSetHere: Bool = false, timer: Int? = nil, timerBy: String? = nil, timerCounts: Bool = false) {
             self.messageKeys = messageKeys
+            self.timerRaw = timerRaw; self.timerSetHere = timerSetHere; self.timer = timer; self.timerBy = timerBy; self.timerCounts = timerCounts
             self.number = number; self.made = made; self.secret = secret; self.members = members; self.admins = admins
             self.code = code; self.via = via; self.removes = removes; self.by = by; self.rank = rank; self.taken = taken ?? made
             group = GroupCrypto.fromSecret(secret); receipts = group.receipts(); intros = group.intros()
@@ -36,9 +49,10 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
         /// A new epoch from its random `secret`, which isn't kept: only what it derives is, each sender's message keys included.
         /// `roster`: everyone in it, even when `members` is left empty because it is kept only to read with.
         public static func fresh(number: Int64, made: Int64, secret: Data, roster: [String]? = nil, members: [String], admins: [String],
-                                 code: String? = nil, via: String? = nil, removes: String? = nil, by: String? = nil, rank: Int = .max, taken: Int64? = nil) -> Epoch {
+                                 code: String? = nil, via: String? = nil, removes: String? = nil, by: String? = nil, rank: Int = .max, taken: Int64? = nil,
+                                 timerRaw: Int? = nil, timerSetHere: Bool = false, timer: Int? = nil, timerCounts: Bool = false) -> Epoch {
             Epoch(number: number, made: made, secret: MessageKeys.outer(secret), members: members, admins: admins, code: code, via: via, removes: removes, by: by, rank: rank,
-                  messageKeys: MessageKeys.of(secret, members: roster ?? members), taken: taken)
+                  messageKeys: MessageKeys.of(secret, members: roster ?? members), taken: taken, timerRaw: timerRaw, timerSetHere: timerSetHere, timer: timer, timerCounts: timerCounts)
         }
 
         /// Everyone this epoch's secret was sealed to: its message keys keep the list when `members` is left empty (`fresh`'s `roster`).
@@ -56,9 +70,11 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
                 let sender = o.message.sender.hasPrefix("web-") ? String(o.message.sender.dropFirst(4)) : o.message.sender
                 guard keys.members.indices.contains(h.index), keys.members[h.index] == sender else { return nil } // sealed under someone else's position: it must not use up their key
                 o.leaf = Leaf(epoch: self, index: h.index, counter: h.counter)
+                o.opener = self
                 return o
             }
-            guard let o = group.openSigned(p), lists(o.message.sender) else { return nil }
+            guard var o = group.openSigned(p), lists(o.message.sender) else { return nil }
+            o.opener = self
             return o
         }
 
@@ -122,6 +138,15 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
     public static func weeklyDue(made: Int64, now: Int64, delay: Int64) -> Bool { now >= made + keepMs + delay }
     /// True if the epoch is past every phone's delay: this phone missed the group's new key, or the whole group was quiet.
     public static func overdue(made: Int64, now: Int64) -> Bool { now >= made + keepMs + maxDelayMs }
+    /// How long a key must have been in use before an admin can ask for a new one by hand ("New key", Group security).
+    public static let askMs: Int64 = 24 * 3_600_000
+    /// True if an admin may ask for a new key now: the current one has been here since `since` (`Epoch.since`), a day or
+    /// more. A join or a removal makes a key anyway; asked for every hour, new keys would flood the mesh and push the
+    /// older keys out of the ring (`maxEpochs`) before their week is up.
+    public static func mayAsk(since: Int64, now: Int64) -> Bool {
+        let (age, over) = now.subtractingReportingOverflow(since)
+        return !over && age >= askMs
+    }
 
     private let lock = NSLock()
     private var list: [Epoch] = []
@@ -152,8 +177,79 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
                 let reading = list.filter { $0.members.isEmpty }
                 if let worst = (reading.isEmpty ? list : reading).max(by: Self.first) { list.removeAll { $0 === worst } }
             }
+            retime()
             return true
         }
+    }
+
+    // MARK: The group's timer (spec "Disappearing messages")
+
+    /// Works out every held epoch's timer again, lowest number first. Hold the lock.
+    /// - The timer a new key carries counts if its maker is an admin of the epoch before it, by the same test that
+    ///   decides the admin list (`counting`). A phone that had no epoch goes by the admin list of the key that let it
+    ///   in, and a key whose epoch before isn't here by what was judged when it came (`timerCounts`).
+    /// - Any other epoch has the timer of the epoch before it: the first of those numbered one lower. Among them
+    ///   counts, besides the epochs that say who is in, an admin's key that came late and is kept only to read with,
+    ///   if it carries a timer and `speaks`: it is the winner of every epoch held at its number, and its maker is an
+    ///   admin of the winning epoch before it. It decides nothing about people, but it is that admin's word on the
+    ///   timer, and without it a phone that got a rival first, then a member's next key, would keep the rival's value
+    ///   for good. A late key that loses at its number, or whose maker isn't an admin of the winner before it (a
+    ///   demoted admin's), sets and freezes nothing.
+    /// - Judged again whenever the keyring changes, not once when a key comes, so phones that hold the same keys
+    ///   agree whatever order they came in.
+    /// - Once the epochs before it are gone (a week after they were replaced), an epoch keeps what was worked out last.
+    /// Who set it is known only where this phone saw the value change, or its own user chose it.
+    private func retime() {
+        guard let cur = pick() else { return }
+        for e in list.sorted(by: { $0.number < $1.number }) {
+            if e.members.isEmpty { e.timer = speaks(e) ? e.timerRaw : nil; e.timerBy = nil; continue } // kept only to read with: never current
+            let held = list.contains { $0.number == e.number - 1 && !$0.members.isEmpty }
+            let before = held ? counting(e.number - 1, cur) : []
+            if held { e.timerCounts = e.timerRaw != nil && before.contains { $0.admins.contains(e.by ?? "") } }
+            let late = list.filter { $0.number == e.number - 1 && $0.members.isEmpty && $0.timerRaw != nil && speaks($0) }
+            let pred = (before + late).min(by: Self.first)
+            if e.timerCounts, let raw = e.timerRaw {
+                if e.timerSetHere { e.timerBy = e.by }
+                else if let p = pred { e.timerBy = p.timer == raw ? p.timerBy : p.timer == nil ? nil : e.by }
+                e.timer = raw
+            } else if let p = pred {
+                e.timer = p.timer; e.timerBy = p.timerBy
+            }
+        }
+    }
+
+    /// True if `e`, kept only to read with, may speak for the timer and the chat's lines: it is the winner of every epoch
+    /// held at its number, its maker wasn't taken out by a removal since, and its maker is an admin of the winning epoch
+    /// before it (the first with a member list one number lower; if none is held, what was judged when it came: its
+    /// `rank`). Hold the lock.
+    private func speaks(_ e: Epoch) -> Bool {
+        guard e.members.isEmpty, isWinner(e), !outSince(e.by, e.number) else { return false }
+        guard let before = list.filter({ $0.number == e.number &- 1 && !$0.members.isEmpty }).min(by: Self.first) else { return e.rank == Self.byAdmin }
+        return before.admins.contains(e.by ?? "")
+    }
+
+    /// For each number held, the epoch that counts for the chat's lines ("joined", "made an admin", the timer's line):
+    /// the winner among the epochs with a member list and the late keys that `speaks`, lowest number first. A late
+    /// key that doesn't speak is left out, so a demoted admin's late key makes no line.
+    public var counted: [Epoch] {
+        lock.withLock {
+            let usable = list.filter { !$0.members.isEmpty || speaks($0) }
+            return Dictionary(grouping: usable, by: \.number).values.compactMap { $0.min(by: Self.first) }.sorted { $0.number < $1.number }
+        }
+    }
+
+    /// The group's timer: the current epoch's. `seconds` nil: this phone doesn't know it and keeps the normal rule.
+    public var timer: (seconds: Int?, by: String?) { lock.withLock { guard let c = pick() else { return (nil, nil) }; return (c.timer, c.timerBy) } }
+
+    /// Every held epoch's timer as worked out last, by epoch id: saved with the epochs.
+    public var timers: [String: (seconds: Int?, by: String?, counts: Bool)] {
+        lock.withLock { Dictionary(list.map { ($0.id, ($0.timer, $0.timerBy, $0.timerCounts)) }, uniquingKeysWith: { a, _ in a }) }
+    }
+
+    /// Whether the timer in a new key `r` that this phone's own user makes now would count: this phone is an admin of
+    /// the epoch before it.
+    public func setsTimer(_ r: Rekey, maker: String) -> Bool {
+        lock.withLock { guard let cur = pick() else { return false }; return counting(r.epoch &- 1, cur).contains { $0.admins.contains(maker) } }
     }
 
     /// Everyone in a member list this phone holds: in the group now, or until a removal or a new key not long ago.
@@ -303,9 +399,10 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
     /// (nil: as `pinned`): only then does a removal that leaves a joining phone out close its invite. `inUse`: the codes of
     /// the other groups saved on this phone: a removal can't move this group onto one of them. `open` opens this phone's
     /// sealed part.
+    /// `timer`: the timer the key's packet carries in its 5th field (`GroupTimer.read`), nil if it has none.
     public func take(_ r: Rekey, maker: String, me: String, door: String, oldDoor: Bool, removedAt: (number: Int64, rank: Int)?,
                      now: Int64 = Int64(Date().timeIntervalSince1970 * 1000), pinned: Bool = true, removedBy: String? = nil, named: Bool? = nil,
-                     inUse: [String] = [], open: (Data) -> Data?) -> Taken {
+                     inUse: [String] = [], timer: Int? = nil, open: (Data) -> Data?) -> Taken {
         let seniority = rank(r, maker: maker), mine = r.parts.first { $0.id == me }
         if mine == nil && r.members.contains(me) { return .ignored } // this phone's part is in another packet of the same key
         if let at = removedAt, !(r.removal && mine != nil && lock.withLock({ undoes(r, seniority, at, removedBy) })) { return .ignored }
@@ -340,8 +437,14 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
         // which can become the current epoch again even when it arrives late, and which only an admin can make.
         lock.withLock { parts.add(mark); partsChanged = true }
         let forReadingOnly = !r.removal && cur.map { r.epoch < $0.number } ?? false
+        // The timer: whether its maker may set it is judged as the admin list is: an admin of the epoch before (a removal
+        // is always an admin's). A phone that had no epoch can't judge that, and goes by the key's own admin list, so
+        // it is never told a value by someone that key doesn't name as an admin. `retime` judges again as keys come.
+        let mayTime = timer != nil && (cur == nil ? r.admins.contains(maker) : r.removal || level == Self.byAdmin)
+        let inherited: Int? = lock.withLock { pick().flatMap { counting(r.epoch &- 1, $0).first?.timer } }
         let e = Epoch.fresh(number: r.epoch, made: r.made, secret: opened.secret, roster: r.members, members: forReadingOnly ? [] : r.members, admins: admins, code: opened.code,
-                      via: r.removal ? door : nil, removes: r.removal ? r.answers : nil, by: maker, rank: level, taken: now)
+                      via: r.removal ? door : nil, removes: r.removal ? r.answers : nil, by: maker, rank: level, taken: now,
+                      timerRaw: timer, timer: forReadingOnly ? nil : inherited, timerCounts: mayTime)
         let counted = lock.withLock { !exempt(r, maker) }
         guard add(e) else { return .ignored }
         if counted { lock.withLock { arrived(maker, now) } }
@@ -409,7 +512,7 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
     public var lastMove: Epoch? { lock.withLock { lastMoved() } }
 
     /// After a removal: anything numbered above it was made through the old door by someone who hadn't heard.
-    public func dropAbove(_ number: Int64) { lock.withLock { list.removeAll { $0.number > number } } }
+    public func dropAbove(_ number: Int64) { lock.withLock { list.removeAll { $0.number > number }; retime() } }
 
     /// True if `id` was removed before `ts`: what a removed member writes afterwards isn't shown. A removal that lost doesn't count.
     public func removed(_ id: String, before ts: Int64) -> Bool { lock.withLock { list.contains { $0.removes == id && ts > $0.made && isWinner($0) } } }
@@ -428,6 +531,27 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
             let lists = list.filter { !$0.members.isEmpty }
             if !lists.isEmpty && !lists.contains(where: { $0.members.contains(id) }) { return true }
             return list.contains { $0.removes == id && isWinner($0) && (!had || ts > $0.made) }
+        }
+    }
+
+    /// True if a leave note from `id` that epoch `e` opened may count (spec "Leaving the group", rule L1): `e` is held
+    /// here and has a member list (an epoch kept only to read with has whatever list its maker wrote); every number from
+    /// `e`'s up to the current epoch's has an epoch here with a member list, and the one of them that counts at that
+    /// number (the winner of those with a member list, as the keyring decides who is in) lists `id`; and no removal
+    /// that won took `id` out. A rival that lost and leaves `id` out doesn't matter: a member's weekly key that raced
+    /// an admin's join is a real epoch, but not the one the group goes by. A note from before a removal, played back
+    /// after the same key was let in again, fails: the removal won its number and doesn't list them. A number with no
+    /// such epoch here fails too, since nothing here shows that it listed them. Packets older than 7 days are dropped,
+    /// and an epoch is held at least that long after a newer one replaced it, so a phone that held the epochs between
+    /// still holds them when a note comes.
+    public func listsThrough(_ id: String, from e: Epoch) -> Bool {
+        let id = id.hasPrefix("web-") ? String(id.dropFirst(4)) : id
+        return lock.withLock {
+            guard let cur = pick(), list.contains(where: { $0 === e }), !e.members.isEmpty, e.number <= cur.number else { return false }
+            for n in e.number...cur.number {
+                guard let winner = list.filter({ $0.number == n && !$0.members.isEmpty }).min(by: Self.first), winner.members.contains(id) else { return false }
+            }
+            return !list.contains { $0.removes == id && isWinner($0) }
         }
     }
 

@@ -6,7 +6,22 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.TooltipArea
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.unit.dp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
@@ -54,7 +69,36 @@ object Here {
     val background = false    // the app passes messages on only while its window is open
     val tabBar = false        // no tabs along the bottom: a rail and a sidebar at the side
     val wide = true           // panes side by side; pages open as a panel in the middle of the window
+    /** A keyboard moved the focus last (Tab, arrows), not the mouse: only then is the focus ring shown. Set at the window's root. */
+    var keys by mutableStateOf(false)
 }
+
+/** The phone's touch feedback on its motor. A computer has none: the same names, doing nothing. */
+object Buzz {
+    const val None = 0; const val Key = 1; const val Tap = 2; const val On = 3; const val Off = 4
+    const val Tick = 5; const val Hold = 6; const val Confirm = 7; const val Reject = 8
+    fun play(kind: Int) {}
+}
+
+/** Calm mode on a computer: not read from the system yet, so things move as on a phone with animations on. */
+fun calmNow(c: Context): Boolean = false
+
+/** The name an icon-only button already carries for screen readers, shown when the mouse rests on it. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun HoverTip(text: String, content: @Composable () -> Unit) = TooltipArea(delayMillis = 500, tooltip = {
+    Box(Modifier.background(Color(0xFF343436), RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 6.dp)) { Txt(text, 13, maxLines = 2) }
+}) { content() }
+
+/** Marks what a glass surface floats over. Today nothing: the place a blur's source goes later. */
+fun Modifier.glassSource(): Modifier = this
+
+/**
+ * A glass surface in [shape]: the tint from [from] to [to], solid. Nothing behind it is blurred, so any see-through
+ * would let the text under it show; a blur, when there is one, can make it clear again.
+ */
+fun Modifier.glass(shape: Shape, from: Color, to: Color): Modifier =
+    background(Brush.horizontalGradient(listOf(from, to)), shape)
 
 /** The screens ask Android's version for a few old-phone cases. A desktop is none of those. */
 fun androidSdk(): Int = Int.MAX_VALUE
@@ -98,6 +142,11 @@ fun qrBitmap(text: String, size: Int = 720): Bitmap {
 /** The phones scan an invite's QR code with the camera. Not on the desktop yet: an invite link can be pasted. */
 fun scanInvite(c: Context, got: (SavedGroup) -> Unit) {
     Toast.makeText(c, "Scanning isn't on the desktop yet. Paste the invite link or type the code.", Toast.LENGTH_LONG).show()
+}
+
+/** The phones scan a person code with the camera (Check). Not on the desktop: its screens show the code and don't offer to scan. */
+fun scanCode(c: Context, got: (String) -> Unit) {
+    Toast.makeText(c, "This device has no camera. Compare the emoji instead.", Toast.LENGTH_LONG).show()
 }
 
 /** Positions. A desktop computer has no GPS: there is never a position, and the screens say so where it matters. */
@@ -160,7 +209,7 @@ object AppLock {
     fun available(c: Context) = false
     fun left(stillLocked: Boolean) {}
     fun due(c: Context) = false
-    fun ask(a: MainActivity, title: String, ok: () -> Unit) = ok()
+    fun ask(a: MainActivity, title: String, no: () -> Unit = {}, ok: () -> Unit) = ok()
 }
 
 /** On a phone this keeps DarkProof passing messages on while the app is closed. A desktop app runs while its window is open. */

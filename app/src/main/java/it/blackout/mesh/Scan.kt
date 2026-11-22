@@ -18,3 +18,10 @@ fun scanInvite(c: Context, got: (SavedGroup) -> Unit) {
             .addOnFailureListener { Toast.makeText(c, "The scanner isn't ready on this phone. Point the camera app at the code, or type it.", Toast.LENGTH_LONG).show() }
     }.onFailure { Toast.makeText(c, "The scanner isn't ready on this phone. Point the camera app at the code, or type it.", Toast.LENGTH_LONG).show() }
 }
+
+/** Opens the same scanner for a person code (Check): passes on whatever text the QR code holds, for [PersonCode] to judge. */
+fun scanCode(c: Context, got: (String) -> Unit) {
+    val opts = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+    val notReady = { Toast.makeText(c, "The scanner isn't ready on this phone. Compare the emoji instead.", Toast.LENGTH_LONG).show() }
+    runCatching { GmsBarcodeScanning.getClient(c, opts).startScan().addOnSuccessListener { b -> got(b.rawValue ?: "") }.addOnFailureListener { notReady() } }.onFailure { notReady() }
+}

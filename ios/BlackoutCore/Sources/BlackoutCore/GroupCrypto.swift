@@ -16,6 +16,24 @@ public struct Message: Equatable, Sendable {
     public var group: String?
     /// false: the sender's public key isn't known yet, so its signature couldn't be checked (spec "Signatures").
     public var verified = true
+    /// What it is about, read from the 5th field (spec "Replies and reactions"); nil for an ordinary message.
+    public var about: About?
+    /// What a reply or reaction to it names: its packet id and the start of its signed digest (`About.Target`). Not
+    /// sent on the wire; set by the phone from the opened packet, or from its own copy of the message.
+    public var mark: About.Target?
+    /// What else its 5th field says (spec "The 5th field"): a notice of the group's timer; nil for none.
+    public var notice: Notice?
+    /// A voice note's frames (`len` ‖ Opus packet, repeated: the 4th field after its type byte, spec "Voice notes"), or
+    /// nil. Set only when the field passed every rule (`Voice.of`); play it only if `Voice.playable`.
+    public var voice: Data?
+
+    /// True for a group message that is never a chat row, an alert or a receipt: a reaction, a type `0x02` message that
+    /// isn't one, a notice written only for apps that don't know what it is about, or a leave note (a line instead).
+    public var isSilent: Bool { about?.isSilent == true || notice?.isSilent == true }
+
+    /// True for a group message that stays off LoRa, like a receipt: a reaction, a type `0x02` message that isn't one,
+    /// the timer's notice. A leave note goes on the radio (`Notice.staysOffRadio`).
+    public var offRadio: Bool { about?.isSilent == true || notice?.staysOffRadio == true }
 
     public init(id: String, ts: Int64, sender: String, name: String, text: String, isPublic: Bool = false, photo: Data? = nil,
                 group: String? = nil) {
@@ -26,14 +44,14 @@ public struct Message: Equatable, Sendable {
     /// The same message with another sender: on this phone, its own messages carry the device id (Engine).
     public func withSender(_ s: String) -> Message {
         var m = Message(id: id, ts: ts, sender: s, name: name, text: text, isPublic: isPublic, photo: photo, group: group)
-        m.verified = verified
+        m.verified = verified; m.about = about; m.mark = mark; m.notice = notice; m.voice = voice
         return m
     }
 
     /// The same message under another id: the name its packet goes by on this phone when another packet had its id first (`StoreCap.name`).
     public func withId(_ i: String) -> Message {
         var m = Message(id: i, ts: ts, sender: sender, name: name, text: text, isPublic: isPublic, photo: photo, group: group)
-        m.verified = verified
+        m.verified = verified; m.about = about; m.mark = mark; m.notice = notice; m.voice = voice
         return m
     }
 }
@@ -155,8 +173,16 @@ public final class GroupCrypto: Sendable {
         public let signature: Data
         public let digest: Data
         public let extra: Data?
+        /// The raw 5th field, when it is one this app reads (`About.read`): this phone's copy of the message keeps it.
+        public var aboutField: Data? = nil
+        /// The raw 5th field, whatever it is, if the body has one that isn't empty (spec "The 5th field"). In a new key
+        /// it carries the group's timer (`GroupTimer.read`).
+        public var fifth: Data? = nil
         /// The message key that opened it, if one did.
         public var leaf: Leaf? = nil
+        /// The epoch of a group whose key opened it, its own message key or the epoch's (`Keyring.Epoch.open`). A leave
+        /// note counts only from an epoch with a member list (`LeaveNote.verdict`).
+        public var opener: Keyring.Epoch? = nil
         /// Names what a signature check of this packet is about: its id, and what it signs together with the signature.
         /// Packets that share an id differ in it, unless they are the same signed message sealed again (`KeyWait`).
         public var key: String {
@@ -180,18 +206,12 @@ public final class GroupCrypto: Sendable {
     }
 
     /// Seals a message with its own key `mk`: message `counter` of the sender at `index` in the epoch's member list.
+    /// `about`: what the message is about, the 5th field (spec "Replies and reactions"); only in a group.
+    /// `fifth`: another 5th field, as it is (spec "The 5th field"), when there is no `about`.
+    /// `voice`: a voice note's frames (`Voice`), the 4th field instead of a photo.
     public func seal(messageKey mk: Data, index: Int, counter: Int, id: String, ts: Int64, sender: String, name: String, text: String, photo: Data? = nil,
-                     iv: Data? = nil, pad: Pad = .size, sign: (Data) throws -> Data) throws -> Data {
-        var body = Data()
-        var fields = [sender, name, text].map { Data($0.utf8) }
-        if let photo {
-            guard photo.count <= Photo.maxBytes else { throw GroupCryptoError.fieldTooLong }
-            fields.append(Data([Photo.jpeg]) + photo)
-        }
-        for b in fields {
-            guard b.count <= 0xFFFF else { throw GroupCryptoError.fieldTooLong }
-            body.append(UInt8(b.count >> 8)); body.append(UInt8(b.count & 0xFF)); body.append(b)
-        }
+                     about: About? = nil, fifth: Data? = nil, voice: Data? = nil, iv: Data? = nil, pad: Pad = .size, sign: (Data) throws -> Data) throws -> Data {
+        var body = try GroupCrypto.fields(sender: sender, name: name, text: text, photo: photo, extra: nil, about: about, fifth: fifth, voice: voice)
         body.append(Data(count: Packet.padding(Packet.overhead + 3 + body.count, pad)))
         let sig = try sign(signed(index: index, counter: counter, id: id, ts: ts, body: body))
         guard sig.count == 64 else { throw GroupCryptoError.badSignature }
@@ -213,18 +233,50 @@ public final class GroupCrypto: Sendable {
         return parsed(p.id, ts, plain) { self.signed(index: index, counter: counter, id: p.id, ts: ts, body: $0) }
     }
 
+    /// The body's fields, each behind its 2-byte length, without padding: `sender`, `name`, `text`, then the 4th field
+    /// (`photo`, a voice note's frames `voice`, or `extra` as it is) and the 5th (`about`). With a 5th field and nothing
+    /// for the 4th, the 4th is there and empty. A reaction carries no photo or voice note, and its text has to be a listed
+    /// reaction or empty (`Reaction.accepts`). A voice note never comes with a photo, its text is exactly
+    /// `Voice.placeholder` and its frames pass every reader rule (`Voice.split`): a writer sends nothing readers ignore.
+    static func fields(sender: String, name: String, text: String, photo: Data?, extra: Data?, about: About?, fifth raw: Data? = nil,
+                       voice: Data? = nil) throws -> Data {
+        var fields = [sender, name, text].map { Data($0.utf8) }
+        let fifth = about?.field ?? raw
+        if case .reaction? = about, photo != nil || extra != nil || voice != nil || !Reaction.accepts(fields[2]) { throw GroupCryptoError.fieldTooLong }
+        if let voice, photo != nil || extra != nil || text != Voice.placeholder || Voice.split(voice) == nil { throw GroupCryptoError.fieldTooLong }
+        if let photo {
+            guard photo.count <= Photo.maxBytes else { throw GroupCryptoError.fieldTooLong }
+            fields.append(Data([Photo.jpeg]) + photo)
+        } else if let voice { fields.append(Data([Voice.type]) + voice) }
+        else if let extra { fields.append(extra) }
+        else if fifth != nil { fields.append(Data()) }
+        if let fifth { fields.append(fifth) }
+        var body = Data()
+        for b in fields {
+            guard b.count <= 0xFFFF else { throw GroupCryptoError.fieldTooLong }
+            body.append(UInt8(b.count >> 8)); body.append(UInt8(b.count & 0xFF)); body.append(b)
+        }
+        return body
+    }
+
     /// `covered`: what the signature covers, given the body; nil for a packet sealed with this key itself.
     private func parsed(_ id: String, _ ts: Int64, _ plain: Data, covered: ((Data) -> Data)? = nil) -> Opened? {
         guard plain.count >= 64 + 6 else { return nil }
         let body = Data(plain.dropFirst(64))
         var r = FieldReader(bytes: [UInt8](body))
-        guard let sender = r.next(), let name = r.next(), let text = r.next() else { return nil }
-        let extra = r.nextBytes().flatMap { $0.isEmpty ? nil : $0 } // padding reads as an empty field
+        guard let sender = r.next(), let name = r.next(), let text = r.nextBytes() else { return nil }
+        let fourth = r.nextBytes()
+        let extra = fourth.flatMap { $0.isEmpty ? nil : $0 } // padding reads as an empty field
         var photo: Data?
         if let a = extra, a.first == Photo.jpeg, a.count > 1, a.count - 1 <= Photo.maxBytes { photo = Data(a.dropFirst()) }
-        let m = Message(id: id, ts: ts, sender: sender, name: name, text: text, photo: photo) // other bytes are ignored
+        var m = Message(id: id, ts: ts, sender: sender, name: name, text: String(decoding: text, as: UTF8.self), photo: photo)
+        m.voice = Voice.of(extra: extra.map { Data($0) }, text: Data(text)) // type 0x02, only if every rule holds; else the message is its text
+        // The 5th field (spec "Replies and reactions"). Padding reads as an empty one; what follows it is ignored.
+        let fifth = fourth == nil ? nil : r.nextBytes().map { Data($0) }
+        m.about = About.read(field: fifth, text: Data(text))
+        m.notice = Notice.read(field: fifth, ts: ts) // a check-in clock's deadline is checked against the signed time (rule Q2)
         return Opened(message: m, signature: Data(plain.prefix(64)), digest: Data(SHA256.hash(data: covered?(body) ?? signed(id: id, ts: ts, body: body))),
-                      extra: extra.map { Data($0) })
+                      extra: extra.map { Data($0) }, aboutField: m.about == nil ? nil : fifth, fifth: fifth.flatMap { $0.isEmpty ? nil : $0 })
     }
 
     /// HKDF-SHA256 of the group key, no salt, info "darkproof-receipt-v1", 32 bytes.
@@ -250,18 +302,12 @@ public final class GroupCrypto: Sendable {
     /// Returns IV (12) + ciphertext + tag (16). `iv` is random in normal use; tests pass a fixed one. Zero bytes after the
     /// fields pad the packet (`pad`): they are encrypted and signed, and readers ignore them, so relays can't tell a
     /// short message from a long one or count a group's members from the size of a new key.
+    /// `about`: what the message is about, the 5th field (spec "Replies and reactions"); only in a group.
+    /// `fifth`: another 5th field, as it is (spec "The 5th field"), when there is no `about`: in a new key, the group's timer.
+    /// `voice`: a voice note's frames (`Voice`), the 4th field instead of a photo; only in a group.
     public func seal(id: String, ts: Int64, sender: String, name: String, text: String, photo: Data? = nil, extra: Data? = nil,
-                     iv: Data? = nil, pad: Pad = .size, sign: (Data) throws -> Data) throws -> Data {
-        var body = Data()
-        var fields = [sender, name, text].map { Data($0.utf8) }
-        if let photo {
-            guard photo.count <= Photo.maxBytes else { throw GroupCryptoError.fieldTooLong }
-            fields.append(Data([Photo.jpeg]) + photo)
-        } else if let extra { fields.append(extra) }
-        for b in fields {
-            guard b.count <= 0xFFFF else { throw GroupCryptoError.fieldTooLong }
-            body.append(UInt8(b.count >> 8)); body.append(UInt8(b.count & 0xFF)); body.append(b)
-        }
+                     about: About? = nil, fifth: Data? = nil, voice: Data? = nil, iv: Data? = nil, pad: Pad = .size, sign: (Data) throws -> Data) throws -> Data {
+        var body = try GroupCrypto.fields(sender: sender, name: name, text: text, photo: photo, extra: extra, about: about, fifth: fifth, voice: voice)
         body.append(Data(count: Packet.padding(Packet.overhead + body.count, pad)))
         let sig = try sign(signed(id: id, ts: ts, body: body))
         guard sig.count == 64 else { throw GroupCryptoError.badSignature }

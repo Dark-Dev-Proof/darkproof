@@ -195,11 +195,23 @@ struct RoundIcon: View {
 struct ScreenTitle: View {
     let title: String
     let subtitle: String
+    /// "1 day": the group's timer for disappearing messages, shown after the line while one is set.
+    var timer: String? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).scaledFont(32, .heavy).tracking(-0.5).foregroundStyle(Theme.text)
                 .lineLimit(1).minimumScaleFactor(0.6)
-            Text(subtitle).scaledFont(15, .medium).foregroundStyle(Theme.dim)
+            if let timer {
+                HStack(spacing: 5) {
+                    Text(subtitle).lineLimit(1)
+                    Text("·").accessibilityHidden(true)
+                    Image(systemName: "timer").scaledFont(12, .semibold).accessibilityHidden(true)
+                    Text(timer).lineLimit(1).layoutPriority(1).accessibilityLabel("Messages disappear after \(timer)")
+                }
+                .scaledFont(15, .medium).foregroundStyle(Theme.dim)
+            } else {
+                Text(subtitle).scaledFont(15, .medium).foregroundStyle(Theme.dim)
+            }
         }
     }
 }

@@ -50,6 +50,7 @@ final class BleLink: NSObject, CBCentralManagerDelegate, CBPeripheralManagerDele
     private var nodeOf: [UUID: String] = [:] // peripheral we dialed -> node id it reported
     private var nextId = 0
     private var note = ""
+    private var stopped = false // `stopAndWait` was called: nothing starts again
 
     init(nodeId: String, router: MeshRouter, onStatus: @escaping (String) -> Void) {
         service = CBUUID(nsuuid: BleProtocol.service) // the same for every Blackout device
@@ -57,8 +58,23 @@ final class BleLink: NSObject, CBCentralManagerDelegate, CBPeripheralManagerDele
         super.init()
     }
 
+    /// Ends this link for good (its engine was shut down: a group was left, or everything erased): no scanning, no
+    /// advertising, every link closed and told to the router. Returns once that is so, and nothing of this link runs
+    /// afterwards. From any thread but `q`.
+    func stopAndWait() {
+        q.sync {
+            stopped = true
+            for l in Array(links.values) { drop(l) }
+            if cm?.state == .poweredOn { cm?.stopScan() }
+            if pm?.state == .poweredOn { pm?.stopAdvertising(); pm?.removeAllServices() }
+            cm?.delegate = nil; pm?.delegate = nil
+            cm = nil; pm = nil; tx = nil
+        }
+    }
+
     func start() {
         q.async {
+            guard !self.stopped else { return }
             #if os(iOS)
             // Restore identifiers: if iOS closes DarkProof to free memory, it relaunches it in the background when
             // Bluetooth activity arrives (a phone connecting, a message coming in), so this phone keeps relaying.
@@ -80,6 +96,7 @@ final class BleLink: NSObject, CBCentralManagerDelegate, CBPeripheralManagerDele
     /// setting up after 30 s (spec "Limits"). A peripheral-role link is only forgotten: iOS can't disconnect a central,
     /// but this phone stops serving it and it no longer counts toward the link limit.
     private func sweep() {
+        guard !stopped else { return }
         let now = Date()
         for l in links.values where l.remote == nil {
             if let o = l.openedAt { if now.timeIntervalSince(o) >= BleProtocol.helloWait { drop(l) } }

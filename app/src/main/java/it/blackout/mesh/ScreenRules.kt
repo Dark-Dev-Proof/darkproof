@@ -23,9 +23,12 @@ object AlertLife {
     /**
      * The timeout of an alert for a message dated [ts], posted at [now]: it goes a week after the message's date, before
      * the phone can delete the message itself, so its text doesn't outlive the message. A minute at least, for a message
-     * that arrives that late; a week at most, for one dated ahead.
+     * that arrives that late; a week at most, for one dated ahead. [timerMs]: the group's timer for disappearing messages
+     * (spec "Disappearing messages"), counted from arrival, which is about now: the alert ends when its message is due, or
+     * earlier, never later.
      */
-    fun timeout(ts: Long, now: Long): Long = (ts + WEEK_MS - now).coerceIn(60_000L, WEEK_MS)
+    fun timeout(ts: Long, now: Long, timerMs: Long? = null): Long =
+        minOf((ts + WEEK_MS - now).coerceIn(60_000L, WEEK_MS), timerMs?.takeIf { it > 0 }?.coerceAtLeast(60_000L) ?: Long.MAX_VALUE)
 }
 
 /**

@@ -10,7 +10,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -43,9 +46,21 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.focus.focusRequester
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 // MARK: - Chat
@@ -71,10 +86,13 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
     val tick = s.tick
     val deliveries = remember(tick, shown) { shown.filter { it.sender == MeshEngine.deviceId }.associate { it.id to MeshEngine.delivery(it) } }
     val joined = remember(tick, everyone, g) { if (everyone) emptyList() else MeshEngine.groupLines(g.code) }
+    // The group's timer for disappearing messages (spec "Disappearing messages"): seconds, 0 off, null not known.
+    val timer = remember(tick, everyone, g) { if (everyone) null else MeshEngine.timer(g.code).seconds }
     val rows = remember(shown, joined) {
         val out = ArrayList<ChatRow>(shown.size + 8); var day = -1
         val keys = RowKeys() // no key twice, or the list ends the app: two events can have the same time and text, and a day can come up again
-        val events = joined.sortedBy { it.first }.toMutableList()
+        // With no message to place them between, what last happened in the group still shows: a join, the timer.
+        val events = joined.sortedBy { it.first }.let { if (shown.isEmpty()) it.takeLast(3) else it }.toMutableList()
         fun dayRow(ts: Long) { val d = dayOf(ts); if (d != day) { day = d; out += ChatRow.Day(dayLabel(ctx, ts), keys.unique("day-$d")) } }
         fun eventsUpTo(ts: Long) { while (events.isNotEmpty() && events[0].first <= ts) { val e = events.removeAt(0); dayRow(e.first); out += ChatRow.Event(e.second, keys.unique("event-${e.first}-${e.second}")) } }
         shown.forEachIndexed { i, m ->
@@ -87,111 +105,221 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
         out
     }
     val lastMine = remember(shown) { shown.lastOrNull { it.sender == MeshEngine.deviceId && CheckIn.of(it.text) != null } }
+    // Replies and reactions are for groups only (spec "Replies and reactions"): on Everyone nothing of them is read.
+    val shownTargets = remember(shown, everyone, g) { if (everyone) emptyMap() else About.targets(shown, g.code) }
+    val heldTargets = remember(tick, everyone, g) { if (everyone) emptyMap() else About.targets(MeshEngine.groupRows(g.code), g.code) }
+    // The message being answered, while it is still shown in this group's chat; switching channel or group clears it.
+    val replying = s.replying?.takeIf { (code, _) -> !everyone && code == g.code }?.let { (_, id) -> shown.firstOrNull { it.id == id } }
+    LaunchedEffect(everyone, g.code) { if (s.replying?.first != g.code || everyone) s.replying = null }
+    var flashed by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val focusDraft = remember { androidx.compose.ui.focus.FocusRequester() }
     val list = rememberLazyListState()
     // To the end when the chat opens; for a new message only if it is mine or the list was already at the end.
     var counted by remember(everyone, g) { mutableIntStateOf(-1) }
+    // Kept at the end while the list is there: when the window under it changes (the keyboard closing after a send), the
+    // end stays in view. Scrolling up by hand lets go of it; reaching the end again, or sending, takes it back.
+    var pinned by remember(everyone, g) { mutableStateOf(true) }
     LaunchedEffect(rows.size, everyone, g) {
         if (rows.isEmpty()) return@LaunchedEffect
         val lastSeen = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
         val atEnd = counted < 0 || lastSeen >= counted - 1
-        if (atEnd || shown.lastOrNull()?.sender == MeshEngine.deviceId) list.scrollToItem(rows.size - 1, 100_000) // the offset is clamped: the very end
+        if (atEnd || shown.lastOrNull()?.sender == MeshEngine.deviceId) { list.scrollToItem(rows.size - 1, 100_000); pinned = true } // the offset is clamped: the very end
         counted = rows.size
     }
-    val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) Thread {
-            val jpeg = PhotoShrinker.jpeg(ctx, uri)
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                if (jpeg == null) Toast.makeText(ctx, "This photo can't be read", Toast.LENGTH_LONG).show() else open(Sheet.SendPhoto(jpeg))
-            }
-        }.start()
+    val lastRow by rememberUpdatedState(rows.size - 1)
+    LaunchedEffect(list, everyone, g) {
+        launch { list.interactionSource.interactions.collect { if (it is androidx.compose.foundation.interaction.DragInteraction.Start) pinned = false } }
+        launch { snapshotFlow { list.canScrollForward }.collect { more -> if (!more) pinned = true } }
+        snapshotFlow { list.layoutInfo.viewportSize.height }.collect { if (pinned && lastRow >= 0) list.scrollToItem(lastRow, 100_000) }
     }
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> photoChosen(ctx, uri, open) }
+    // The phones' picker is asked for above the lock (LocalPhotoPicker), so a photo chosen while the app locked isn't lost.
+    val above = LocalPhotoPicker.current
+    val choosePhoto = { above?.invoke() ?: pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+    var tray by rememberSaveable { mutableStateOf(false) }
+    var askAll by remember { mutableStateOf(false) }
+    if (tray && !everyone) AddTray(
+        photo = { tray = false; choosePhoto() },
+        voice = if (VoiceAudio.canRecord) ({ tray = false; Toast.makeText(ctx, "Hold the mic to record, 10 seconds at most", Toast.LENGTH_LONG).show() }) else null,
+        safe = { tray = false; checkIn(a, s, CheckIn.SAFE) },
+        help = { tray = false; s.helpGroup = null; s.askHelp = true },
+        ask = { tray = false; askAll = true },
+        timer = { tray = false; open(Sheet.Timer) }) { tray = false }
+    if (askAll) AskEveryone(g) { askAll = false }
     val typing = WindowInsets.isImeVisible
     Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding().padding(bottom = if (typing || !Here.tabBar) 0.dp else 84.dp)) { // room for the tab bar
         Column(Modifier.padding(horizontal = 20.dp).padding(top = if (Here.wide) 2.dp else 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (!Here.wide) { // a wide window names the chat above it and switches channels at its side
-                ScreenTitle(g.name, if (phones == 1) "1 phone in range" else "$phones phones in range")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // The group's timer shows next to the reach line only while one is set.
+                    Box(Modifier.weight(1f)) { ScreenTitle(g.name, if (phones == 1) "1 phone in range" else "$phones phones in range", timer = timer?.takeIf { it > 0 }?.let(GroupTimer::label)) }
+                    if (!everyone) RoundIcon(R.drawable.ic_shield, desc = "Group security") { open(Sheet.Security) }
+                }
                 PillSwitch(g.name, "Everyone", everyone) { s.everyone = it }
             }
-            Txt(if (everyone) "Anyone with DarkProof can read these, nearby or online." else "Only people in ${g.name} can read these. They disappear after one to two weeks.", 14, color = Theme.dim)
-            if (!everyone && remember(tick, g) { MeshEngine.removed(g.code) }) Card(padding = 16.dp) {
-                Txt("You were removed from ${g.name}", 16, FontWeight.SemiBold)
-                Txt("You can still read what's here, but you can't write or see anything new. To come back, ask for a new invite.", 14, color = Theme.dim)
-            } else if (!everyone && remember(tick, g) { MeshEngine.inviteClosed(g.code) }) Card(padding = 16.dp) {
-                Txt("This invite no longer works", 16, FontWeight.SemiBold)
-                Txt("The group has a new code. Ask someone in ${g.name} for a new invite.", 14, color = Theme.dim)
-            } else if (!everyone && remember(tick, g) { MeshEngine.rejoining(g.code) }) Card(padding = 16.dp) {
-                Txt("Rejoining ${g.name}…", 16, FontWeight.SemiBold)
-                Txt("You've been away for more than a week. A phone that's in the group needs to be in reach, nearby or online.", 14, color = Theme.dim)
-            } else if (!everyone && remember(tick, g) { MeshEngine.joining(g.code) }) Card(padding = 16.dp) {
-                Txt("Asking to join ${g.name}…", 16, FontWeight.SemiBold)
-                Txt("An admin of the group has to let you in, and their phone needs to be in reach, nearby or online. You can write here once they have.", 14, color = Theme.dim)
+            Txt(if (everyone) "Anyone with DarkProof can read these, nearby or online." else SecurityWords.chatNote(g.name, s.highRisk, Here.device, timer), 14, color = Theme.dim)
+            if (!everyone) remember(tick, g) { groupNote(g) }?.let { (title, text) ->
+                Card(padding = 16.dp) { Txt(title, 16, FontWeight.SemiBold); Txt(text, 14, color = Theme.dim) }
             }
-            if (!everyone) remember(tick, g) { MeshEngine.joinRequests(g.code) }.forEach { r ->
-                Card(padding = 16.dp) {
-                    Txt("${r.name} wants to join ${g.name}", 16, FontWeight.SemiBold)
-                    Txt(Fingerprint.emojiLines(P256.emoji(r.pub)), 22, lineHeight = 30)
-                    Txt("Let them in only if you know it's them. Their phone shows these same emoji.", 14, color = Theme.dim)
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        PrimaryButton("Let in", Modifier.weight(1f)) { MeshEngine.approveJoin(g.code, r.id) { ok -> if (!ok) Toast.makeText(ctx, "Not everyone's keys have reached this ${Here.device} yet. Try again when they're in reach.", Toast.LENGTH_LONG).show() } }
-                        SecondaryButton("Not now", Modifier.weight(1f)) { MeshEngine.declineJoin(g.code, r.id) }
-                    }
-                }
-            }
+            // Admins only (the engine lists none for anyone else): one line, however many are asking.
+            if (!everyone) JoinRow(remember(tick, g) { MeshEngine.joinRequests(g.code) }) { open(Sheet.Joins) }
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = list, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (shown.isEmpty()) item {
-                Column(Modifier.fillMaxWidth().padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Txt("No messages yet", 20, FontWeight.Bold)
-                    Txt(if (everyone) "Messages here reach everyone, nearby or online." else if (Here.tabBar) "Say hi, or tap I'm safe on Home." else "Say hi, or tap I'm safe.", 15, color = Theme.dim)
-                }
-            }
             items(rows, key = { it.key }) { r ->
                 when (r) {
                     is ChatRow.Day -> Txt(r.label, 13, FontWeight.SemiBold, Theme.dim, Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 4.dp).wrapContentWidth())
                     is ChatRow.Event -> Txt(r.text, 14, FontWeight.Medium, Theme.dim, Modifier.fillMaxWidth().padding(vertical = 6.dp).wrapContentWidth())
                     is ChatRow.Msg -> MessageRow(r.m, r.firstOfRun, deliveries[r.m.id], s.name,
-                        lastMine?.takeIf { it.ts > r.m.ts }?.let { CheckIn.of(it.text) }, open, { s.moderated++ }) { c ->
+                        lastMine?.takeIf { it.ts > r.m.ts }?.let { CheckIn.of(it.text) }, open, { s.moderated++ },
+                        rowExtras(r.m, s, everyone, shownTargets, heldTargets, flashed == r.m.id, open,
+                            reply = { s.replying = g.code to r.m.id; scope.launch { kotlinx.coroutines.delay(300); runCatching { focusDraft.requestFocus() } } },
+                            jump = { id -> rows.indexOfFirst { it is ChatRow.Msg && it.m.id == id }.takeIf { it >= 0 }?.let { i ->
+                                scope.launch { pinned = false; list.animateScrollToItem(i); flashed = id; kotlinx.coroutines.delay(1_400); if (flashed == id) flashed = null } } })) { c ->
                         if (c == CheckIn.SAFE) checkIn(a, s, CheckIn.SAFE, group = r.m.group) else { s.helpGroup = r.m.group; s.askHelp = true }
                     }
                 }
             }
-        }
-        if (everyone || !remember(tick, g) { MeshEngine.removed(g.code) || MeshEngine.joining(g.code) }) Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (!everyone) RoundIcon(R.drawable.ic_photo_camera, 52.dp, desc = "Send a photo") {
-                pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            // No message: under the group's last lines, if any. With a timer, or in high-risk mode, an empty chat may be one
+            // whose messages have left: it doesn't say "yet".
+            if (shown.isEmpty()) item(key = "empty") {
+                val leaves = !everyone && (s.highRisk || (timer ?: 0) > 0)
+                Column(Modifier.fillMaxWidth().padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Txt(if (leaves) "No messages here now" else "No messages yet", 20, FontWeight.Bold)
+                    Txt(if (everyone) "Messages here reach everyone, nearby or online."
+                        else if (leaves) "What you write reaches everyone in ${g.name} who is in range, or later when they are."
+                        else if (Here.tabBar) "Say hi, or tap I'm safe on Home." else "Say hi, or tap I'm safe.", 15, color = Theme.dim, align = TextAlign.Center)
+                }
             }
+        }
+        val canWrite = everyone || !remember(tick, g) { MeshEngine.removed(g.code) || MeshEngine.joining(g.code) }
+        if (canWrite && replying != null) ReplyStrip(if (replying.sender == MeshEngine.deviceId) "yourself" else Quote.name(replying, MeshEngine.deviceId), Quote.line(replying),
+            Modifier.padding(horizontal = 16.dp).padding(top = 6.dp)) { s.replying = null }
+        // Voice notes: groups only, on a phone that can record them (Android 10 and newer; never on a computer).
+        val voice = rememberVoiceComposer(s, replying = { if (everyone) null else replying }, sent = { s.replying = null; pinned = true })
+        if (canWrite) Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            val recording = voice.rec.on
+            if (!everyone && !recording) RoundIcon(R.drawable.ic_add, 52.dp, desc = "Add something") { tray = true }
             val send: () -> Unit = {
                 val t = draft.trim()
                 if (t.isNotEmpty() && meshReady(ctx)) {
                     s.drafts.remove(channel)
+                    pinned = true
                     val pub = everyone
+                    val to = if (pub) null else replying // a reply: the 5th field names it (spec "Replies")
+                    s.replying = null
                     Thread {
-                        val fits = MeshEngine.send(t, pub)
+                        val fits = MeshEngine.send(t, pub, replyTo = to)
                         if (!fits && MeshEngine.lora?.connected == true) android.os.Handler(android.os.Looper.getMainLooper()).post {
                             Toast.makeText(ctx, "Too long for LoRa: it will travel only over Bluetooth and Wi-Fi", Toast.LENGTH_LONG).show()
                         }
                     }.start()
                 }
             }
-            TextBox(draft, { s.drafts[channel] = it.take(1000) }, if (everyone) "Message everyone" else "Message ${g.name}", singleLine = false,
-                keyboard = KeyboardOptions(KeyboardCapitalization.Sentences), modifier = Modifier.weight(1f), shape = RoundedCornerShape(26.dp),
+            if (recording) RecordingStrip(voice.rec, Modifier.weight(1f))
+            else TextBox(draft, { s.drafts[channel] = it.take(1000) }, if (everyone) "Message everyone" else "Message ${g.name}", singleLine = false,
+                keyboard = KeyboardOptions(KeyboardCapitalization.Sentences), modifier = Modifier.weight(1f).focusRequester(focusDraft), shape = RoundedCornerShape(26.dp),
                 onEnter = if (Here.wide) send else null) // at a computer's keyboard, Enter sends
-            RoundIcon(R.drawable.ic_arrow_upward, 52.dp, tint = if (draft.isBlank()) Theme.dim else Color.Black,
+            // An empty box in a group: the send button is the mic (hold to record). Never on Everyone, never where it can't record.
+            if (recording || (!everyone && VoiceAudio.canRecord && draft.isBlank())) MicButton(voice.rec, voice.begin, voice.end)
+            else RoundIcon(R.drawable.ic_arrow_upward, 52.dp, tint = if (draft.isBlank()) Theme.dim else Color.Black,
                 bg = if (draft.isBlank()) Theme.tile else Color.White, desc = "Send", onClick = send)
         }
     }
 }
 
+/** What one message row needs for replies and reactions ([RowExtras]); read again at each update of the engine ([AppState.tick]). */
+@Composable
+private fun rowExtras(m: Message, s: AppState, everyone: Boolean, shown: Map<String, Message>, held: Map<String, Message>, flash: Boolean,
+                      open: (Sheet) -> Unit, reply: () -> Unit, jump: (String) -> Unit): RowExtras {
+    val tick = s.tick; val moderated = s.moderated
+    val quote = remember(m, shown, held) { if (everyone) null else quoteOf(m, shown, held, MeshEngine.deviceId) }
+    val chips = remember(tick, moderated, m) { if (m.public) emptyList() else MeshEngine.chips(m) }
+    val canAnswer = remember(tick, m) { !m.public && MeshEngine.canAnswer(m) }
+    return RowExtras(quote, chips, canAnswer, flash,
+        react = { e -> Thread { MeshEngine.react(m, e) }.start() }, reply = reply, jump = jump,
+        journey = { if (!m.public && m.sender == MeshEngine.deviceId) open(Sheet.Journey(m.id)) })
+}
+
+/**
+ * Where this phone stands in group [g] when it isn't simply in it: removed, joining with an invite that no longer works,
+ * rejoining after more than a week, or still asking to join. A title and a text (the chat and Group security show them); null when it is in.
+ */
+fun groupNote(g: SavedGroup): Pair<String, String>? = when {
+    MeshEngine.removed(g.code) -> "You were removed from ${g.name}" to "You can still read what's here, but you can't write or see anything new. To come back, ask for a new invite."
+    MeshEngine.inviteClosed(g.code) -> "This invite no longer works" to "The group has a new code. Ask someone in ${g.name} for a new invite."
+    MeshEngine.rejoining(g.code) -> "Rejoining ${g.name}…" to "You've been away for more than a week. A phone that's in the group needs to be in reach, nearby or online."
+    MeshEngine.joining(g.code) -> "Asking to join ${g.name}…" to "An admin of the group has to let you in, and their phone needs to be in reach, nearby or online. You can write here once they have."
+    else -> null
+}
+
+/** Set above the app's lock screen on a phone: opens the photo picker and, when a photo comes back, the "Send photo" sheet. */
+val LocalPhotoPicker = staticCompositionLocalOf<(() -> Unit)?> { null }
+
+/** A photo that was picked: made small enough to send, off the main thread, then the "Send photo" sheet opens with it. */
+fun photoChosen(ctx: android.content.Context, uri: Uri?, open: (Sheet) -> Unit) {
+    if (uri != null) Thread {
+        val jpeg = PhotoShrinker.jpeg(ctx, uri)
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            if (jpeg == null) Toast.makeText(ctx, "This photo can't be read", Toast.LENGTH_LONG).show() else open(Sheet.SendPhoto(jpeg))
+        }
+    }.start()
+}
+
+/**
+ * The "+" in the group's message box: what can be added, four to a row. Each does what its button elsewhere does.
+ * [voice] (where this device can record): says how, since a voice note is recorded by holding the mic. [timer]: the
+ * group's timer, which admins choose in the sheet behind it and everyone else reads there. A place comes later; there is
+ * no "Camera" while the app has no way to take a picture itself.
+ */
+@Composable
+private fun AddTray(photo: () -> Unit, voice: (() -> Unit)?, safe: () -> Unit, help: () -> Unit, ask: () -> Unit, timer: () -> Unit, close: () -> Unit) = SmallSheet(close) {
+    // Room above and below: the sheet scrolls, which cuts off what is drawn outside it, and the green and red buttons glow.
+    val items: List<@Composable (Modifier) -> Unit> = listOfNotNull(
+        { m -> CircleAction(R.drawable.ic_image, "Photo", m, onClick = photo) },
+        voice?.let { v -> { m: Modifier -> CircleAction(R.drawable.ic_mic, "Voice note", m, onClick = v) } },
+        { m -> CircleAction(R.drawable.ic_verified_user, "I'm safe", m, Theme.safe, safe) },
+        { m -> CircleAction(R.drawable.ic_sos, "I need help", m, Theme.help, help) },
+        { m -> CircleAction(R.drawable.ic_notifications, "Ask if safe", m, onClick = ask) },
+        { m -> CircleAction(R.drawable.ic_schedule, "Timer", m, onClick = timer) },
+    )
+    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        for (row in items.chunked(4)) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            row.forEach { it(Modifier.weight(1f)) }
+            repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
+        }
+    }
+}
+
+/** "Ask if everyone is safe?", from People and from the chat's "+" tray: the whole group gets the question with one-tap answers. */
+@Composable
+fun AskEveryone(g: SavedGroup, close: () -> Unit) {
+    val ctx = LocalContext.current
+    Confirm("Ask if everyone is safe?", "Everyone in ${g.name} gets “Is everyone safe?” with one-tap answers.", "Ask",
+        onYes = { close(); if (meshReady(ctx)) { Thread { MeshEngine.send(AreYouSafe().text) }.start(); Toast.makeText(ctx, "Asked ${g.name}", Toast.LENGTH_SHORT).show() } },
+        onNo = close)
+}
+
+/**
+ * What a message row needs for replies and reactions (spec "Replies and reactions"): its [quote] if it is a reply, the
+ * [chips] under it, and whether the group can be written to now ([canAnswer]: then the reactions and "Reply" are offered).
+ * [flash]: lit for a moment, after a quote of it was tapped.
+ */
+private class RowExtras(val quote: QuoteLine?, val chips: List<Reactions.Chip>, val canAnswer: Boolean, val flash: Boolean,
+                        val react: (String) -> Unit, val reply: () -> Unit, val jump: (String) -> Unit, val journey: () -> Unit)
+
 /**
  * One message: a check-in, a report about someone, an "are you safe?" question (with one-tap answers when it is for
- * me), a place, or text and photo. Hold it to copy the text, and someone else's to block them or report it (Everyone).
+ * me), a place, or text and photo. Holding a group message (or right-clicking it, or Enter on it from the keyboard) opens
+ * [HoldOverlay]: the reactions, Reply, Copy, for my own "How it got there", and last and red Block or Hide for someone
+ * else's. An Everyone message keeps its menu: Copy, Block or Hide, Report.
  * While a message is "not verified yet" nobody knows who wrote it: it can be hidden, but its sender can't be blocked.
  */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myName: String, answered: CheckIn?,
-                       open: (Sheet) -> Unit, moderated: () -> Unit, answer: (CheckIn) -> Unit) {
+                       open: (Sheet) -> Unit, moderated: () -> Unit, x: RowExtras, answer: (CheckIn) -> Unit) {
     val ctx = LocalContext.current
     val me = m.sender == MeshEngine.deviceId
     val check = if (!m.public) CheckIn.of(m.text) else null
@@ -200,27 +328,40 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
     val place = if (m.public) Place.of(m.text) else null
     val time = clock(ctx, m.ts)
     var menu by remember { mutableStateOf(false) }
+    var held by remember { mutableStateOf(false) }
     var confirmBlock by remember { mutableStateOf(false) }
-    val hold = Modifier.combinedClickable(onLongClick = { menu = true }, onClick = {}, onLongClickLabel = "Message options")
+    val openMenu = { Buzz.play(Buzz.Hold); if (m.public) menu = true else held = true }
+    val hold = Modifier
+        // A computer: the menu key or Shift+F10 (and Enter) on a message opens what holding it opens.
+        .onPreviewKeyEvent { e ->
+            val k = e.key
+            val asks = k == Key.Enter || k == Key.NumPadEnter || k == Key.Spacebar || k == Key.Menu || (k == Key.F10 && e.isShiftPressed)
+            if (asks && e.type == KeyEventType.KeyDown) openMenu()
+            asks
+        }
+        // A mouse: the right button opens it too.
+        .pointerInput(m.id) { awaitPointerEventScope { while (true) { val e = awaitPointerEvent(); if (e.type == PointerEventType.Press && e.buttons.isSecondaryPressed) { e.changes.forEach { it.consume() }; openMenu() } } } }
+        .combinedClickable(interactionSource = null, indication = MessagePress, onLongClick = openMenu, onClick = {}, onLongClickLabel = "Message options")
     if (confirmBlock) Confirm("Block ${m.name}?", "You won't see their messages, places or check-ins on this ${Here.device}. You can unblock them in Settings.", "Block", danger = true,
         onYes = { confirmBlock = false; Moderation.block(ctx, m); moderated() }, onNo = { confirmBlock = false })
-    // Shown under the message held (anchored to the Box around it).
+    // A voice note has no text to copy (its text only says what it is).
+    val copyable = if (m.voice != null) "" else if (m.photo != null) Photo.caption(m.text) else m.text
+    val hide = { Moderation.hide(ctx, m.id); moderated(); Toast.makeText(ctx, "Hidden on this ${Here.device}", Toast.LENGTH_SHORT).show() }
+    // An Everyone message: the menu it always had (anchored to the Box around it).
     val options: @Composable () -> Unit = { DropdownMenu(menu, { menu = false }, containerColor = Theme.card) {
-        DropdownMenuItem(text = { Txt("Copy text", 16) }, onClick = { menu = false; copyText(ctx, "Message", if (m.photo != null) Photo.caption(m.text) else m.text) })
+        DropdownMenuItem(text = { Txt("Copy text", 16) }, onClick = { menu = false; copyText(ctx, "Message", copyable) })
         if (Blocks.canBlock(m, MeshEngine.deviceId)) DropdownMenuItem(text = { Txt("Block ${m.name}", 16) }, onClick = { menu = false; confirmBlock = true })
-        else if (!me) DropdownMenuItem(text = { Txt("Hide this message", 16) }, onClick = {
-            menu = false; Moderation.hide(ctx, m.id); moderated()
-            Toast.makeText(ctx, "Hidden on this ${Here.device}", Toast.LENGTH_SHORT).show()
-        })
+        else if (!me) DropdownMenuItem(text = { Txt("Hide this message", 16) }, onClick = { menu = false; hide() })
         if (!me && m.public) DropdownMenuItem(text = { Txt("Report this message", 16, color = Theme.help) }, onClick = {
             menu = false; Moderation.hide(ctx, m.id); NostrReports.report(ctx, m.id); moderated()
             Toast.makeText(ctx, "Reported and hidden on this ${Here.device}", Toast.LENGTH_SHORT).show()
         })
     } }
     val card = check != null || vouch != null || ask != null || place != null
-    Box(Modifier.fillMaxWidth()) {
-    options()
-    Column(Modifier.fillMaxWidth().then(hold).padding(top = if (firstOfRun) 8.dp else 0.dp), horizontalAlignment = if (me && !card) Alignment.End else Alignment.Start) {
+    // The message itself; [preview]: drawn again over the dimmed chat while it is held, without what goes under it.
+    val body: @Composable (Boolean) -> Unit = { preview ->
+        // A card has no bubble to hold the quote: it sits above the card.
+        if (card) x.quote?.let { q -> QuoteView(q, Modifier.padding(bottom = 4.dp).background(Theme.card, RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 8.dp), tap = if (preview) null else ({ q.row?.let(x.jump) }), hold = if (preview) null else openMenu) }
         when {
             check != null -> {
                 val c = if (check == CheckIn.HELP) Theme.help else Theme.safe
@@ -238,8 +379,11 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
                     CheckIn.battery(m.text)?.let { BatteryLabel(it); Spacer(Modifier.width(12.dp)) }
                     Txt(time, 15, color = Theme.dim)
                 }
-                CheckIn.spot(m.text)?.let { sp -> SpotLinks(if (me) null else "Find ${m.name}", sp) { open(Sheet.Find(m.name, sp, m.ts)) } }
-                if (me) Status(delivery, null)
+                if (!preview) {
+                    CheckIn.spot(m.text)?.let { sp -> SpotLinks(if (me) null else "Find ${m.name}", sp) { open(Sheet.Find(m.name, sp, m.ts)) } }
+                    Chips(x)
+                    if (me) Status(delivery, null, x.journey)
+                }
             }
             vouch != null -> {
                 val c = if (vouch.status == CheckIn.HELP) Theme.help else Theme.safe
@@ -255,8 +399,11 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
                     }
                     Txt(time, 15, color = Theme.dim)
                 }
-                vouch.spot?.let { sp -> SpotLinks("Find ${vouch.subject}", sp) { open(Sheet.Find(vouch.subject, sp, m.ts)) } }
-                if (me) Status(delivery, null)
+                if (!preview) {
+                    vouch.spot?.let { sp -> SpotLinks("Find ${vouch.subject}", sp) { open(Sheet.Find(vouch.subject, sp, m.ts)) } }
+                    Chips(x)
+                    if (me) Status(delivery, null, x.journey)
+                }
             }
             ask != null -> {
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Theme.card).padding(horizontal = 18.dp, vertical = 16.dp),
@@ -268,18 +415,19 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
                         Txt(time, 15, color = Theme.dim)
                     }
                     // Answered already (a check-in of mine came after the question): no buttons.
-                    if (!me && ask.isFor(myName) && answered != null)
+                    if (preview) Unit
+                    else if (!me && ask.isFor(myName) && answered != null)
                         Txt("You answered: ${if (answered == CheckIn.HELP) "I need help" else "I'm safe"}", 15, color = Theme.dim)
                     else if (!me && ask.isFor(myName)) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         CapsuleChoice("I'm safe", Theme.safe, Color.Black, Modifier.weight(1f)) { answer(CheckIn.SAFE) }
                         CapsuleChoice("I need help", Theme.help, Color.White, Modifier.weight(1f)) { answer(CheckIn.HELP) }
                     }
                 }
-                if (me) Status(delivery, null)
+                if (!preview) { Chips(x); if (me) Status(delivery, null, x.journey) }
             }
             place != null -> {
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Theme.card).clickable(enabled = place.spot != null) {
-                    place.spot?.let { open(Sheet.Find(place.kind.word, it, m.ts)) } }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().tap(CardPress, enabled = place.spot != null && !preview, role = null) {
+                    place.spot?.let { open(Sheet.Find(place.kind.word, it, m.ts)) } }.background(Theme.card, RoundedCornerShape(24.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     KindIcon(place.kind)
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
@@ -291,26 +439,70 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
                 }
             }
             else -> {
-                if (!me && firstOfRun) Txt(m.name, 14, FontWeight.SemiBold, Theme.dim, Modifier.padding(start = 14.dp, bottom = 4.dp))
+                if (!me && (firstOfRun || preview)) Txt(m.name, 14, FontWeight.SemiBold, Theme.dim, Modifier.padding(start = 14.dp, bottom = 4.dp))
                 val bubble = if (me) Color.White else Theme.tile
                 val fg = if (me) Color.Black else Theme.text
                 Column(Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(22.dp)).background(bubble)) {
+                    x.quote?.let { q -> QuoteView(q, Modifier.padding(start = 16.dp, end = 16.dp, top = 11.dp), onWhite = me, tap = if (preview) null else ({ q.row?.let(x.jump) }), hold = if (preview) null else openMenu) }
                     m.photo?.let { jpeg ->
                         val img = remember(m.id) { decodePhoto(jpeg)?.asImageBitmap() }
                         // The sender chooses the picture: its shape is kept within what a row can be laid out as (Photo.shape).
-                        if (img != null) Image(img, "Photo", Modifier.fillMaxWidth().aspectRatio(Photo.shape(img.width, img.height))
-                            .clickable { open(Sheet.ViewPhoto(jpeg)) }, contentScale = ContentScale.Crop)
+                        if (img != null) Image(img, "Photo", Modifier.padding(top = if (x.quote != null) 8.dp else 0.dp).fillMaxWidth().aspectRatio(Photo.shape(img.width, img.height))
+                            .tap(Press(down = 0.98f, shape = RectangleShape, dim = 0.15f, buzz = Buzz.None), enabled = !preview, role = null) { open(Sheet.ViewPhoto(jpeg)) }, contentScale = ContentScale.Crop)
                     }
-                    val text = if (m.photo != null) Photo.caption(m.text) else m.text
-                    if (text.isNotEmpty()) Txt(text, 17, color = fg, modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp))
+                    // A voice note only from a group packet whose signature checked (Voice.playable); until then, or if its
+                    // field was ignored, the message is its text.
+                    if (Voice.playable(m)) VoiceNoteRow(m, me, preview, openMenu)
+                    else {
+                        val text = if (m.photo != null) Photo.caption(m.text) else m.text
+                        if (text.isNotEmpty()) Txt(text, 17, color = fg, modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp))
+                        else if (x.quote != null && m.photo == null) Spacer(Modifier.height(11.dp))
+                        if (m.voice == null && !m.public && m.text == Voice.PLACEHOLDER) CantPlayNote(me)
+                    }
                 }
-                if (me) Status(delivery, time) else Txt(time, 13, color = Theme.dim, modifier = Modifier.padding(start = 14.dp, top = 3.dp))
+                if (!preview) {
+                    Chips(x, Modifier.padding(horizontal = 8.dp).offset(y = (-4).dp))
+                    if (me) Status(delivery, time, if (m.public) null else x.journey) else Txt(time, 13, color = Theme.dim, modifier = Modifier.padding(start = 14.dp, top = 3.dp))
+                }
             }
         }
+    }
+    if (held) {
+        val close = { held = false }
+        val items = buildList {
+            if (x.canAnswer) add(HoldItem("Reply", R.drawable.ic_reply) { close(); x.reply() })
+            if (copyable.isNotEmpty()) add(HoldItem("Copy", R.drawable.ic_content_copy) { close(); copyText(ctx, "Message", copyable) })
+            if (me) add(HoldItem("How it got there", R.drawable.ic_route) { close(); x.journey() })
+            // Last and red: what there was before for someone else's message. My own group messages have no local removal.
+            if (!me && Blocks.canBlock(m, MeshEngine.deviceId)) add(HoldItem("Block ${m.name}", R.drawable.ic_block, danger = true) { close(); confirmBlock = true })
+            else if (!me) add(HoldItem("Hide this message", R.drawable.ic_visibility_off, danger = true) { close(); hide() })
+        }
+        HoldOverlay(me && !card, if (x.canAnswer) ({ e -> close(); Buzz.play(Buzz.Tap); x.react(e) }) else null, items, close) {
+            Column(horizontalAlignment = if (me && !card) Alignment.End else Alignment.Start) { body(true) }
+        }
+    }
+    Box(Modifier.fillMaxWidth()) {
+    options()
+    Column(Modifier.fillMaxWidth().then(hold).padding(top = if (firstOfRun) 8.dp else 0.dp)
+        .then(if (x.flash) Modifier.background(Theme.text.copy(alpha = 0.10f), RoundedCornerShape(24.dp)) else Modifier),
+        horizontalAlignment = if (me && !card) Alignment.End else Alignment.Start) {
+        body(false)
         if (!me) VerifyNote(m)
     }
     }
 }
+
+/** The reactions under a message, when it has any. */
+@Composable
+private fun Chips(x: RowExtras, modifier: Modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+    if (x.chips.isNotEmpty()) ReactionChips(x.chips, modifier, if (x.canAnswer) x.react else null)
+}
+
+/** A message is held, not tapped: it gives a little under the finger and lights up, then its menu opens. */
+private val MessagePress = Press(down = 0.98f, shape = RoundedCornerShape(22.dp), dim = 0f, lift = 0f, light = 0.04f, buzz = Buzz.None)
+
+/** A card that opens something: it gives a little and lights up, the board's .rowc. */
+val CardPress = Press(down = 0.98f, shape = RoundedCornerShape(22.dp), dim = 0f, lift = 0.05f, light = 0.05f)
 
 /** Under someone else's message: "Not verified yet" (their key hasn't come), or a new key for a checked person's name. */
 @Composable
@@ -324,13 +516,13 @@ private fun VerifyNote(m: Message) {
 @Composable
 private fun SpotLinks(find: String?, sp: Spot, open: () -> Unit) = Row(Modifier.padding(start = 18.dp, top = 4.dp),
     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-    if (find != null) Txt(find, 14, FontWeight.SemiBold, Theme.text, Modifier.clip(CircleShape).clickable(role = Role.Button, onClick = open).padding(vertical = 4.dp))
+    if (find != null) Txt(find, 14, FontWeight.SemiBold, Theme.text, Modifier.tap(Press(down = 0.95f, shape = RoundedCornerShape(8.dp), dim = 0.35f, buzz = Buzz.Tap), onClick = open).padding(vertical = 4.dp))
     PlusCodeLabel(sp)
 }
 
-/** Under my messages: still waiting, given to a phone, or confirmed by group members. */
+/** Under my messages: still waiting, given to a phone, or confirmed by group members. [journey]: tapping it opens "How it got there" (group messages). */
 @Composable
-private fun Status(d: Delivery?, time: String?) {
+private fun Status(d: Delivery?, time: String?, journey: (() -> Unit)? = null) {
     val label = when (d) {
         is Delivery.Delivered -> {
             val n = d.readers.map { it.name }
@@ -340,7 +532,9 @@ private fun Status(d: Delivery?, time: String?) {
         Delivery.Waiting -> "Waiting for a phone or internet"
         null -> null
     }
-    Row(Modifier.padding(end = 12.dp, top = 3.dp).fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.padding(end = 12.dp, top = 3.dp).fillMaxWidth().wrapContentWidth(Alignment.End)
+        .then(if (journey != null) Modifier.tap(Press(down = 0.97f, shape = RoundedCornerShape(8.dp), dim = 0.3f, buzz = Buzz.None), label = "How it got there", onClick = journey) else Modifier),
+        horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
         if (time != null) Txt(time + if (label != null) " · " else "", 13, color = Theme.dim)
         if (d is Delivery.Delivered) { Ic(R.drawable.ic_check_circle, Theme.dim, 14.dp); Spacer(Modifier.width(4.dp)) }
         if (label != null) Txt(label, 13, color = Theme.dim, maxLines = 1)
@@ -431,7 +625,7 @@ fun PlacesTab(s: AppState, messages: List<Message>, open: (Sheet) -> Unit) {
         } else Card(padding = 8.dp) {
             shown.forEach { sh ->
                 val sp = sh.place.spot
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(enabled = sp != null) { sp?.let { open(Sheet.Find(sh.place.kind.word, it, sh.ts)) } }
+                Row(Modifier.fillMaxWidth().tap(RowPress, enabled = sp != null, role = null) { sp?.let { open(Sheet.Find(sh.place.kind.word, it, sh.ts)) } }
                     .alpha(if (sh.old) 0.55f else 1f).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     KindIcon(sh.place.kind)
                     Spacer(Modifier.width(14.dp))
@@ -456,8 +650,11 @@ fun PlacesTab(s: AppState, messages: List<Message>, open: (Sheet) -> Unit) {
     }
 }
 
+/** A filter in a row of them (the board's .chips): white when chosen, a dark capsule with a lit edge otherwise. */
 @Composable private fun FilterChip(label: String, @DrawableRes icon: Int?, on: Boolean, tap: () -> Unit) =
-    Row(Modifier.clip(CircleShape).background(if (on) Color.White else Theme.tile).clickable(role = Role.Tab, onClick = tap)
+    Row(Modifier.heightIn(min = 48.dp).pointerHoverIcon(PointerIcon.Hand)
+        .selectable(on, interactionSource = null, indication = Press(down = 0.94f, buzz = Buzz.Tap), role = Role.Tab, onClick = tap)
+        .background(if (on) Color(0xFFFAFAFA) else Theme.tile, CircleShape).litEdge(CircleShape, if (on) 0.6f else 0.10f)
         .padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         if (icon != null) { Ic(icon, if (on) Color.Black else Theme.text, 18.dp); Spacer(Modifier.width(6.dp)) }
         Txt(label, 16, FontWeight.SemiBold, if (on) Color.Black else Theme.text)
@@ -481,7 +678,9 @@ fun AddPlaceSheet(close: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     row.forEach { k ->
                         val on = k == kind
-                        Row(Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).background(if (on) Color.White else Theme.card).clickable(role = Role.RadioButton) { kind = k }
+                        Row(Modifier.weight(1f).pointerHoverIcon(PointerIcon.Hand)
+                            .selectable(on, interactionSource = null, indication = Press(down = 0.97f, shape = RoundedCornerShape(20.dp), dim = 0.1f, buzz = Buzz.Tap), role = Role.RadioButton) { kind = k }
+                            .background(if (on) Color(0xFFFAFAFA) else Theme.card, RoundedCornerShape(20.dp))
                             .padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             Ic(kindIcon(k), if (on) Color.Black else Theme.text, 24.dp); Spacer(Modifier.width(10.dp))
                             Txt(k.word, 17, FontWeight.SemiBold, if (on) Color.Black else Theme.text)
@@ -517,7 +716,7 @@ fun AddPlaceSheet(close: () -> Unit) {
 
 @Composable
 fun PeopleTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<Message>, phones: Int, open: (Sheet) -> Unit) {
-    val people = remember(messages) { Person.all(messages, MeshEngine.deviceId) }
+    val people = remember(messages, s.tick, s.moderated, g) { peopleOf(a, messages, g.code) }
     val mine = remember(messages) { messages.lastOrNull { !it.public && it.sender == MeshEngine.deviceId && CheckIn.of(it.text) != null } }
     var askAll by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = if (Here.tabBar) 120.dp else 24.dp),
@@ -546,15 +745,27 @@ fun PeopleTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<Messag
         Txt("“Check in for…” tells the group about someone without a phone, for example a neighbour you found.", 14, color = Theme.dim)
         SecondaryButton("Invite friends", icon = R.drawable.ic_qr_code_2) { open(Sheet.Invite) }
     }
-    if (askAll) Confirm("Ask if everyone is safe?", "Everyone in ${g.name} gets “Is everyone safe?” with one-tap answers.", "Ask",
-        onYes = { askAll = false; if (meshReady(a)) { Thread { MeshEngine.send(AreYouSafe().text) }.start(); Toast.makeText(a, "Asked ${g.name}", Toast.LENGTH_SHORT).show() } },
-        onNo = { askAll = false })
+    if (askAll) AskEveryone(g) { askAll = false }
+}
+
+/**
+ * The People list: everyone who wrote or checked in ([Person.all]), then the members who haven't written anything yet,
+ * so that every member can be opened and checked. Someone blocked in this group stays hidden here.
+ */
+fun peopleOf(c: android.content.Context, messages: List<Message>, code: String?): List<Person> {
+    val wrote = Person.all(messages, MeshEngine.deviceId)
+    val have = wrote.mapTo(HashSet()) { it.id }
+    val blocked = Moderation.blocked(c).keys; val channel = MeshEngine.groupId(code)
+    return wrote + MeshEngine.otherMembers(code).filter { (id, _) -> id !in have && !Blocks.hides(blocked, channel, id) }
+        .map { (id, name) -> Person(id, name.ifEmpty { "Someone" }, 0L) }.sortedBy { it.name.lowercase() } // 0: nothing heard from them yet
 }
 
 /** The big check-in tiles, in the logo's shape. */
 @Composable
 private fun BigCheckIn(label: String, @DrawableRes icon: Int, bg: Color, fg: Color, modifier: Modifier, tap: () -> Unit) {
-    Column(modifier.height(176.dp).clip(vaultShape(34.dp, 40.dp, 8.dp)).background(bg).clickable(role = Role.Button, onClick = tap).padding(20.dp),
+    val shape = remember { vaultShape(34.dp, 40.dp, 8.dp) }
+    val press = remember(shape) { Press(down = 0.95f, shape = shape, dim = 0.18f) }
+    Column(modifier.height(176.dp).tap(press, onClick = tap).background(bg, shape).padding(20.dp),
         verticalArrangement = Arrangement.Bottom) {
         Ic(icon, fg, if (icon == R.drawable.ic_sos) 56.dp else 40.dp)
         Spacer(Modifier.height(10.dp))
@@ -604,8 +815,10 @@ fun FindSheet(f: Sheet.Find, close: () -> Unit) {
 // MARK: - Photos
 
 @Composable
-fun SendPhotoSheet(jpeg: ByteArray, close: () -> Unit) {
+fun SendPhotoSheet(s: AppState, jpeg: ByteArray, close: () -> Unit) {
     val ctx = LocalContext.current
+    // Opened while a reply was being written: the photo is the reply (its 4th field and the 5th together, spec "Replies").
+    val to = remember { s.replying?.let { (code, id) -> MeshEngine.groupRows(code).firstOrNull { it.id == id } } }
     var caption by remember { mutableStateOf("") }
     val img = remember(jpeg) { decodePhoto(jpeg)?.asImageBitmap() }
     SheetPage("Send photo", close) {
@@ -613,7 +826,12 @@ fun SendPhotoSheet(jpeg: ByteArray, close: () -> Unit) {
         Txt("${jpeg.size / 1000} KB, small enough to hop phone to phone.", 14, color = Theme.dim)
         InputField("Caption", caption, { caption = it.take(200) }, "Bridge is out", keyboard = KeyboardOptions(KeyboardCapitalization.Sentences))
         Txt("Only your group can see it. Phones without the newest DarkProof show “📷 Photo” instead.", 14, color = Theme.dim)
-        PrimaryButton("Send photo") { if (!meshReady(ctx)) return@PrimaryButton; Thread { MeshEngine.send(Photo.text(caption), photo = jpeg) }.start(); close() }
+        if (to != null) Txt("Replying to ${if (to.sender == MeshEngine.deviceId) "yourself" else Quote.name(to, MeshEngine.deviceId)}", 14, FontWeight.SemiBold)
+        PrimaryButton("Send photo") {
+            if (!meshReady(ctx)) return@PrimaryButton
+            if (to != null) s.replying = null
+            Thread { MeshEngine.send(Photo.text(caption), photo = jpeg, group = to?.group, replyTo = to) }.start(); close()
+        }
     }
 }
 
@@ -729,8 +947,8 @@ fun AskTab(g: SavedGroup, messages: List<Message>) {
                 if (turns.isEmpty()) item {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         listOf("Who in ${g.name} needs help?", "How do I treat a burn?", CATCH_UP, "How do I make water safe to drink?").forEach { q ->
-                            Txt(q, 16, FontWeight.SemiBold, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Theme.card)
-                                .clickable(role = Role.Button) { if (q == CATCH_UP) catchUp() else send(q) }.padding(horizontal = 18.dp, vertical = 14.dp))
+                            Txt(q, 16, FontWeight.SemiBold, modifier = Modifier.fillMaxWidth().tap(CardPress) { if (q == CATCH_UP) catchUp() else send(q) }
+                                .background(Theme.card, RoundedCornerShape(18.dp)).padding(horizontal = 18.dp, vertical = 14.dp))
                         }
                     }
                 }
@@ -782,6 +1000,8 @@ private fun ModelList() {
     Txt("Models run entirely on this ${Here.device}. Bigger ones answer better but slower. This ${Here.device} has ${LocalAi.memoryGB} GB of memory" +
         (if (Here.allModels) ". Each model says what it needs. They are uncensored versions that other people made: they answer anything, and they can be wrong." else ": only models that fit are shown."),
         14, color = Theme.dim)
+    // Android's downloader (a computer: a plain web request) fetches the file directly, whatever the Tor switch says.
+    Txt("Model downloads don't go through Tor.", 14, color = Theme.dim)
     if (LocalAi.catalog.isEmpty()) Txt("No model fits a phone with less than 4 GB of memory.", 15, FontWeight.SemiBold, Theme.help)
     LocalAi.catalog.forEach { m ->
         val st = LocalAi.states[m.id] ?: LocalAi.State.Missing

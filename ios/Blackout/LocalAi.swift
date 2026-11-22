@@ -188,7 +188,7 @@ final class LocalAi: NSObject, ObservableObject, URLSessionDownloadDelegate {
         states[m.id] = .downloading(done)
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         let t = resumeData.removeValue(forKey: m.id).map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: m.url)
-        t.taskDescription = m.id
+        t.taskDescription = "\(erasedCount) \(m.id)" // which erase it was started after (`current`), then the model
         task = t
         UIApplication.shared.isIdleTimerDisabled = true
         t.resume()
@@ -218,40 +218,82 @@ final class LocalAi: NSObject, ObservableObject, URLSessionDownloadDelegate {
         }
     }
 
-    private func model(of task: URLSessionTask) -> AiModel? { Self.catalog.first { $0.id == task.taskDescription } }
+    /// "Erase everything" (Wipe.swift): a download and an answer being written are stopped, the model in memory is
+    /// freed and the conversation forgotten. `done` runs on the main thread once nothing here writes any more: an answer
+    /// that was being written has been saved for the last time by then. The files (models, the conversation) are
+    /// deleted by the caller. Main thread.
+    func forgetAll(then done: @escaping () -> Void) {
+        stopLock.withLock { erased += 1 } // a download or its check that ends from now on puts nothing back (`current`)
+        stopRequested = true // an answer in progress ends at its next word
+        task?.cancel(); task = nil
+        work.async { // behind the answer and behind a downloaded model being checked
+            #if canImport(llama)
+            self.engine = nil; self.engineId = nil
+            #endif
+            DispatchQueue.main.async {
+                self.conversation = []; self.busy = false
+                self.resumeData = [:]; self.downloadingId = nil; self.pausing = false
+                for m in Self.catalog { self.states[m.id] = .missing }
+                self.selectedId = Self.catalog[0].id
+                UIApplication.shared.isIdleTimerDisabled = false
+                done()
+            }
+        }
+    }
+
+    /// How often "Erase everything" has run since the app started; stopLock. A download carries the count it was started
+    /// under in its description: once the count has moved on, whatever that download still does (finish, be checked,
+    /// fail) changes nothing, so no model file and no setting comes back after the erase.
+    private var erased = 0
+    private var erasedCount: Int { stopLock.withLock { erased } }
+    private func parts(_ task: URLSessionTask) -> (count: Int, model: String)? {
+        guard let d = task.taskDescription, let space = d.firstIndex(of: " "), let n = Int(d[..<space]) else { return nil }
+        return (n, String(d[d.index(after: space)...]))
+    }
+    /// False for a download that was started before the last "Erase everything".
+    private func current(_ task: URLSessionTask) -> Bool { parts(task)?.count == erasedCount }
+
+    private func model(of task: URLSessionTask) -> AiModel? { parts(task).flatMap { p in Self.catalog.first { $0.id == p.model } } }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData _: Int64, totalBytesWritten: Int64,
                     totalBytesExpectedToWrite _: Int64) {
-        guard let m = model(of: downloadTask) else { return }
+        guard let m = model(of: downloadTask), current(downloadTask) else { return }
         let p = min(Double(totalBytesWritten) / Double(m.bytes), 1)
-        DispatchQueue.main.async { if case .downloading = self.states[m.id] { self.states[m.id] = .downloading(p) } }
+        DispatchQueue.main.async { if self.current(downloadTask), case .downloading = self.states[m.id] { self.states[m.id] = .downloading(p) } }
     }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        guard let m = model(of: downloadTask) else { return }
+        defer { s.finishTasksAndInvalidate() }
+        // Everything was erased since this download started: its file is left where iOS deletes it, and nothing is kept.
+        guard let m = model(of: downloadTask), current(downloadTask) else { return }
+        let ok = { self.current(downloadTask) }
         // The temporary file disappears when this method returns, so move it first, then check it.
         let tmp = Self.path(m).appendingPathExtension("part")
         try? FileManager.default.removeItem(at: tmp)
-        do { try FileManager.default.moveItem(at: location, to: tmp) } catch { finish(m, .failed("could not save the model")); return }
-        DispatchQueue.main.async { self.states[m.id] = .verifying }
+        do { try FileManager.default.moveItem(at: location, to: tmp) } catch { finish(m, .failed("could not save the model"), if: ok); return }
+        DispatchQueue.main.async { if ok() { self.states[m.id] = .verifying } }
         work.async {
+            // Erased while the file was moved or waited for its check (which takes seconds for a big model): it goes.
+            guard ok() else { try? FileManager.default.removeItem(at: tmp); return }
             guard Self.matchesHash(tmp, m.sha256) else {
-                try? FileManager.default.removeItem(at: tmp); self.finish(m, .failed("download damaged, try again")); return
+                try? FileManager.default.removeItem(at: tmp); self.finish(m, .failed("download damaged, try again"), if: ok); return
             }
+            guard ok() else { try? FileManager.default.removeItem(at: tmp); return }
             try? FileManager.default.removeItem(at: Self.path(m))
             do {
                 try FileManager.default.moveItem(at: tmp, to: Self.path(m))
                 var u = Self.path(m); var v = URLResourceValues(); v.isExcludedFromBackup = true; try? u.setResourceValues(v) // keep GBs out of iCloud backup
-                self.finish(m, .ready)
-            } catch { self.finish(m, .failed("could not save the model")) }
+                // Erased in this very moment: the model that was just put in place goes again.
+                if ok() { self.finish(m, .ready, if: ok) } else { try? FileManager.default.removeItem(at: Self.path(m)) }
+            } catch { self.finish(m, .failed("could not save the model"), if: ok) }
         }
-        s.finishTasksAndInvalidate()
     }
 
     func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error, let m = model(of: task) {
+        if let error, let m = model(of: task), current(task) {
             let data = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data
             DispatchQueue.main.async {
+                guard self.current(task) else { return } // erased meanwhile: nothing of this download is kept
                 if let data { self.resumeData[m.id] = data }
                 if self.pausing { // Cancel: keep the paused state
                     self.pausing = false; self.downloadingId = nil; self.task = nil
@@ -274,8 +316,11 @@ final class LocalAi: NSObject, ObservableObject, URLSessionDownloadDelegate {
         }
     }
 
-    private func finish(_ m: AiModel, _ s: State) {
+    /// `ok`: false once everything was erased after the download this is about had started: then nothing changes, and
+    /// if its model was just put in place, that file goes again.
+    private func finish(_ m: AiModel, _ s: State, if ok: @escaping () -> Bool = { true }) {
         DispatchQueue.main.async {
+            guard ok() else { if s == .ready { self.work.async { try? FileManager.default.removeItem(at: Self.path(m)) } }; return }
             self.states[m.id] = s
             self.downloadingId = nil
             self.task = nil

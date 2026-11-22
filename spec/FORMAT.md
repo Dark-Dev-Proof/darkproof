@@ -36,7 +36,8 @@ Relays read only id, ts and ttl.
   1. `sender`: the sender's member id in this group (see "Member ids").
   2. `name`: the display name.
   3. `text`: the message.
-  4. Optional: a photo (see "Photos") or, in introductions, a public key.
+  4. Optional: a photo (see "Photos"), a voice note (see "Voice notes") or, in introductions, a public key.
+  5. Optional: which earlier message this one is about (see "Replies and reactions").
 - **Text field:** a 2-byte length followed by that many bytes of standard UTF-8. Do not use Java's modified UTF-8.
 - Readers ignore bytes after the fields they know, which leaves room for future fields.
 
@@ -46,8 +47,8 @@ A packet that fails to decrypt is still stored and forwarded. It just isn't show
 
 Zero bytes after the last field make every whole packet (header included) one of these sizes: **163, 233, 512, 1024, 2048,
 4096, 8192 or 16018 bytes**, the smallest that fits. 163 and 233 are the MeshCore and Meshtastic limits, so a packet that fit
-a radio before still does. The padding is part of the body, so it is encrypted and signed; it reads as an empty 4th field
-or is ignored. New keys are always padded to 16018, whatever their real length, because it would count the group's members.
+a radio before still does. The padding is part of the body, so it is encrypted and signed; it reads as an empty 4th
+and 5th field or is ignored. New keys are always padded to 16018, whatever their real length, because it would count the group's members.
 Anyone watching still sees how many packets there are.
 
 ### Times
@@ -193,7 +194,8 @@ secret** that changes. spec/DESIGN-v0.6-groups.md has the reasoning; this sectio
 - **Current epoch:** the highest number. For the same number: a removal beats anything else; then the removal whose
   maker comes first in the admin list of the epoch before; then a key made by an admin of the epoch before, ahead of
   one made by a member who isn't (a member picks their key's secret, and so its hash); then the smallest SHA-256 of
-  the secret. Two keys with the same secret, number and standing: the smallest maker id, then the smallest new code.
+  the epoch's outer key (HKDF of the secret, see "Message keys"; the hash the vectors give as `hash_a`, `hash_b`). Two
+  keys with the same secret, number and standing: the smallest maker id, then the smallest new code.
   "The epoch before" is as in "Accepting a new key"; a phone still joining goes by the admin list of the key that
   lets it in.
 - **One secret, several keys:** an epoch is its secret together with its number, its maker and, for a removal, the new
@@ -239,6 +241,10 @@ empty, 4th field:
 - HPKE `info` = the ASCII bytes of `darkproof-rekey-v1` ‖ the id of the door it travels through (16 bytes). `aad` =
   packet id (8 bytes) ‖ member id (8 bytes).
 - A new epoch is the current number + 1. If any member's encryption key is missing, the phone doesn't make it.
+- **The timer:** after the 4th field, a new key's packet may carry a 5th field with the group's timer for
+  disappearing messages (see "Disappearing messages"), inside the signed body and before the padding. The table above
+  is the whole 4th field, so a phone that doesn't know the 5th takes the key exactly as before. A key split over
+  several packets carries the same 5th field in each.
 
 ### Accepting a new key
 
@@ -431,6 +437,27 @@ really that person's.
   draw nothing, or in a compatibility form of its letters, has the same key and warns too. A checked person saved
   with an older form of the key is matched by making that key again.
 
+## Person code
+
+A member's public key in one group as text, so that two people standing together can check each other by scanning
+instead of comparing emoji.
+
+- The ASCII text `DPK1:` followed by the base64url (RFC 4648 section 5: `-` and `_`), without padding, of the member's
+  public key in that group: the 33-byte compressed point of "Member ids", exactly the bytes the person emoji are
+  computed from. 33 bytes are 44 characters with no bits left over, so a code is always 49 characters and a key has
+  exactly one code.
+- **Optical only:** a phone shows its own code as a QR code and the other phone scans it. A person code is never put
+  in a packet or a message.
+- **Reading:** a person code is the text `DPK1:`, then exactly 44 characters of the base64url alphabet that give 33
+  bytes whose first is `02` or `03`. Nothing is trimmed; anything else is not a person code.
+- **Comparing:** all 33 bytes against the public key the phone holds for that person in that group. Equal: the person
+  is marked checked, in person. The phone's own key: it scanned itself. Any other key: not that person's, and nothing
+  is marked.
+- **How** a person was checked (by emoji, or in person) is kept on the phone next to the checked mark and never sent.
+  A mark made before this was kept counts as by emoji. A new key (see "Person emoji") is checked in neither way.
+- Example: the key `02ea9227dede645b42e9d369c0759de19b46685357f9d0485b8dc80a535e659acf` has the code
+  `DPK1:AuqSJ97eZFtC6dNpwHWd4ZtGaFNX-dBIW43IClNeZZrP`.
+
 ## Link ids
 
 The **node id** that phones exchange when they link (Bluetooth LE and Wi-Fi HELLO, the Bonjour instance name, the
@@ -558,7 +585,7 @@ most recent check-in that carried a position.
 
 Check-ins, reports about others and "Are you safe?" requests are group messages. On the Public channel, where anyone
 can post, both apps show a text of one of these forms as plain text: no check-in card, no entry in the People list,
-no alert and no one-tap answers.
+no alert and no one-tap answers. A reaction (see "Reactions") is never one of them, whatever its text.
 
 ### Needs and head count
 
@@ -643,8 +670,217 @@ readers ignore bytes after the third field):
 - At most 14000 JPEG bytes, so the packet stays under the 16000-byte cipher limit. Apps shrink photos to fit
   (a few hundred pixels wide) before sending.
 - The 3rd field (`text`) is `📷 Photo`, or `📷 ` followed by a caption, so apps that don't know photos show that.
-- Readers ignore a 4th field with another type byte, and anything after the 4th field.
+- Readers ignore a 4th field with another type byte. A reader that doesn't know the 5th field (see "Replies and
+  reactions") ignores everything after the 4th.
 - Photos go only to the group, never to the Public channel, and are too big for LoRa radios.
+
+The 4th field's first byte in a group message, and what else stands there:
+
+| First byte | In | Meaning |
+|---|---|---|
+| `0x01` | a group message | a JPEG photo (this section) |
+| `0x02` | a group message | a voice note (see "Voice notes") |
+| `0x02`, `0x03` | an introduction (its own key) | the member's public keys (see "Introductions") |
+| `0x06`, `0x07` | a new key (the rekey key) | the new epoch (see "New keys") |
+
+Introductions and new keys are sealed with keys of their own, so their first bytes never meet a message's.
+
+## Voice notes
+
+A group message can carry one voice note of 1 to 10 seconds in its **4th plaintext field**, instead of a photo, as raw
+Opus packets (RFC 6716) with no container:
+
+- **Field:** the type byte `0x02`, then the packets one after the other, each behind a 1-byte length: `len` (1 to 255)
+  ‖ `len` bytes. Nothing else: no header, no count, no trailing bytes.
+- **Packets:** every packet is mono (TOC bit `s` = 0), 20 ms (TOC config 1, 5, 9, 13, 15, 19, 23, 27 or 31: the 20 ms
+  configs of SILK NB/MB/WB, Hybrid SWB/FB and CELT NB/WB/SWB/FB) and one frame: either TOC code `c` = 0, or code 3 with
+  exactly one frame (2nd byte: `v` = 0, `M` = 1, padding flag either way; padding as RFC 6716 section 3.2.5, a length
+  byte 255 meaning 254 bytes and another length byte; what is left after the padding is the frame and may be 0 bytes).
+  So the first byte is one of `08 28 48 68 78 98 b8 d8 f8` or `0b 2b 4b 6b 7b 9b bb db fb`. Constant-bitrate encoders
+  (Apple's, libopus) write code 3 for about half of all packets.
+- **How many:** 50 to 500 packets (1 to 10 s), at most 14000 bytes after the type byte (the limit of a photo).
+- **Text:** the 3rd field is exactly `🎤 Voice note` (UTF-8 `f09f8ea420566f696365206e6f7465`), so apps that don't know
+  voice notes, alerts and the chat list show that.
+- **Readers** keep the note only if the text is exactly that and the field parses exactly to its end with every rule
+  above. Otherwise the field is ignored as a whole, nothing of it is decoded, and the message is its text (apps say
+  "Can't play this voice note." under it). A reader never shows a photo and a voice note together.
+- **Length shown:** packets × 20 ms, in whole seconds rounded half up, at least 1: max(1, (packets × 20 + 500) / 1000),
+  written `0:07`.
+- **Decoding:** at 48 kHz, mono. The packets carry no Opus header, so the format fixes the encoder's start-up delay:
+  decoders drop the first **312 samples** (6.5 ms), and N packets give N × 960 − 312 samples (500 give 479,688). A
+  decoder that needs an identification header (RFC 7845 section 5.1) is given one built from constants:
+  `4f707573486561640101380180bb0000000000` (version 1, 1 channel, pre-skip 312, input rate 48000, gain 0, mapping
+  family 0); where a codec delay and a seek pre-roll are asked for, 6,500,000 ns and 80,000,000 ns. Opus decoders
+  differ slightly (fixed or floating point): two apps agree on the sample count, not on the PCM bytes.
+- **Writers** ask their encoder for variable bitrate at 8000 bit/s, 20 ms frames, mono, 48 kHz input (constant bitrate
+  below 8000 leaves the speech mode). Ten seconds of audio come out of an encoder as 501 packets (start-up delay and the
+  final flush): a writer keeps the first 500, then as many from the start as keep the field within 14000 bytes, so an
+  encoder that overshoots makes a shorter note, never an oversized one. Before sending, a writer checks what its encoder
+  wrote with the readers' rules and sends nothing a reader would ignore: no packet over 255 bytes, none of another
+  shape, never under 50 packets (under one second of recording sends nothing).
+- **Where:** only in a group. Never on the Public channel (writers don't add it there and readers ignore it), never in a
+  reaction, never over LoRa: even the shortest note (50 packets of 1 byte) is padded to 512 bytes, above the radios'
+  163 and 233. It may carry a 5th field (see "The 5th field"): a voice reply has the note in the 4th field and the
+  reply in the 5th.
+- **Shown** only from a packet that opened with a group's key and whose signature checked for a member of that epoch;
+  until then apps show the text, marked "not verified yet" like any message.
+- Otherwise it is an ordinary group message: forwarding, the 7 days, the store cap, receipts, the group's timer and
+  high-risk mode's day treat it like any other. **This phone's copy** (see "Message keys") keeps the field and reads it
+  with the same rules.
+- **Size:** at 8000 bit/s with variable bitrate, ten seconds of speech take about 9.7 kB after the type byte (Apple's
+  encoder in the vectors: 9,686 bytes for 500 packets); constant bitrate would take 10,500 bytes. With a short name, notes
+  whose packets and lengths take up to about 8,000 bytes (about 8 s) are padded to the 8192 class; longer ones to 16018.
+- **Not known without real phones:** what an iPhone's own encoder and each Android vendor's encoder write (checked so
+  far: Apple's encoder on a Mac and in the iPhone Simulator, libopus, and the Android emulator's software encoder);
+  that is why writers check their own output.
+- Vectors: `kind: voice-field` (fields read and ignored), `kind: voice-trim` (an Apple-made field of 501 packets, by its
+  SHA-256, and what a writer keeps of it), `kind: voice-message` (a voice reply sealed with a message key), made by
+  spec/make-reply-vectors.py (argument `voice`).
+
+## The 5th field
+
+The 5th plaintext field comes after the 4th (the photo or voice note, or in a new key the key itself). Where there is nothing for
+the 4th it is there with length 0. Padding follows the last field. Its first byte is its type:
+
+| Type | Bytes | In | Meaning |
+|---|---|---|---|
+| `0x01` | 17 | a group message | a reply (see "Replies and reactions") |
+| `0x02` | 17 | a group message | a reaction (see "Replies and reactions") |
+| `0x03` | 5 | a new key; a group message | the group's timer; in a message only a notice (see "Disappearing messages") |
+| `0x04` | 9 | a group message | the sender's check-in clock: `04` and the deadline (see "If I go quiet") |
+| `0x05` | 2 | a group message | the sender left the group: `05 01` (see "Leaving the group") |
+| `0x06` | | | reserved |
+
+- A reader ignores a 5th field whose type it doesn't know, whose length isn't the one listed, or that stands where
+  its type has no meaning (a reply in a new key): the packet is then read as if it had no 5th field. Anything after
+  the 5th field is ignored.
+- The field is inside the signed body. A phone acts on it only from a packet that opened with a group's key and whose
+  signature checked for a member of that epoch, never from one shown as "not verified yet", and never on the Public
+  channel, where writers don't add it and readers ignore it.
+- An app that knows none of this reads the first four fields exactly as before.
+
+## Replies and reactions
+
+A group message may say which earlier message it is about, in a **5th plaintext field** after the photo field. Apps
+that don't know the field skip it (see "Encryption": readers ignore bytes after the fields they know) and show an
+ordinary message with the same sender, name, text and photo.
+
+- **The field** has the same 2-byte length prefix as every field. Its content is 17 bytes:
+
+  | Bytes | Field |
+  |---|---|
+  | 1 | type: `0x01` = reply, `0x02` = reaction |
+  | 8 | the target's packet id |
+  | 8 | the target's **mark**: the first 8 bytes of SHA-256 of the target's signed message, the digest its signature is over |
+
+- **One exact message:** the signed message is the one of "Signatures" (tag `darkproof-sig-v1`) or, for a message
+  sealed with a message key, of "Message keys" (tag `darkproof-sig-mk-v1`): tag, context, packet id, `ts`, for a
+  message key the position and number, and the body with its padding. The id and the mark are what phones already
+  tell messages apart by (see "The same message again").
+- **Why what is signed, not the packet:** the mark covers everything the sender signed and nothing else: not the
+  IV, the ciphertext or the header time. A copy of a message that someone sealed again under a new IV is another
+  packet (see "The same packet") but still the same message, so it has the same mark on every phone that opened and
+  checked it, whichever copy that phone got: a reply or a reaction finds it everywhere. Another message sent under
+  the same id has another mark and is not the target. The other signature that checks for a message doesn't change
+  its mark either. A phone keeps the mark with every message it shows, its own included (this phone's copy of a
+  message holds the digest).
+- **What 8 bytes give:** nobody can make a second message with the mark of someone else's short of about 2^64 tries.
+  The writer of a message can make two of their own with one id and one mark in about 2^32 tries; to a phone those
+  two are one message (see "The same message again"), so it shows whichever came first, and a reply to one reads as
+  a reply to the other there.
+- **Where it sits:** right after the 4th field. A message without a photo carries a 4th field of length 0 in front of
+  it. Padding follows the last field as always.
+- **Readers** ignore a 5th field of another length or with another type byte, and anything after the 5th field: the
+  message is then an ordinary one. Padding reads as a 5th field of length 0.
+- **Only in groups.** On the Public channel writers never add the field, and readers ignore it whatever it holds.
+- **The sender's own statement:** the field is inside the signed body, so it can't be added to, changed in or cut out
+  of someone's message. A phone shows nothing because of it unless the packet opened with a group key and its
+  signature checked for a member of that epoch (see "Only members write in an epoch"). While a message is "not
+  verified yet" it is shown without a quote, and a reaction counts for nothing; both follow when the sender's key
+  arrives (see "Waiting for a key").
+- **The target** is looked up on the reader's own phone, in the same group: a message the phone shows, with that
+  packet id and that mark, whose signature checked. A message of another group or of the Public channel is never a
+  target, and neither is a reaction: someone who is in two groups must not be able to hang a quote or a reaction
+  written in one on a message of the other. Nothing about what the target says is ever taken from the message that
+  names it.
+- **This phone's copy** of a message (see "Message keys") keeps the field.
+- **Size:** the field adds 21 bytes (2 for the empty 4th field, 2 and 17 for the 5th), 19 next to a photo. Sealed with
+  a message key, a reply is 156 bytes plus its name and text: over Meshtastic (233 bytes) name and text together
+  have 77 bytes, over MeshCore (163 bytes) 7.
+- Vectors: `kind: about` (sealed replies and reactions that open to known fields, one with a photo, and 5th fields
+  that are ignored), `kind: about-target` (the target sealed again under another IV is still the target; another
+  message under its id is not).
+
+### Replies
+
+Type `0x01`.
+
+- A reply is an ordinary group message with its own text and, if it has one, its own photo: it is shown, alerted,
+  confirmed and counted like any other.
+- It is shown with a quote above its text, made from the reader's own copy of the target: the name of the target's
+  sender and the first line of its text that isn't empty (for a photo its caption, or "Photo"), cut to fit. Where
+  the target is on screen in the chat, tapping the quote scrolls to it.
+- If the phone has no such message (it expired, never arrived, or its signature hasn't checked), the quote says
+  "A message this phone doesn't have". If the message is there but the reader hid it or blocked its sender, it is
+  not quoted either: "A message hidden on this phone".
+- A reply to a message this phone no longer has can't be started: the message is not there to hold.
+
+### Reactions
+
+Type `0x02`.
+
+- **The text is the reaction, from a list:** the message's `text` field is, byte for byte, one of the listed
+  reactions, or has no bytes at all, which takes the sender's reaction back. A type `0x02` message with any other
+  text is not a reaction and is not shown at all, not as a message either; it changes nothing (the sender's earlier
+  reaction still counts). So nobody can put words under someone's message. A reaction carries no photo: writers
+  leave the 4th field empty, and readers ignore what is in it.
+- **The list**, in its order, with the exact UTF-8 bytes:
+
+  | Reaction | Bytes | Code points |
+  |---|---|---|
+  | 👍 | `f0 9f 91 8d` | U+1F44D |
+  | ❤️ | `e2 9d a4 ef b8 8f` | U+2764 U+FE0F (with the variation selector) |
+  | 😂 | `f0 9f 98 82` | U+1F602 |
+  | 😮 | `f0 9f 98 ae` | U+1F62E |
+  | 🙏 | `f0 9f 99 8f` | U+1F64F |
+
+  Apps offer exactly these. Nothing is trimmed or normalized before comparing: the heart without its variation
+  selector (`e2 9d a4`), a listed reaction twice, or one with a skin tone is not on the list.
+- **Writers only ever send** a listed reaction, or the empty text to take theirs back.
+- **Adding to the list:** no reaction longer than 16 bytes will ever be listed, and none that an app without
+  reactions would take for something else. Such an app shows a reaction as an ordinary message, so a text that
+  starts with `✅` or `🆘` would be a check-in there (a false "I'm safe", or a call for help), and one in the form of
+  "Reports about others" or of "Are you safe?" a report or a request. This is why `✅` is not listed. A phone whose
+  list is shorter than the sender's ignores the newer reaction like any other text.
+- **Which one counts:** one reaction per member per target. Of the reactions to a target that a phone holds from
+  one member (a `web-` in front of the `sender` doesn't count), the one with the latest `ts` counts, the time
+  inside the packet; of several with the same `ts`, the one whose packet id is greater as 16 hex chars. A member
+  whose counting reaction has no text has none. The result depends only on which reaction packets the phone holds,
+  not on the order they came in.
+- A writer gives a new reaction a `ts` later than that of its own last reaction to the same target, so the newest
+  one counts even if its clock was set back meanwhile.
+- **A reaction to a reaction is ignored:** a reaction is never a target, so nothing is shown for it.
+- **Never a message:** a reaction is not shown as a chat row, not alerted, not counted as unread, and not confirmed
+  with a receipt; a receipt that names one confirms nothing, so it never shows "Delivered" or "Sent". It does not
+  make its sender appear in the People list as having checked in or written, whatever its text.
+- **Shown** as chips under the target: each listed reaction that a member has, with the number of members whose
+  reaction it is, the user's own marked, in the order of the list. Tapping a chip
+  makes it the user's own reaction, or takes the user's reaction back if it already is. The user's own reaction
+  shows at once. Apps don't show the reactions of someone the user blocked in that group.
+- **Someone removed:** a reaction is a message from its sender. One a phone sees for the first time after the
+  winning removal of its sender doesn't count, by the rule that stops their messages (see "What the person removed
+  wrote").
+- **Forwarding and storage** are as for any group message (7 days, the store cap, this phone's copy, "The same
+  message again"), with one difference: a phone that can read a reaction doesn't put it on a LoRa radio, where
+  airtime is scarce, neither its own nor one it passes on, like a receipt. A phone that can't read it can't tell it
+  from any other packet. This is decided for the very packet (see "The same packet"), never for an id alone: a
+  reaction or a receipt sent under the id of a message must not keep that message off the radio. A reaction counts
+  while its packet is on the phone; when its target is no longer there, it is not shown.
+- **Apps that don't know reactions** show each one as a short message from its sender (an empty one for a reaction
+  taken back), alert and confirm it. The sender's phone shows nothing for those receipts.
+- Vectors: `kind: reactions` (latest wins, the tie by id, taking back, a reaction to a reaction, another target,
+  the order shown, texts that aren't listed); in `kind: about`, type `0x02` with the listed heart, the heart without
+  its selector, a check mark, a word, 17 bytes and bytes that aren't UTF-8.
 
 ## Places
 
@@ -703,20 +939,495 @@ When a phone gets a new group message from someone else, it confirms it with a r
     `f5dbd9efb376f8e61a21bd63c2db282b5dfffffd21b1df45ff2af54139a6cd89` and the receipt key is
     `738e7a99ea6284081ccd3d830969a9cb6ad62fd6161f1adedf4d34f13677e479`.
 - Plaintext: a signature (see "Signatures"), then `sender` = the reader's member id in the group, `name` = the reader's display name, `text` = the ids of the
-  confirmed messages (16 lowercase hex chars each), separated by single spaces, at most 200 per receipt.
+  confirmed messages (16 lowercase hex chars each), separated by single spaces, at most 200 per receipt. An id may be
+  followed by a journey note (see "Journey notes").
 - A receipt counts only if its `sender` is in the member list of the epoch whose receipt key opened it (see "Only
   members write in an epoch"), and not from someone removed (see "What the person removed wrote").
 - A receipt confirms a message only if this phone wrote that message in the group whose receipt key opened the
   receipt. A member of one saved group can't confirm a message sent to another, and ids that are no message of this
   phone's are not kept.
-- A reader counts the first 200 ids of a receipt and reads nothing after them.
+- A reader counts the first 200 ids of a receipt and reads nothing after them. Anything in the text that is not 16
+  lowercase hex chars is skipped.
 - A reader counts once per message, with the time and name of their earliest receipt for it.
-- Phones confirm only group messages: not Public channel messages, and not their own. Each message is confirmed
+- Phones confirm only group messages: not Public channel messages, not reactions (see "Reactions"), and not their own. Each message is confirmed
   at most once, when it first arrives. A receipt goes out 2 s after the last message to confirm arrived, or 10 s after
   the first, whichever comes first, plus a random 0–20 s, so a burst of messages (a phone catching up) shares one receipt per group.
 - Receipts are not sent over LoRa radios, where airtime is scarce.
 - Apps that don't know receipts can't open them with the group or public key, so they store and relay them like any
   other packet and never show them.
+
+### Journey notes
+
+In a receipt's text, an id may be followed by one **journey note**, which says how the first copy of that message
+reached the reader's phone. Apps show it to the message's writer under "How it got there".
+
+    0123456789abcdef h3i 89abcdef01234567 h1b
+
+- **Form:** `h`, the hops as 1 or 2 ASCII digits, then the link as one lowercase letter: 3 or 4 bytes, with a single
+  space before and after like an id. Writers write no leading zero.
+- **Hops:** 0 to 16: 16 minus the ttl of the first copy of that message the phone received, not below 0. A received
+  ttl above 16 counts as 16 (see "TTL"). A copy that came straight from the writer's phone, or from a relay the
+  writer's phone posted it to, has ttl 15: 1 hop.
+- **Link:** how that first copy arrived: `b` Bluetooth, `w` a Wi-Fi network, `p` phone-to-phone Wi-Fi (Apple
+  peer-to-peer, Nearby), `r` a LoRa radio, `i` an internet relay.
+- **Readers** split the text at spaces (0x20); what stands between them is a token, and empty tokens don't count. A
+  note is read only from the token right after an id, and belongs to that id. A token there that is not of this
+  form, or says more than 16 hops, is skipped; so is a note anywhere else: at the start, after something that is no
+  id, or after another note. Any other lowercase letter `a`–`z` is read as "another link". A leading zero is read
+  (`h07w` is 7 hops).
+- **Not ids:** notes don't count towards the 200 ids. A reader counts the first 200 ids, each with its note, and
+  reads nothing after the token that follows the 200th.
+- A reader counts once per message, with the time, name and note of their earliest receipt for it; an id named more
+  than once in one receipt counts as it is named first.
+- **Apps that don't know notes** skip them, since a note is not 16 hex chars: they take exactly the same ids from the
+  receipt as before.
+- **"About":** the ttl is not authenticated (see "TTL"): any phone that carries the packet can raise or lower it. The
+  hops are what the reader's phone counted from the copy it got, no more, and apps say "about N hops". The link is
+  the reader's own statement, signed with the receipt like the rest of it.
+- **High-risk mode:** a phone in high-risk mode writes no journey notes. Its receipts are exactly as before.
+- **The writer's phone** also remembers, for each of its own messages, over which kind of link it first handed the
+  message on (the same letters) and when by its own clock, next to what it remembers for "Sent" (see "Forwarding
+  rules"). This stays on the phone.
+- **What a note tells, and whom:** a receipt is sealed with the group's receipt key, so everyone who holds that key
+  (the group: the members of that epoch) learns from a note over which kind of link a reader's phone got a message
+  and after about how many hops; with the receipt's time, that can show whether the reader was near another phone
+  or online then. A note
+  never names a phone that carried the message, and never a link id. Relays, and phones outside the group, see
+  nothing of it. A note makes a receipt up to 5 bytes longer per id.
+- Vectors: `kind: receipt-notes` (the same text read with and without notes), `kind: journey-note` (what a phone
+  writes for a ttl and a link).
+
+## Disappearing messages
+
+A group can have a **timer**: each phone then removes a group message that long after the message reached it. Without
+one, messages last one to two weeks (see "Keeping"). The timer is the group's, set by its admins; it is not a promise
+about other people's phones: anyone in the group can copy or photograph a message, a changed app can keep everything,
+and phones on a version without the timer keep messages one to two weeks.
+
+### Where the timer lives
+
+- **In the new key.** The 5th field of a new key's packet: type `0x03`, then the seconds as a 32-bit big-endian
+  number, 5 bytes in all. A phone that joins receives no message from before it was let in, and messages expire; the
+  new key is the one thing every phone of a group gets, keeps and reads again, so the timer reaches phones that join,
+  phones that were away and reinstalled phones with the key that lets them in or brings them back.
+
+  | Setting | Field | With its length |
+  |---|---|---|
+  | Off (one to two weeks) | `03 00000000` | `0005 0300000000` |
+  | 1 hour | `03 00000e10` | `0005 0300000e10` |
+  | 8 hours | `03 00007080` | `0005 0300007080` |
+  | 1 day | `03 00015180` | `0005 0300015180` |
+  | 1 week | `03 00093a80` | `0005 0300093a80` |
+
+- **Reading the number:** 0 is off. 1 to 299 read as 300 (5 minutes, the shortest). 300 to 604800 as written. Above
+  604800 (a week) reads as off: longer than the normal rule means nothing. Apps offer the five settings above; a
+  value another app wrote is shown in its largest whole unit ("2 days", else minutes).
+- **Every new key carries it:** the value its maker chose, or else the timer its maker's phone knows for the group
+  (a weekly key, a join, a removal, an answer to a phone that is behind). A maker that doesn't know it writes no 5th
+  field. A group made on a phone starts with the timer off, and that phone knows it.
+
+### Whose word counts
+
+Each epoch a phone holds has a timer: a number of seconds, off, or **not known**. The group's timer is the current
+epoch's (see "Current epoch"); for rivals with one number that is the winner's, never a mix.
+
+- **An admin's key sets it.** The timer in a new key counts if the key's maker is an admin of the epoch before it,
+  judged exactly as for the admin list (see "Accepting a new key": "Only admins of the epoch before", "Several epochs
+  before"). A removal is always an admin's. Anyone else's field is ignored.
+- **Every other epoch inherits** the timer of the epoch before it: of the first of the epochs numbered one lower
+  that the phone holds (the order of "Current epoch"). So a key without the field, from an admin or not, keeps the
+  timer; only an admin's explicit `03 00000000` turns it off.
+- **A phone with no epoch** can't judge its first key's maker by an epoch before. It takes the timer of the key that
+  lets it in only if that key's own admin list names its maker; otherwise the timer is not known. It is never told
+  a value by someone the key doesn't name as an admin.
+- **Not known** stays not known through keys that inherit, until an admin's key carries the field. A phone that
+  doesn't know the timer keeps the normal rule and says "Not known yet".
+- **Judged again whenever the phone's keys change**, not once when a key arrives: phones that hold the same keys
+  agree, whatever order the keys came in. Among "the epochs numbered one lower" counts, next to the epochs that say
+  who is in, a key that arrived late and is kept only to read with (see "Accepting a new key"), if it carries the
+  timer, **is the first of every epoch the phone holds at its number** (the order of "Current epoch"), and its maker
+  is an admin of the winning epoch before it (the first with a member list one number lower; if the phone no longer
+  holds that number, as judged when the key came). It decides nothing about people, but it is that admin's word on
+  the timer. Without it, a phone that got the rival that loses first, then a member's next key, would keep the
+  loser's timer for good. Any other late key (one that loses at its number, a member's, or an admin's who is no
+  admin of the winning epoch before it) sets nothing and freezes nothing, and neither it nor any other key kept only
+  to read with makes the chat's lines ("joined", "made an admin", the timer's line) unless it meets the same test.
+  An epoch kept only to read with is never the group's timer by itself.
+- **When the epochs before an epoch are gone** (a week after they were replaced), it keeps the timer worked out
+  last. Phones save each epoch's timer with the epoch.
+- **Keys that aren't taken say nothing:** a key that "Accepting a new key" refuses (from someone removed, through an
+  old door, over the hourly limits, read a second time) is never read for its timer. So a removed admin sets nothing,
+  and a key played back changes nothing.
+- **Who set it** is shown only where a phone saw the value change with an admin's key, or its own user chose it. A
+  key that brings a phone the timer for the first time may only repeat it.
+
+### When a message goes
+
+- **Counted from arrival.** A message goes when it has been on the phone for the timer's length, by that phone's own
+  clock: from when the phone first received it, whenever it was written. A sender's clock that is behind can't make
+  messages vanish on arrival, and a member who was away sees each message for the full time. A phone's own message
+  counts from when it was first handed to another phone, a radio or a relay ("Sent"); one that hasn't left the phone
+  never goes by the timer.
+- **Settle time.** A value deletes nothing until the group's timer has had that value on this phone, without a
+  break, for 10 minutes by its own clock; phones save the value and since when. Any change starts the wait again; a
+  later key that inherits the value doesn't. The new value is shown at once. Two admins changing the timer at once
+  can make the value that loses current for a moment on some phones, and deleting can't be undone. A phone that
+  stays cut off from the winning key for longer follows the key it has.
+- **What goes:** the message on screen; this phone's copy of it (see "Message keys"); its alert; what waited for its
+  sender's key, with the message's own key if the phone still holds it (a message shown as "not verified yet"); for
+  the phone's own message, who confirmed it and how it got there; reactions, which are messages;
+  the group's receipts, counted the same way. Quotes of a message that went read "A message this phone doesn't have".
+  Lines such as "Anna removed Marco" and the timer's own lines come from the epochs and stay.
+- **The packet is still carried.** Every phone that read a message has deleted its message key, so the packet it
+  stored can't be opened there again: it stays in the store as one more packet the phone only carries, for the rest
+  of its 7 days (see "Forwarding rules"), so that a member who was away still gets the message. A packet that a key
+  on the phone still opens (a receipt; a message sealed with the outer key, or still waiting for its sender's key)
+  leaves the store instead. Either way the packet's name (id and content, "The same packet") goes on the phone's
+  **gone list** until no phone passes it on any more: brought back by a neighbour, it is passed on and never shown,
+  alerted, confirmed or copied again.
+- **High-risk mode** (a setting of one phone, never sent) removes a group's messages a day after they reached that
+  phone, counted the same way, and removes their packets too. On such a phone a message goes at whichever is due
+  first.
+- **Never longer than before:** the rules of "Keeping" still apply. A timer of a week doesn't keep a message that
+  its epoch's end would remove.
+- **When phones check:** every hour; when the app comes to the front; when the store is read; and, while the app
+  runs, at the moment the next message is due.
+- **Alerts** show a message's text, and an iPhone can't take an alert back while the app is suspended. In a group
+  whose timer is a day or less, an iPhone's alert for a message carries no words of the message: the sender's name
+  (unless the lock or high-risk mode hides it) and "New message". Check-ins, calls for help and "Are you safe?" keep
+  their wording, except that a report about someone else names no one: "Someone needs help", "Reported by Anna" (the
+  name in a report is the reporter's free text). Android ends an alert when its message is due.
+- **This phone's clock:** set forward, it makes messages go early on this phone; set back, they stay longer.
+
+### Changing it
+
+- Only an admin of the current epoch who wasn't removed can change the timer. Changing it is making a new key that
+  carries the new value (see "New keys"): it needs every member's encryption keys like any new key. Choosing the
+  value the group already has makes no key.
+- **The notice.** After the new key, the admin's phone sends one ordinary group message so that people on a version
+  without the timer see what changed and that their phones don't follow it. Its text is, for example,
+  `⏱ Messages here now disappear 1 day after they reach each phone. Older DarkProof versions keep them 1 to 2 weeks.`
+  or `⏱ The timer is off. Messages disappear after 1 to 2 weeks.`, its 4th field is empty, and its 5th field is the
+  timer field (`0005 0300015180`). A phone that follows the timer shows nothing of a group message with this 5th
+  field, does not alert or confirm it, keeps no copy and takes nothing from it: the new key is the only word on the
+  timer. It is not put on a LoRa radio, like a reaction.
+- The chat shows a line from the epochs wherever the timer differs from the epoch before (not for a first value of
+  off): "Anna set messages to disappear after 8 hours", "You set messages to disappear after 1 day", "Anna switched
+  the timer off. Messages disappear after 1 to 2 weeks."; where the phone didn't see who set it, "Messages disappear
+  after 8 hours" or "The timer is off. Messages disappear after 1 to 2 weeks.". The chat's header shows the value
+  ("1 day") while a timer is set, and nothing while it is off or not known.
+
+### Phones without it
+
+- They take the new key unchanged (the timer is after the 4th field) and keep messages one to two weeks.
+- They show the notice as an ordinary message.
+- Their own new keys carry no timer, and phones with the timer inherit: a phone without it can't switch it off.
+- A phone let in by an admin on such a version doesn't know the timer until an admin's key carries it.
+
+Vectors: `kind: timer-field` (reading the field), `kind: timer-rekey` (a signed new key with the field: the 4th
+field read as before, and the timer), `kind: timer-epoch` (who sets it and how epochs inherit), `kind: timer-rival`
+(two admins at once, in either order, and a rival that came first), `kind: timer-late` (a key that came late: which
+ones speak for the timer and the lines), `kind: timer-due` (the settle time and what is due), `kind: timer-notice`
+(the notice message).
+
+## Leaving the group
+
+A phone that leaves its group, or is erased with "Tell my groups first", sends a last signed **note**. Any admin's
+phone that gets it removes that member with the normal removal (see "Removals and the code"): a new key and a new code
+for everyone else. The note asks for the removal; it is not one. Nothing else changes on the wire: no new packet type,
+no new key format, nothing in how packets are sealed, signed or padded.
+
+### The note
+
+- An ordinary group message, sealed with the sender's message key in its current epoch (see "Message keys"), ttl 16.
+  `text` is `👋 I left the group` (UTF-8, 21 bytes: `f09f918b2049206c656674207468652067726f7570`), the 4th field
+  is there and empty, and the 5th field is type `0x05` with one byte `0x01`: framed `0000 0002 0501` after the text.
+- One form for leaving and for erasing: saying "erased" could tell the wrong reader that the phone was in danger. A
+  reader ignores a `0x05` field whose second byte isn't `0x01` (a newer form), or whose length isn't 2, and reads the
+  message as text.
+- Only the member's own key signs under their id (see "Signatures"), so nobody can make someone else leave. A text
+  alone (`👋 I left the group` without the field) is an ordinary message: anyone could type or forward it.
+- It goes up to the relays with the phone's own packets first, and on LoRa radios (it is small; unlike a reaction or
+  the timer's notice it is not kept off them).
+
+### Which notes count (reader)
+
+- **L1. A valid note:** in a group (never on the Public channel); its signature checked for its sender (one waiting for
+  its sender's key is decided when it checks); opened by an epoch that has a member list, not one kept only to read
+  with; every number from that epoch's up to the current epoch's has an epoch on this phone with a member list, and
+  at each number **the one that counts** (the first of those with a member list, in the order of "Current epoch")
+  lists the sender; no removal of the sender that won is held (see "Removals and the code"); and the sender is not
+  this phone. Rivals that lost don't matter: a member's weekly key that raced an admin's key letting someone in is a
+  real epoch, but leaving the newcomer out of it must not silence their notes and check-in clocks for a week. A note
+  from before a removal or a key that left the member out, played back after the same key was let in again, fails:
+  that epoch won its number and doesn't list them. A number with no such epoch on the phone fails too: nothing there
+  shows that it listed the sender. Packets older than 7 days are dropped, and an epoch is held at least
+  7 days after a newer one replaced it, so a phone that held the epochs in between still holds them.
+- **L2. The leaving record.** On a valid note the phone saves: group, member id, the note's `ts`, the number of the
+  epoch it opened with, and when the phone took it. Later notes from the same member change nothing while the record
+  lasts. It ends when the member is no longer in the current epoch, when the group is left, or 7 days after the phone
+  took it. If a removal that won took the member out, the phone keeps that removal's epoch id with the record, for
+  the chat's line, while it holds that epoch.
+- **L3.** Nothing from that member dated after the note's `ts` is shown, alerted, confirmed or counted, as long as
+  the record or the kept removal lasts; a message dated at or before it is shown as usual.
+- **L4. Admins' phones.** If the phone is an admin of the current epoch and wasn't removed, it waits a random 0 to
+  3 s; then, if the member is still in the current epoch and no removal of them is held, it makes the normal removal
+  of that member. If it can't (an encryption key of a member who stays is missing), it tries again at the hourly
+  check, beside finishing removals that lost (see "Two new keys at the same time"), while the record lasts. Two
+  admins acting at once make rival removals of one person, settled by the existing rules.
+- **L5.** Other phones only show the line and apply L3.
+- **L6.** The note is never a chat bubble, an alert or a receipt. The chat shows a line instead (below). The phone keeps
+  no copy of it (see "This phone's copy"): the record is what counts.
+
+### Leaving (writer)
+
+- **LW1.** Only from a phone with a current epoch in that group, that wasn't removed and isn't still waiting to be let
+  in; a note is never queued until a phone is let in. A phone that can't write says so: "This phone isn't let in, so
+  My group can't be told." It leaves without a note.
+- **LW2. The only admin.** If the phone is an admin of the current epoch and no other member of it is, it asks who runs
+  the group first. With people chosen, its phone makes an ordinary admin new key that adds them to the admins (see
+  "New keys"), then seals the note in that new epoch; a successor's phone then removes the leaver like anyone else,
+  also a leaver who created the group. If the key can't be made (a member's encryption key is missing): "This phone
+  can't hand over now: it doesn't have every member's keys.", with "Leave without telling" and "Cancel". "Leave
+  without choosing" leaves no admin: nobody can let people in or remove anyone.
+- **The leaving phone never removes itself.** A removal is made by someone who stays: one made by the leaver would
+  give the leaver the new secret and the new code, since it made them.
+- **LW3. Leave:** seal and send the note, then wait until a phone, a radio or a relay took it ("Sent") or 15 s, with
+  "Leave now". Then the group is forgotten as before, except that the note's own packet stays in the store as a
+  packet the phone only carries (it can't open it: the keys are gone), until its 7 days end, so it still reaches the
+  group when phones come into reach later; a copy of the note, if the phone made one, goes. Its id leaves the phone's
+  lists with the group's other messages. While it waits, the leaving phone makes no new key in that group (no removal
+  of another member who left, no finishing of a removal that lost, no answer to a phone that is behind): it would
+  make epochs and a code it then forgets.
+- **LW4. Erase everything** with "Tell my groups first" on: seal a note in every saved group where LW1 allows; wait
+  until each was taken or 15 s, with "Erase now"; then erase as before (the notes go with everything else). Erasing
+  never waits on the network for longer: the phone saves the erase's marker before the notes go, so an app that ends
+  while it waits erases at its next start, and the wait ends at once if the app goes to the background and comes
+  back, or runs out of time there. **An erase always starts**, also while a leave runs: the leave stops where it is
+  (during its hand-over key, its note's wait or its shutdown), the Keychain goes at once, and the erase goes on as soon
+  as the leave's shutdown is over. It never says "try again".
+- **LW5.** Nothing else is sent: no receipts are awaited, nothing is sent again after the group is forgotten.
+
+### In what order
+
+- An admin removes the member while the note travels: admins' phones find them out already (L4 does nothing).
+- An admin removes someone else at the same moment as the automatic removal: rival removals of one number, existing
+  rules; the person in the removal that lost is still in the current epoch and an admin's phone finishes it.
+- No admin reachable for days: the note waits on phones and relays for up to 7 days, its packet's life; any admin's
+  phone that gets it in that time acts. After that the member stays listed until an admin removes them by hand.
+
+### What the screens say
+
+- **Leave:** "Leave My group?" / "This phone forgets the group, its messages and its keys. A note asks the group's
+  admins to remove you and change the key. To come back you need a new invite." / "Stay" / "Leave My group" (red).
+  The only admin first: "Who runs My group after you?" / "Admins can let people in and remove people." / the members
+  to choose / "Continue" / "Leave without choosing" ("Nobody will be able to let people in or remove anyone.").
+  While waiting: "Telling My group…" / "Waiting for a phone or relay to take the note." / the seconds left /
+  "Leave now". Afterwards: "You left My group", or "You left My group. The note didn't leave this phone in time. It
+  goes when a phone comes into reach."
+- **Erase:** the switch "Tell my groups first", "Asks their admins' phones to remove this phone and change the key";
+  after the hold "Telling your groups…" / "Waiting for a phone or relay to take the note." / the seconds left /
+  "Erase now". The last screen names no group (the phone may be taken at that moment): "This phone is empty", and
+  "The notes left this phone.", "1 of 2 notes didn't leave this phone in time.", or, with the switch off or no group
+  this phone could write in, "Your groups were not told."
+- **Other phones:** while the member is listed, "Marco left the group" on an admin's phone and "Marco left. Waiting
+  for an admin's phone to change the key." on anyone else's, at the note's time; once a removal took them out, the
+  removal's line reads "Marco left the group" instead of "Anna removed Marco".
+- Never: "Their phones remove this one", "removed from the group", "your messages are deleted from their phones",
+  "My group was told to remove it". The note leaving the phone isn't the group getting it.
+
+### Phones without it
+
+They show `👋 I left the group` as an ordinary message (a reader that knows replies, reactions and the timer reads a
+`0x05` field as none). Their admins don't act by themselves; an admin can read it and remove the member by hand. Their
+weekly keys keep listing the leaver until someone removes them.
+
+### Abuse and failure
+
+| Who or what | What happens | Why |
+|---|---|---|
+| A member forges a note for Marco | Not valid | Only Marco's key signs under his id |
+| Someone with only the code | Can't write a group message at all | Doors and epochs |
+| A thief with Marco's unlocked phone sends it | Marco is removed | The same harm as erasing his phone; he can be invited again |
+| An old note played back after Marco was let in again with the same key | Ignored | L1: the removal's epoch doesn't list him |
+| A removed member's note | Not shown, does nothing | L1 |
+| A changed app keeps writing after its note | Not shown | L3 |
+| A changed app keeps reading until it is removed | Possible until an admin's phone acts | The note asks for that removal; the screens promise no more |
+| Every admin's phone acts at once | Rival removals of one person, one wins | 0 to 3 s delay and the rules for rivals |
+| No admin in reach for 8 days | The member stays listed | 7-day packet life; removing by hand |
+| The only admin leaves without choosing | Nobody can let people in or remove anyone | An explicit choice, with that warning |
+| Erase with nothing in reach | Erased after at most 15 s, the group not told | The last screen says so |
+| Leave keeps the note as a carried packet | A seized phone holds one ciphertext in the group's mailbox | It holds many packets it carries; it can't open this one |
+
+Vectors: `kind: leave-field` (reading the field), `kind: leave-note` (a sealed note, and what readers with and without
+the feature make of it), `kind: leave-valid` (which notes count, L1, with rivals that lost), `kind: leave-admin` (what an admin's phone does,
+L4), `kind: leave-after` (what is shown from the leaver, L3).
+
+## If I go quiet
+
+A member can start a **check-in clock**: if no check-in of theirs reaches a phone of the group by the deadline, that
+phone tells its owner. The group's phones keep the clock, so it still works when the member's phone is off or gone;
+only phones that got the clock message can tell anyone. Nothing else changes on the wire: no new packet type, nothing
+in how packets are sealed, signed, padded or keyed.
+
+### The clock message
+
+- An ordinary group message, sealed with the sender's message key in its current epoch (see "Message keys"), ttl 16.
+  The 4th field is there and empty; the 5th field is type `0x04` and the **deadline**: ms since 1970 UTC by the
+  sender's clock, a signed 64-bit big-endian number (9 bytes in all). Deadline `0` stops the sender's clock.
+  Example: `ts` 1793807238631, 1 hour: deadline 1793810838631, field `04 000001a1a7753467`, framed
+  `0000 0009 04000001a1a7753467` after the text. The empty 4th field and the 5th add 13 bytes.
+- `text` is what every app shows; nothing is read from it but a position. Start or more time:
+  `⏳ Check on me if I don't check in within 1 hour` (49 bytes). The duration is `deadline - ts` rounded to the
+  nearest minute (half a minute rounds up), written `N minutes`, `1 hour`, `N hours`, or `1 hour 30 minutes`,
+  `3 hours 15 minutes`. It is relative to the message's own time, which every app shows, so time zones don't matter.
+  Stop: `⏳ Clock stopped. No need to check on me`.
+- With a position, only if the sender turned on location sharing and chose "Add where I am": the check-in suffix
+  ` · 📍 45.46420,9.19000 ±12m` at the end of the text, read exactly as in "Check-ins".
+- It is alerted, confirmed with a receipt and shown like a message (an app that knows the field shows a card), goes on
+  LoRa radios (it matters like a check-in; without a position it fits MeshCore with a name up to about 35 bytes), and
+  this phone's copy (see "Message keys") keeps the field.
+
+### Which clocks count (reader)
+
+`ts` is the message's signed real time.
+
+- **Q1.** A clock message, or a check-in that cancels one, counts only in a group (never on the Public channel), from
+  a packet whose signature checked for its sender (one waiting for its sender's key is decided when it checks), opened
+  by an epoch with a member list, the epoch that counts at every number from that one up to the current one listing
+  the sender, as for a leave note (see "Leaving the group", L1), and not dated after the `ts` of a leave note of the
+  sender that is held (L3; one dated at or before it still counts). A removed member's never counts; nor one sealed
+  before a removal and played back after the same key was let in again. A Wi-Fi board writes none.
+- **Q2.** A valid deadline is `0`, or `ts + 5 min <= deadline <= ts + 24 h`, both ends included. Any other value, or
+  a `0x04` field of another length: the field is ignored and the message is an ordinary text.
+- **Q3.** Per group and member, the valid clock message with the greatest `ts` counts; equal, the greater packet id
+  (16 lowercase hex characters); equal, the greater mark (the first 8 bytes of its signed digest, as replies name a
+  message, see "Replies"). Arrival order doesn't matter; an older one never replaces a newer one.
+- **Q4.** The clock is **armed** while the message that counts has a deadline other than `0` and no **cancelling
+  check-in** reached this phone: an own check-in of that member (text starting with `✅` or `🆘`, see "Check-ins"), as
+  in Q1, with a `ts` greater than the clock message's. Reports (`👤`), reactions, "Are you safe?" and other messages
+  don't cancel. A `🆘` cancels the clock and alerts as help, as always. A stop cancels by Q3: it is the newer clock
+  message.
+- **Q5.** Learned before the deadline: the phone schedules one alert at the deadline by its own clock, and takes it
+  back when a cancelling check-in or a newer clock message arrives while the app runs.
+- **Q6.** At the deadline, if still armed: one alert. People shows the member as overdue until a cancelling check-in
+  arrives or 12 hours after the deadline, whichever comes first. A check-in dated after the deadline shows "Checked in
+  at 19:10" instead, for those same 12 hours; an alert still showing for that clock is removed.
+- **Q7.** Learned after the deadline (the phone was away): if `now <= deadline + 12 h` and armed, the alert comes at
+  once, with "This phone learned of it late."; later than that, no alert and nothing in People, only the chat card.
+- **Q8.** The sender's own phone never alerts its user about its own clock. For a clock of 20 minutes or more
+  (`deadline - ts`) it reminds its user 10 minutes before the deadline, with "I'm safe" under the reminder unless
+  "Lock DarkProof" is on. On iPhone "I'm safe" under an alert (the reminder, "Are you safe?") asks for the phone's
+  unlock first: whoever holds a locked phone can't stop its clock from the lock screen.
+- **Q9.** When the member is no longer in the current epoch because of a removal that didn't follow a valid leave
+  note of theirs, their clock is dropped without an alert. A valid leave note, and the removal that follows it (L4),
+  **don't end a clock**: it keeps running and alerts at its deadline as usual. Someone may erase or leave because they
+  are in danger, the case the clock exists for. Only a cancelling check-in or a stop of theirs that counts (Q1) ends it.
+- **Q10. The record.** Per group and member: the clock message's packet id and mark, `ts`, deadline, position (none in
+  high-risk mode on this phone), when this phone took it, whether its alert was posted or handed to the system for the
+  deadline; for the phone's own clock, who confirmed it (Q14); and the `ts` of their latest cancelling check-in. Saved
+  apart from the messages, so the clock survives its message being deleted by the group's timer or high-risk mode, and
+  app restarts; kept in the app's own storage, out of device backups (on iPhone a file excluded from backups, never the
+  preferences). The position goes once the group's timer would have deleted the clock message (counted from when the
+  phone took the clock), and at once in high-risk mode. A record is kept until `ts + 36 h`
+  (past the latest deadline, `ts + 24 h`, and the 12 hours after it), also once cancelled, without its position, so
+  that a copy of an older clock read again can't arm it again. In high-risk mode it goes at `ts + 24 h`, never before
+  the deadline. It goes at once when the member is dropped (Q9) and when the group is left. At every start the records
+  are rebuilt from the stored messages too, the newer winning (Q3); a clock whose record would already have gone is
+  not taken again.
+- **Q11.** The alert and People show when the newest position known of that member was sent: from the clock message or
+  any check-in of theirs, whichever has the greatest `ts`.
+- **Q12. Limits.** One clock per member per group (Q3); at most 100 records per group, the oldest going; on iPhone at
+  most 32 clock alerts wait with the system in all (iOS keeps 64 per app), nearest deadlines first, the rest handed
+  over as earlier ones go. A phone posts at most one clock alert about a member per group every 10 minutes (one due
+  meanwhile comes when the 10 minutes are up), and an alert learned late only for a clock newer than the last one it
+  alerted about that member: backdated clocks can't make every phone ring again and again.
+- **Q13. Who it is from.** The alert and the chat card name the member by their display name only if their person
+  emoji were checked on this phone and no other member of the group has the same name (by name key, as in "Reports
+  about others"). A member not checked: "Anna (not checked)"; a checked one whose name another member has too: "Anna ·
+  🐶🐱🦁🐴", the first four of their person emoji. A member who calls themselves "Anna" can't make the group read an
+  alert as being about the real Anna.
+- **Q14. Kept by.** The sender's phone keeps, in its own clock's record, the members whose phones confirmed the clock
+  message (delivery receipts), so the list outlives the message when the group's timer deletes it, and shows only those
+  who are members now (not someone who left or was removed since: their phone forgot the group).
+
+### Starting and stopping (writer)
+
+- **QW1.** Only from the "If I go quiet" screen, in a group where the phone has an epoch and wasn't removed. Choices:
+  30 minutes, 1 hour, 3 hours, 8 hours. "Add 30 minutes" sends a new clock message with the old deadline plus 30
+  minutes (from now if it has passed), at most 24 hours from now. "I'm safe, stop the clock" sends the ordinary check-in
+  `✅ I'm safe`, which cancels (Q4). "Stop without checking in" sends the stop.
+- **QW2.** Never on the Public channel, and never held until the phone is let in: a phone that can't write in the group
+  says "This phone isn't let in, so it can't send a clock to My group." and sends nothing.
+
+### Alerts, and what can't be guaranteed
+
+- **iPhone:** a local notification for the deadline, its words decided when it is scheduled (no name and no text with
+  "Lock DarkProof" or high-risk mode on), replaced when a newer clock arrives, removed when a cancelling check-in
+  arrives while the app runs (on screen, or woken in the background for Bluetooth). All clock alerts that wait are made
+  again when the lock or high-risk mode is switched. Its identifier is a hash of the group's id and the member's, so
+  neither sits in the system's alert database. A check-in that reaches the relays or a neighbour while the app is
+  suspended isn't seen until the app runs, so the alert can come although the member checked in; the words cover that.
+  It doesn't come while the phone is off, or with alerts off for DarkProof.
+- **Android:** a timer in the running service, and a backup inexact alarm (`setAndAllowWhileIdle`) to a receiver that
+  posts the alert unless the record was cancelled. Doze can delay it by minutes; no exact-alarm permission is asked
+  for. Alarms are lost on a reboot or a force stop and set again when the app or its service next starts. The screen
+  adds "It can come a few minutes late."
+
+### What the screens say
+
+- **Own screen**, "If I go quiet": "If you don't check in on time, the phones that got your clock tell their owners."
+  / "It still works when your phone is off or gone. Only phones that got the clock can tell anyone." The chips
+  "30 min", "1 hour", "3 hours", "8 hours"; with location sharing on, the switch "Add where I am" ("Where you are now
+  goes with the clock"); "Start the clock". Running: a ring and the time left, "Ends 18:30", then from the clock
+  message's delivery receipts (Q14), never from the member list: "Not confirmed by any phone yet. If no phone has it,
+  nobody is told.", "Kept by Marco so far", "Kept by Marco and Sara so far", "Kept by Marco, Sara and 2 more so far". Buttons
+  "I'm safe, stop the clock", "Add 30 minutes", and the text button "Stop without checking in". Toasts: "Clock sent to
+  your group", "30 minutes added", "“I'm safe” sent. The clock stopped.", "Clock stopped" (with nothing in reach,
+  that it waits for a phone in range). Below: "Phones on older DarkProof versions only show the message."
+- **Chat card:** "Anna started a check-in clock" / "If no check-in from Anna reaches this phone by 18:30, it tells
+  you."; a stop: "Anna stopped the check-in clock". The name as in Q13 ("Anna (not checked) started a check-in clock"). Its own: "You started a check-in clock" / "Ends 18:30. Phones that
+  got it tell their owners if you don't check in."
+- **People:** armed, "Check-in clock · ends 18:30"; overdue, "Clock ran out at 18:30 · no check-in has reached this
+  phone"; then "Checked in at 19:10".
+- **Alert** (names allowed): "Anna's check-in clock ran out" / "No check-in from Anna has reached this phone since
+  17:30. Anna's phone may just be out of reach. Last position known: 18:02." Learned late: "Anna's check-in clock ran
+  out at 18:30", and the body ends "This phone learned of it late." With "Lock DarkProof" or high-risk mode on:
+  "DarkProof" / "A check-in clock in your group ran out. Open DarkProof." On screen, a neutral banner (not red) with
+  the alert's title and "No check-in from Anna has reached this phone. In My group."
+- **Reminder** (Q8): "Your check-in clock ends at 18:30" / "Check in now?", with "I'm safe"; with the lock or high-risk
+  mode on, "DarkProof" / "Your check-in clock ends soon. Open DarkProof."
+- Never: "Anna is missing", "Anna didn't check in", "your group will be told", "Marco and Sara are told".
+
+### Phones without it
+
+They show `⏳ Check on me if I don't check in within 1 hour` as an ordinary message with its time, and the stop text;
+they alert it as an ordinary message and keep no clock (a reader that knows replies, reactions, the timer and the leave
+note reads a `0x04` field as none). The sender's screen counts only receipts, so it never claims that they keep one.
+
+### Abuse and failure
+
+| Who or what | What happens | Why |
+|---|---|---|
+| A member sends 50 clock messages | One record (the newest), one alert; backdated ones at most one alert in 10 minutes | Q3, Q12; per-link pacing bounds packets |
+| A member names themselves "Anna" and sends a backdated clock | The alert reads "Anna (not checked)", or "Anna · 🐶🐱🦁🐴" | Q13 |
+| Anna erases her phone or leaves while her clock runs | The clock still alerts at its deadline | Q9 |
+| Someone with Anna's locked phone taps "I'm safe" on the reminder | The phone asks for its unlock | Q8 |
+| A deadline years ahead, or in the past | The field is ignored, plain text | Q2 |
+| Someone writes a clock under Anna's id | Not counted | Q1: only Anna's key signs under her id |
+| A removed member's clock | Never counted, or dropped (unless the removal followed their leave note) | Q1, Q9 |
+| An old clock message played back | Ignored if a newer one is held; else it is Anna's own past clock, valid only within its 24 hours | Q2, Q3, Q10; packets older than 7 days are dropped |
+| Anna's phone clock is 20 minutes fast | Alerts 20 minutes early on other phones | Deadlines are in her clock; packets more than 10 minutes ahead are dropped; the screens show the time |
+| Anna checks in but it reaches only some phones | Those phones don't alert, the others do | "has reached this phone" |
+| This phone is off at the deadline | No alert while it is off | Stated limits |
+| The clock message reaches no phone | Nobody is told | The sender's screen says so, from receipts |
+| Someone with Anna's unlocked phone stops her clock | It stops | As sending "I'm safe"; the lock is the protection |
+| An alert on a seized phone | No names, no text with the lock or high-risk mode | Alerts follow the same rules as message alerts |
+| A position given away | Only with location sharing and "Add where I am" on | As in check-ins |
+
+Vectors: `kind: quiet-field` (reading the field), `kind: quiet-message` (a sealed clock message, and what readers with
+and without the feature make of it), `kind: quiet-valid` (Q2), `kind: quiet-pick` (Q3), `kind: quiet-cancel` (Q4),
+`kind: quiet-late` (Q5 to Q7), `kind: quiet-text` (the text).
 
 ## Forwarding rules
 
@@ -750,7 +1461,15 @@ When a phone gets a new group message from someone else, it confirms it with a r
   packets for all saved groups together: beyond it their oldest go, at each trim, and the store is also trimmed when
   they reach twice that room. They never push out a message.
 - **Sent:** a phone remembers (up to 2,000) which of its own messages it has handed to another phone, a radio or a
-  relay, so "Sent" survives a restart.
+  relay, so "Sent" survives a restart, and for each over which kind of link it first left and when (see "Journey
+  notes"). Its own reactions are not among them.
+- **High-risk mode ("Keeps less"):** a phone notes when each message and receipt of its groups reached it, and in
+  high-risk mode removes each one 1 day after that (a message it wrote: 1 day after it was first handed to a link, and
+  never before; a receipt it wrote: 1 day after it was written), while introductions, new keys, Public packets and
+  packets it can't open keep the rules above. It keeps the name of each packet removed this way (the key under "The
+  same packet", with the packet's `ts` and its group's id, no content; at most 5,000, each until its `ts` is 7 days
+  old): one that arrives again is passed on, but never shown, alerted, confirmed or copied again, and it is stored
+  again only if no key on the phone opens it any more.
 
 - **The same packet** means the same id, the same `ts` and the same content (the first 8 bytes of SHA-256 of `ts`, 8
   bytes big-endian, followed by `cipher`). The encryption is bound to `ts`, so a copy with another `ts` can't be opened:
@@ -1130,6 +1849,18 @@ the link it dialed.
   signature doesn't check); receipts, introductions, new keys and the Public channel are unchanged. Also new rules,
   with the same bytes: only members write in an epoch, nothing new is shown from someone removed, and someone removed
   adds no keys.
+- `0xB3`, 2026-11-22: replies and reactions (a 5th plaintext field in group messages, see "Replies and reactions")
+  and journey notes in receipts (see "Journey notes"). Nothing else in a packet changes. A phone on an earlier build
+  shows a reply as an ordinary message and a reaction as a short message of its own, and skips the notes.
+- `0xB3`, 2026-11-22, later: a timer for disappearing messages, carried in a 5th field of new keys (see
+  "Disappearing messages"). A phone on an earlier build takes those keys unchanged and keeps messages one to two
+  weeks.
+- `0xB3`, 2026-11-22, later still: the leave note, a group message with the 5th field `05 01` (see "Leaving the
+  group"); admins' phones then remove the member with the normal removal. A phone on an earlier build shows it as the
+  ordinary message `👋 I left the group`.
+- `0xB3`, 2026-11-22, last: check-in clocks, a group message with the 5th field `0x04` and a deadline (see "If I go
+  quiet"); the group's phones keep the clock and tell their owners if no check-in reaches them in time. A phone on an
+  earlier build shows it as the ordinary message `⏳ Check on me if I don't check in within 1 hour`.
 
 ## Apple peer-to-peer (iPhone to iPhone)
 

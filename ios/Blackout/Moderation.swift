@@ -11,17 +11,18 @@ enum Moderation {
     /// What is blocked (`Blocks.key`: the channel and the sender id) and the name that sender had.
     static var blocked: [String: String] { d.dictionary(forKey: "blocked") as? [String: String] ?? [:] }
     /// `key`: `Blocks.key` of the channel and the sender. Called by `Engine.block`, which knows the channel.
-    static func block(_ key: String, name: String) { var b = blocked; b[key] = name; d.set(b, forKey: "blocked") }
+    static func block(_ key: String, name: String) { guard !Wipe.busy else { return }; var b = blocked; b[key] = name; d.set(b, forKey: "blocked") }
     /// `key`: a key of `blocked`.
-    static func unblock(_ key: String) { var b = blocked; b.removeValue(forKey: key); d.set(b, forKey: "blocked") }
+    static func unblock(_ key: String) { guard !Wipe.busy else { return }; var b = blocked; b.removeValue(forKey: key); d.set(b, forKey: "blocked") }
 
     /// Ids of messages the user reported or hid.
     static var hidden: Set<String> { Set(d.stringArray(forKey: "hidden") ?? []) }
-    static func hide(_ id: String) { d.set(HiddenMessages.adding(id, to: d.stringArray(forKey: "hidden") ?? []), forKey: "hidden") }
+    static func hide(_ id: String) { guard !Wipe.busy else { return }; d.set(HiddenMessages.adding(id, to: d.stringArray(forKey: "hidden") ?? []), forKey: "hidden") }
 
     /// Reports waiting to go to the internet relays.
     static var pendingReports: [String] { d.stringArray(forKey: "reports") ?? [] }
     static func report(_ id: String) {
+        guard !Wipe.busy else { return } // a group is being left or everything erased: a late tap saves nothing
         hide(id)
         d.set(Array((pendingReports + [id]).suffix(200)), forKey: "reports")
     }

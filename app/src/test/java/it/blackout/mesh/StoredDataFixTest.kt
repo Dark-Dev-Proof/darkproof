@@ -22,7 +22,7 @@ class StoredDataFixTest {
         val id = "6a4400000000000$i"; val ts = e.made + 1_000
         val c = e.group.sealWith(e.messageKeys!!.key(1, i)!!, 1, i, id, ts, ben, "Ben", "message $i") { TestKeys.sign(it) }
         val o = e.open(Packet(id, e.group.hideTime(ts, c), 16, c))!!
-        return History.open(key, id, History.seal(key, id, group, named, o, 1, i))!!
+        return History.open(key, id, History.seal(key, id, group, named, o, 1, i)!!)!!
     }
 
     @Test fun aCopyGoesWithTheEpochThatWasDeleted() {

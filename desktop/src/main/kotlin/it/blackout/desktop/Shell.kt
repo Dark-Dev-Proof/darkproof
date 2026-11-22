@@ -2,7 +2,37 @@ package it.blackout.desktop
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.Role
+import it.blackout.mesh.Buzz
+import it.blackout.mesh.Here
+import it.blackout.mesh.HoverTip
+import it.blackout.mesh.Motion
+import it.blackout.mesh.Press
+import it.blackout.mesh.litEdge
+import it.blackout.mesh.pressed
+import it.blackout.mesh.tap
+import it.blackout.mesh.tapArea
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -44,6 +74,7 @@ import it.blackout.mesh.Links
 import it.blackout.mesh.LocalAi
 import it.blackout.mesh.Logo
 import it.blackout.mesh.MainActivity
+import it.blackout.mesh.GroupTimer
 import it.blackout.mesh.MeshEngine
 import it.blackout.mesh.Message
 import it.blackout.mesh.Moderation
@@ -78,19 +109,30 @@ private val TOP = 12.dp // above every pane's heading, on top of the 8 the phone
 fun DesktopApp(a: MainActivity) {
     val s = a.state
     MaterialTheme(colorScheme = darkColorScheme(background = Theme.bg, surface = Theme.bg, primary = Theme.text, onPrimary = Color.Black)) {
-        Box(Modifier.fillMaxSize().background(Theme.bg)) {
+        // The focus ring shows only after the keyboard moved the focus (Tab, arrows), never after a click: a click focuses too.
+        Box(Modifier.fillMaxSize().background(Theme.bg)
+            .onPreviewKeyEvent { e ->
+                if (e.type == KeyEventType.KeyDown && e.key in FocusKeys) Here.keys = true
+                false
+            }
+            .pointerInput(Unit) {
+                awaitPointerEventScope { while (true) { if (awaitPointerEvent(PointerEventPass.Initial).type == PointerEventType.Press) Here.keys = false } }
+            }) {
             val g = s.group
             if (g == null) Welcome(s, a) else Panes(s, a, g)
         }
     }
 }
 
+/** The keys that move the focus from one thing to the next. */
+private val FocusKeys = setOf(Key.Tab, Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight)
+
 /** Before the first setup: the phones' own setup, as one column in the middle of the window. */
 @Composable
 private fun Welcome(s: AppState, a: MainActivity) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Box(Modifier.width(460.dp).fillMaxHeight().padding(vertical = 24.dp)) {
-            SetupFlow(s.invite, askName = true, dropInvite = { s.invite = null }) { name, group, created ->
+            SetupFlow(s.invite, askName = true, myName = s.name, dropInvite = { s.invite = null }) { name, group, created ->
                 a.started(name, group); s.invite = null
                 if (created) s.sheet = Sheet.Invite
             }
@@ -128,7 +170,11 @@ private fun Panes(s: AppState, a: MainActivity, g: SavedGroup) {
                         Box(Modifier.weight(1f)) { AskTab(g, messages) }
                     }
                     else -> {
+                        // The group's timer for disappearing messages, while one is set: the phones show it next to the reach line.
+                        val timer = remember(s.tick, s.everyone, g) { if (s.everyone) null else MeshEngine.timer(g.code).seconds?.takeIf { it > 0 }?.let(GroupTimer::label) }
                         PaneTitle(if (s.everyone) "Everyone" else g.name) {
+                            if (timer != null) Chip(timer, R.drawable.ic_schedule) { s.sheet = Sheet.Timer }
+                            if (!s.everyone) Chip("Security", R.drawable.ic_shield) { s.sheet = Sheet.Security } // the phones' round shield in the chat's header
                             if (!s.everyone) Chip("Invite", R.drawable.ic_qr_code_2) { s.sheet = Sheet.Invite }
                         }
                         ChatTab(s, g, messages, phones) { s.sheet = it }
@@ -174,17 +220,41 @@ private fun Rail(s: AppState, a: MainActivity, g: SavedGroup, all: List<Message>
             for (x in groups) {
                 val here = x.code == g.code
                 val news = !here && remember(all, x) { ReadMarks.unread(a, all, x.code) } > 0
-                Box(contentAlignment = Alignment.TopEnd) {
-                    Box(Modifier.size(48.dp).clip(if (here) RoundedCornerShape(16.dp) else CircleShape).background(if (here) Theme.text else Theme.tile)
-                        .clickable { if (here) { s.tab = 1; s.everyone = false } else a.switchTo(x) }.semantics { contentDescription = if (here) "${x.name}, the group on screen" else "Switch to ${x.name}" },
-                        contentAlignment = Alignment.Center) {
-                        Txt(x.name.trim().take(1).uppercase().ifEmpty { "G" }, 19, FontWeight.Black, if (here) Color.Black else Theme.text)
-                    }
-                    if (news) Box(Modifier.size(12.dp).background(Theme.text, CircleShape).border(2.dp, Theme.bg, CircleShape))
-                }
+                val name = if (here) "${x.name}, the group on screen" else "Switch to ${x.name}"
+                HoverTip(name) { RailGroup(x.name, here, news, name) { if (here) { s.tab = 1; s.everyone = false } else a.switchTo(x) } }
             }
             RoundIcon(R.drawable.ic_add, 48.dp, desc = "Join or start another group") { s.sheet = Sheet.NewGroup }
         }
+    }
+}
+
+/**
+ * One group on the rail: a circle that rounds into a softer square for the group on screen, and on the way there under the
+ * mouse. A white dot: something new in it.
+ */
+@Composable
+private fun RailGroup(name: String, here: Boolean, news: Boolean, desc: String, go: () -> Unit) {
+    val source = remember { MutableInteractionSource() }
+    val hovered by source.collectIsHoveredAsState()
+    val corner = animateFloatAsState(if (here) 33f else if (hovered) 40f else 50f, Motion.slide(), label = "rail")
+    val shape = RoundedCornerShape(percent = corner.value.roundToInt().coerceIn(0, 50))
+    // The press effect keeps one shape that follows the corner as it moves: a new effect each frame would lose its spring.
+    val press = remember {
+        val follows = object : Shape {
+            override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density) =
+                RoundedCornerShape(percent = corner.value.roundToInt().coerceIn(0, 50)).createOutline(size, layoutDirection, density)
+        }
+        Press(down = 0.92f, shape = follows, dim = 0.15f, lift = 0.06f, bouncy = true, buzz = Buzz.None)
+    }
+    Box(contentAlignment = Alignment.TopEnd) {
+        Box(Modifier.size(48.dp).pointerHoverIcon(PointerIcon.Hand)
+            .clickable(source, press, role = Role.Button, onClick = go)
+            .semantics { contentDescription = desc }
+            .background(if (here) Theme.text else Theme.tile, shape).litEdge(shape, if (here) 0.6f else 0.10f),
+            contentAlignment = Alignment.Center) {
+            Txt(name.trim().take(1).uppercase().ifEmpty { "G" }, 19, FontWeight.Black, if (here) Color.Black else Theme.text)
+        }
+        if (news) Box(Modifier.size(12.dp).background(Theme.text, CircleShape).border(2.dp, Theme.bg, CircleShape))
     }
 }
 
@@ -204,7 +274,7 @@ private fun Sidebar(s: AppState, a: MainActivity, g: SavedGroup, phones: Int, un
         NavRow(R.drawable.ic_location_on, "Places", s.tab == 2) { s.tab = 2 }
         NavRow(R.drawable.ic_auto_awesome, "Ask", s.tab == 4) { s.tab = 4 }
         Spacer(Modifier.weight(1f))
-        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Theme.card).clickable { s.sheet = Sheet.Settings }.padding(12.dp),
+        Row(Modifier.fillMaxWidth().tap(SidePress) { s.sheet = Sheet.Settings }.background(Theme.card, RoundedCornerShape(20.dp)).padding(12.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.size(40.dp).background(Theme.tile, CircleShape), contentAlignment = Alignment.Center) { Txt(s.name.trim().take(1).uppercase().ifEmpty { "?" }, 17, FontWeight.Black) }
             Column(Modifier.weight(1f)) {
@@ -221,7 +291,9 @@ private fun Sidebar(s: AppState, a: MainActivity, g: SavedGroup, phones: Int, un
 private fun StatusCard(s: AppState, phones: Int) {
     val links = remember(s.tick) { Links.now() }
     val lines = remember(s.tick) { linkLines() }
-    Column(Modifier.fillMaxWidth().clip(vaultShape(cut = 26.dp, radius = 30.dp)).background(Theme.card).clickable { s.sheet = Sheet.Radio }.padding(start = 18.dp, end = 16.dp, top = 16.dp, bottom = 16.dp)) {
+    val shape = remember { vaultShape(cut = 26.dp, radius = 30.dp) }
+    val press = remember(shape) { Press(down = 0.98f, shape = shape, dim = 0f, lift = 0.05f, light = 0.05f, buzz = Buzz.None) }
+    Column(Modifier.fillMaxWidth().tap(press) { s.sheet = Sheet.Radio }.background(Theme.card, shape).padding(start = 18.dp, end = 16.dp, top = 16.dp, bottom = 16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.size(9.dp).background(if (links.any) Theme.safe else Theme.faint, CircleShape))
             Txt(if (links.any) "Connected" else "Looking for phones", 15, FontWeight.SemiBold, if (links.any) Theme.safe else Theme.dim)
@@ -234,9 +306,12 @@ private fun StatusCard(s: AppState, phones: Int) {
     }
 }
 
+private val SidePress = Press(down = 0.98f, shape = RoundedCornerShape(20.dp), dim = 0f, lift = 0.05f, light = 0.05f, buzz = Buzz.None)
+private val NavPress = Press(down = 0.98f, shape = RoundedCornerShape(14.dp), dim = 0f, lift = 0.05f, light = 0.05f, buzz = Buzz.None)
+
 @Composable
 private fun NavRow(icon: Int, label: String, here: Boolean, badge: Int = 0, go: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (here) Theme.tile else Color.Transparent).clickable(onClick = go).padding(horizontal = 12.dp, vertical = 10.dp),
+    Row(Modifier.fillMaxWidth().tap(NavPress, onClick = go).background(if (here) Theme.tile else Color.Transparent, RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Ic(icon, if (here) Theme.text else Theme.dim, 20.dp)
         Txt(label, 16, if (here) FontWeight.SemiBold else FontWeight.Normal, if (here) Theme.text else Theme.dim, Modifier.weight(1f), maxLines = 1)
@@ -255,8 +330,14 @@ private fun PaneTitle(title: String, actions: @Composable () -> Unit) {
 
 @Composable
 private fun Chip(label: String, icon: Int, tap: () -> Unit) {
-    Row(Modifier.clip(CircleShape).background(Theme.tile).clickable(onClick = tap).padding(horizontal = 14.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // A small glass capsule (the phones' GhostButton), with room around it to be easy to hit.
+    val source = remember { MutableInteractionSource() }
+    Box(Modifier.heightIn(min = 40.dp).tapArea(source, onClick = tap), contentAlignment = Alignment.Center) {
+    Row(Modifier.heightIn(min = 32.dp).pressed(source, Press(down = 0.95f, lift = 0.05f, buzz = Buzz.None))
+        .background(Color.White.copy(alpha = 0.09f), CircleShape).litEdge(CircleShape).padding(horizontal = 14.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Ic(icon, Theme.text, 18.dp)
         Txt(label, 14, FontWeight.SemiBold)
+    }
     }
 }

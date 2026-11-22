@@ -4,11 +4,21 @@ import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -32,6 +42,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 
 /**
  * QR codes and shared invites use the app link (darkproof://) for now. Set to true once darkproof.app serves its App
@@ -42,11 +60,16 @@ fun inviteLink(g: SavedGroup, pins: String) = if (INVITE_WEB_LINKS) Invite.webUr
 
 @Composable
 fun DarkProofApp(s: AppState, a: MainActivity) {
+    // The photo picker is asked for here, above the lock screen: the chat isn't drawn while the app is locked (in
+    // high-risk mode it locks whenever it is left, the picker included), and a photo coming back to it would be lost.
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> photoChosen(a, uri) { s.sheet = it } }
     MaterialTheme(colorScheme = darkColorScheme(background = Theme.bg, surface = Theme.bg, primary = Theme.text, onPrimary = Color.Black)) {
+        CompositionLocalProvider(LocalPhotoPicker provides { pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) {
         Box(Modifier.fillMaxSize().background(Theme.bg)) {
+            Wipe.erased?.let { lines -> EmptyScreen(lines) { Wipe.emptySeen() } } // "This phone is empty", once, after "Erase everything"
             val g = s.group
             if (g == null) {
-                SetupFlow(s.invite, askName = true, modifier = Modifier.statusBarsPadding().navigationBarsPadding(), dropInvite = { s.invite = null }) { name, group, created ->
+                SetupFlow(s.invite, askName = true, modifier = Modifier.statusBarsPadding().navigationBarsPadding(), myName = s.name, dropInvite = { s.invite = null }) { name, group, created ->
                     a.started(name, group); s.invite = null
                     if (created) s.sheet = Sheet.Invite
                 }
@@ -64,6 +87,7 @@ fun DarkProofApp(s: AppState, a: MainActivity) {
                         onYes = { a.switchTo(Groups.find(a, i.code) ?: i); s.invite = null; s.tab = 0 }, onNo = { s.invite = null })
                 }
             }
+        }
         }
     }
 }
@@ -101,7 +125,7 @@ fun SetupFlow(invite: SavedGroup?, askName: Boolean, modifier: Modifier = Modifi
               dropInvite: () -> Unit = {}, done: (name: String, group: SavedGroup, created: Boolean) -> Unit) {
     val start = if (askName) "welcome" else "choose"
     var mode by rememberSaveable(invite) { mutableStateOf(if (invite != null) "join" else start) }
-    var name by rememberSaveable { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf(if (askName) myName else "") } // kept from before, when the last group was left
     var groupName by rememberSaveable(invite) { mutableStateOf(invite?.name ?: "") }
     var code by rememberSaveable(invite) { mutableStateOf(invite?.code ?: "") }
     // The admins named by the invite link the code came from (spec "Invites"). They count only if the code is still that one when the user joins.
@@ -120,6 +144,7 @@ fun SetupFlow(invite: SavedGroup?, askName: Boolean, modifier: Modifier = Modifi
                 Spacer(Modifier.height(8.dp))
                 Txt("Stay connected when everything goes dark.", 36, FontWeight.Black, lineHeight = 40)
                 Txt("Messages travel phone to phone over Bluetooth and Wi-Fi, and over the internet when there is some. No account.", 17, color = Theme.dim)
+                if (askName) NotAllErased()
                 Spacer(Modifier.height(24.dp))
                 PrimaryButton("Create a group") { mode = "create" }
                 SecondaryButton("Join a group") { mode = "join" }
@@ -172,7 +197,7 @@ fun SetupFlow(invite: SavedGroup?, askName: Boolean, modifier: Modifier = Modifi
 }
 
 @Composable private fun FormTitle(title: String, sub: String, back: (() -> Unit)?) {
-    if (back != null) Txt("Back", 16, FontWeight.SemiBold, Theme.dim, Modifier.clickable(role = Role.Button, onClick = back).padding(vertical = 8.dp))
+    if (back != null) Txt("Back", 16, FontWeight.SemiBold, Theme.dim, Modifier.tap(Press(down = 0.95f, shape = RoundedCornerShape(10.dp), dim = 0.35f, buzz = Buzz.Tap), onClick = back).padding(vertical = 12.dp, horizontal = 4.dp))
     else Spacer(Modifier.height(24.dp))
     Txt(title, 32, FontWeight.Black, lineHeight = 38)
     Txt(sub, 16, color = Theme.dim)
@@ -216,13 +241,23 @@ sealed class Sheet {
     object Practice : Sheet()
     object Vouch : Sheet()
     data class Person(val id: String) : Sheet()
+    /** "Check Ben": their code to scan, or their emoji to compare. */
+    data class Check(val id: String) : Sheet()
+    object Joins : Sheet()
+    object Security : Sheet()
+    /** "Messages disappear after": the group's timer (spec "Disappearing messages"), from the "+" tray and Group security. */
+    object Timer : Sheet()
+    /** "How it got there" for one of this phone's own group messages (spec "Journey notes"). */
+    data class Journey(val id: String) : Sheet()
 
     companion object {
         /** As text, to come back after Android ended the app in the background (photos are not kept). */
         fun save(s: Sheet): String? = when (s) {
             Invite -> "invite"; Groups -> "groups"; Settings -> "settings"; Radio -> "radio"; NewGroup -> "newgroup"; AddPlace -> "addplace"
-            Practice -> "practice"; Vouch -> "vouch"
+            Practice -> "practice"; Vouch -> "vouch"; Joins -> "joins"; Security -> "security"; Timer -> "timer"
             is Person -> "person\n${s.id}"
+            is Check -> "check\n${s.id}"
+            is Journey -> "journey\n${s.id}"
             is HelpDetails -> "help\n${s.group ?: ""}"
             is Find -> "find\n${s.title}\n${s.spot.lat}\n${s.spot.lon}\n${s.spot.accuracy ?: ""}\n${s.ts}"
             is SendPhoto, is ViewPhoto -> null
@@ -231,8 +266,10 @@ sealed class Sheet {
             val p = t.split("\n")
             return when (p[0]) {
                 "invite" -> Invite; "groups" -> Groups; "settings" -> Settings; "radio" -> Radio; "newgroup" -> NewGroup; "addplace" -> AddPlace
-                "practice" -> Practice; "vouch" -> Vouch
+                "practice" -> Practice; "vouch" -> Vouch; "joins" -> Joins; "security" -> Security; "timer" -> Timer
                 "person" -> p.getOrNull(1)?.let(::Person)
+                "check" -> p.getOrNull(1)?.let(::Check)
+                "journey" -> p.getOrNull(1)?.let(::Journey)
                 "help" -> HelpDetails(p.getOrNull(1)?.ifEmpty { null })
                 "find" -> runCatching { Find(p[1], Spot(p[2].toDouble(), p[3].toDouble(), p[4].toIntOrNull()), p[5].toLong()) }.getOrNull()
                 else -> null
@@ -268,7 +305,7 @@ fun MainView(s: AppState, a: MainActivity) {
     val unread = remember(all, s.tab, s.everyone, g) { if (s.tab == 1 && !s.everyone) 0 else ReadMarks.unread(a, all, g.code) }
     BackHandler(enabled = s.tab != 0) { s.tab = 0 } // Back from another tab goes Home first
     Box(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxSize().statusBarsPadding()) {
+        Box(Modifier.fillMaxSize().glassSource().statusBarsPadding()) { // the tab bar floats over it
             when (s.tab) {
                 1 -> ChatTab(s, g, messages, phones) { s.sheet = it }
                 2 -> PlacesTab(s, messages) { s.sheet = it }
@@ -297,12 +334,17 @@ internal fun Overlays(s: AppState, a: MainActivity, g: SavedGroup, messages: Lis
         Sheet.Radio -> SettingsSheet(s, a, all, { s.sheet = Sheet.Invite }, { s.sheet = Sheet.NewGroup }, close, connections = true)
         is Sheet.Find -> FindSheet(sh, close)
         Sheet.AddPlace -> AddPlaceSheet(close)
-        is Sheet.SendPhoto -> SendPhotoSheet(sh.jpeg, close)
+        is Sheet.SendPhoto -> SendPhotoSheet(s, sh.jpeg, close)
         is Sheet.ViewPhoto -> ViewPhotoSheet(sh.jpeg, close)
         is Sheet.HelpDetails -> HelpDetailsSheet(s, a, sh.group, close)
         Sheet.Practice -> PracticeSheet(a, close)
         Sheet.Vouch -> VouchSheet(s, a, close)
         is Sheet.Person -> PersonSheet(s, a, messages, sh.id, close)
+        is Sheet.Check -> CheckSheet(s, a, messages, sh.id, close)
+        Sheet.Joins -> JoinSheet(s, g, close)
+        Sheet.Security -> SecuritySheet(s, a, g, close)
+        Sheet.Timer -> TimerSheet(s, a, g, close)
+        is Sheet.Journey -> JourneySheet(s, sh.id, close)
         null -> {}
     }
     if (s.askHelp) HelpConfirm(s, a)
@@ -343,9 +385,13 @@ private fun AlertBanner(al: Notifier.Alert, s: AppState, a: MainActivity, modifi
         s.everyone = false; s.tab = 1
     }
     val color = if (al.urgent && !al.ask) Theme.help else Theme.text
-    Column(modifier.statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp))
-        .background(Theme.tile).border(1.dp, if (al.urgent) color.copy(alpha = 0.6f) else Theme.line, RoundedCornerShape(24.dp))
-        .clickable(role = Role.Button) { openChat() }.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val shape = RoundedCornerShape(24.dp)
+    Column(modifier.statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth()
+        .glow(Color.Black, 0.5f, 12.dp, 0.dp) // it floats over the screen
+        .tap(Press(down = 0.98f, shape = shape, dim = 0f, light = 0.05f, buzz = Buzz.None)) { openChat() }
+        .background(Theme.tile, shape).litEdge(shape, 0.13f)
+        .then(if (al.urgent) Modifier.border(1.dp, color.copy(alpha = 0.6f), shape) else Modifier) // red only for help
+        .padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Ic(if (al.ask) R.drawable.ic_notifications else if (al.urgent) R.drawable.ic_sos else R.drawable.ic_chat, color, 24.dp)
             Spacer(Modifier.width(12.dp))
@@ -364,28 +410,63 @@ private fun AlertBanner(al: Notifier.Alert, s: AppState, a: MainActivity, modifi
 
 /** A colored capsule button for the one-tap answers. */
 @Composable fun CapsuleChoice(text: String, bg: Color, fg: Color, modifier: Modifier = Modifier, tap: () -> Unit) =
-    Box(modifier.heightIn(min = 48.dp).clip(CircleShape).background(bg).clickable(role = Role.Button, onClick = tap), contentAlignment = Alignment.Center) {
+    Box(modifier.heightIn(min = 48.dp).tap(onClick = tap).background(bg, CircleShape).litEdge(CircleShape, 0.25f), contentAlignment = Alignment.Center) {
         Txt(text, 16, FontWeight.Bold, fg, maxLines = 1)
     }
 
+/** The phone's five tabs, in order: the name and the icon. */
+private val PhoneTabs = listOf("Home" to R.drawable.ic_home, "Chat" to R.drawable.ic_chat,
+    "Places" to R.drawable.ic_location_on, "People" to R.drawable.ic_group, "Ask" to R.drawable.ic_auto_awesome)
+
+private val PillWhite = Brush.verticalGradient(listOf(Color.White, Color(0xFFE5E5E5)))
+private val PillInk = Color(0xFF111111)
+
+/**
+ * The floating tab bar: a glass capsule over the screen (solid, so nothing under it shows through: [glass]) with a lit
+ * top edge. The tab on screen is a white pill with its black icon and name; the others are icons only, in dim white,
+ * and TalkBack reads each by name ("Chat, 3 new"). The tab on screen is twice as wide, so the pill slides and stretches
+ * to it with one spring while the widths move with it. In calm mode it is simply there ([Motion]).
+ */
 @Composable
 private fun TabBar(selected: Int, unread: Int, modifier: Modifier, pick: (Int) -> Unit) {
-    val tabs = listOf("Home" to R.drawable.ic_home, "Chat" to R.drawable.ic_chat, "Places" to R.drawable.ic_location_on,
-        "People" to R.drawable.ic_group, "Ask" to R.drawable.ic_auto_awesome)
-    Row(modifier.navigationBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth()
-        .clip(CircleShape).background(Theme.card).border(1.dp, Theme.line, CircleShape).padding(6.dp)) {
-        tabs.forEachIndexed { i, (label, icon) ->
-            val on = i == selected
+    val grow = PhoneTabs.indices.map { i -> animateFloatAsState(if (i == selected) 1f else 0f, Motion.slide(), label = "pill$i") }
+    val press = remember { Press(down = 0.9f, shape = CircleShape, dim = 0f, lift = 0.04f, light = 0.07f, buzz = Buzz.Tick) }
+    Row(modifier.navigationBarsPadding().padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth().height(60.dp)
+        .glow(Color.Black, 0.5f, 12.dp, 0.dp)
+        .glass(CircleShape, Color(0xFF2F2F31), Color(0xFF242426)).litEdge(CircleShape, 0.13f)
+        .padding(5.dp).selectableGroup()
+        .drawBehind {
+            // Where the widths put the pill: each tab is 1 wide, the one on screen 2. While they change, the pill is
+            // the blend of the tabs that are growing and shrinking (the springs always add up to one), so it stays under them.
+            val unit = size.width / (PhoneTabs.size + 1)
+            var x = 0f; var left = 0f; var width = 0f
+            grow.forEach { g -> val e = g.value; val w = unit * (1 + e); left += e * x; width += e * w; x += w }
+            val r = CornerRadius(size.height / 2)
+            drawRoundRect(Color.Black.copy(alpha = 0.35f), Offset(left, 2.dp.toPx()), Size(width, size.height), r) // it sits on the glass
+            drawRoundRect(PillWhite, Offset(left, 0f), Size(width, size.height), r)
+        }, verticalAlignment = Alignment.CenterVertically) {
+        PhoneTabs.forEachIndexed { i, (label, icon) ->
+            val e = grow[i].value
+            val t = e.coerceIn(0f, 1f)
             val badge = if (i == 1 && unread > 0) unread else 0
-            Column(Modifier.weight(1f).clip(CircleShape).background(if (on) Theme.tile else Color.Transparent)
-                .clickable(role = Role.Tab) { pick(i) }.padding(vertical = 8.dp)
-                .semantics { if (badge > 0) contentDescription = "$label, $badge new" }, horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(Modifier.weight(1f + e).fillMaxHeight().sizeIn(minWidth = 48.dp, minHeight = 48.dp).pointerHoverIcon(PointerIcon.Hand)
+                .selectable(i == selected, interactionSource = null, indication = press, role = Role.Tab) { pick(i) }
+                .semantics { contentDescription = if (badge > 0) "$label, $badge new" else label },
+                horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                 Box {
-                    Ic(icon, if (on) Theme.text else Theme.dim, 24.dp)
-                    if (badge > 0) Txt(if (badge > 99) "99+" else "$badge", 11, FontWeight.Bold, Color.Black,
-                        Modifier.align(Alignment.TopEnd).offset(x = 12.dp, y = (-6).dp).background(Color.White, CircleShape).padding(horizontal = 5.dp), maxLines = 1)
+                    Ic(icon, lerp(Theme.dim, PillInk, t), 22.dp)
+                    // The count of new messages: a small white dot with the number, black on the white pill.
+                    if (badge > 0) Text(if (badge > 99) "99+" else "$badge", Modifier.align(Alignment.TopEnd).offset(x = 9.dp, y = (-5).dp)
+                        .clearAndSetSemantics {}.background(if (t > 0.5f) PillInk else Color.White, CircleShape)
+                        .defaultMinSize(minWidth = 16.dp).padding(horizontal = 4.dp),
+                        color = if (t > 0.5f) Color.White else Color.Black, fontSize = 10.sp, lineHeight = 16.sp,
+                        fontWeight = FontWeight.Bold, maxLines = 1, textAlign = TextAlign.Center)
                 }
-                Txt(label, 12, FontWeight.SemiBold, if (on) Theme.text else Theme.dim, maxLines = 1)
+                if (t > 0.02f) {
+                    Spacer(Modifier.width(((if (badge > 0) 16 else 7) * t).dp)) // room for the badge on the icon's corner
+                    Text(label, Modifier.clearAndSetSemantics {}, color = PillInk.copy(alpha = t * t), fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Clip)
+                }
             }
         }
     }
@@ -432,7 +513,8 @@ private fun HomeTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Row(Modifier.weight(1f).clickable(role = Role.Button) { open(Sheet.Groups) }.semantics { contentDescription = "${g.name}. Switch group" },
+            Row(Modifier.weight(1f).tap(Press(down = 0.97f, shape = RoundedCornerShape(16.dp), dim = 0f, light = 0.05f, buzz = Buzz.Tap)) { open(Sheet.Groups) }
+                .semantics { contentDescription = "${g.name}. Switch group" },
                 verticalAlignment = Alignment.CenterVertically) {
                 Logo(36.dp); Spacer(Modifier.width(12.dp))
                 Txt(g.name, 26, FontWeight.Black, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
@@ -445,7 +527,9 @@ private fun HomeTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<
         }
         PhoneProblems(s, a)
         // Hero: the logo's shape, the number of phones in range, and every other way out.
-        Column(Modifier.fillMaxWidth().clip(vaultShape()).background(Theme.card).clickable { details = !details }.padding(24.dp),
+        val hero = remember { vaultShape() }
+        val heroPress = remember { Press(down = 0.99f, shape = hero, dim = 0f, light = 0.03f, lift = 0.03f, buzz = Buzz.None) }
+        Column(Modifier.fillMaxWidth().tap(heroPress, role = null) { details = !details }.background(Theme.card, hero).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val (label, on) = when {
                 links.phones > 0 -> "Connected" to true
@@ -471,11 +555,14 @@ private fun HomeTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<
             if (!links.any) Txt(if (s.permissionsMissing) "Your messages wait on this ${Here.device}. DarkProof can look for phones once you allow Nearby devices."
                 else "Your messages wait on this ${Here.device} and go out as soon as a phone is in range. " +
                     (if (Here.background) "DarkProof keeps looking, also when the app is closed." else "DarkProof looks for phones while it is open."), 15, color = Theme.dim)
+            Spacer(Modifier.height(4.dp))
+            LinkDials(s) { open(Sheet.Radio) }
             if (details) {
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Theme.line))
                 linkLines().forEach { Txt(it, 14, color = Theme.dim) }
             }
         }
+        SecurityRow(s, a, g) { open(Sheet.Security) }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             ActionTile("I'm safe", R.drawable.ic_verified_user, Theme.safe, true, Modifier.weight(1f)) { checkIn(a, s, CheckIn.SAFE) }
             ActionTile("Need help", R.drawable.ic_sos, Theme.help, true, Modifier.weight(1f)) { s.helpGroup = null; s.askHelp = true }
@@ -544,10 +631,11 @@ private fun PhoneProblems(s: AppState, a: MainActivity) {
 
 @Composable
 private fun ActionTile(label: String, @DrawableRes icon: Int, color: Color, signature: Boolean, modifier: Modifier, tap: () -> Unit) {
-    val shape = if (signature) vaultShape(18.dp, 26.dp, 6.dp) else RoundedCornerShape(26.dp)
-    Column(modifier.clip(shape).background(Theme.card).clickable(role = Role.Button, onClick = tap).padding(vertical = 16.dp),
+    val shape = remember(signature) { if (signature) vaultShape(18.dp, 26.dp, 6.dp) else RoundedCornerShape(26.dp) }
+    val press = remember(shape) { Press(down = 0.96f, shape = shape, dim = 0.1f, lift = 0.05f) }
+    Column(modifier.tap(press, onClick = tap).background(Theme.card, shape).padding(vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(Modifier.size(52.dp).background(if (color == Theme.text) Theme.tile else color.copy(alpha = 0.16f), CircleShape), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(52.dp).background(if (color == Theme.text) Theme.tile else color.copy(alpha = 0.16f), CircleShape).litEdge(CircleShape), contentAlignment = Alignment.Center) {
             Ic(icon, color, 28.dp)
         }
         Txt(label, 14, FontWeight.SemiBold, maxLines = 1)
@@ -633,6 +721,7 @@ private fun GroupsContent(g: SavedGroup, a: MainActivity, all: List<Message>, in
 private fun SettingsSheet(s: AppState, a: MainActivity, all: List<Message>, invite: () -> Unit, add: () -> Unit, close: () -> Unit,
                           connections: Boolean = false) {
     var page by rememberSaveable { mutableStateOf("") }
+    var over by rememberSaveable { mutableStateOf("") } // what is open over Settings: "risk", "leave" or "erase"
     val title = when (page) {
         "name" -> "Your name"; "groups" -> "Groups"; "notifications" -> "Notifications"; "help" -> "Help and privacy"
         "nearby" -> "Nearby phones"; "radio" -> "Long-range radio"; "board" -> "Wi-Fi board"; "share" -> "Send through another app"
@@ -650,7 +739,7 @@ private fun SettingsSheet(s: AppState, a: MainActivity, all: List<Message>, invi
                     val ix = remember(pub) { P256.emoji(pub) }
                     Card {
                         Txt("Your emoji in ${g.name}", 16, FontWeight.SemiBold)
-                        Txt(Fingerprint.emojiLines(ix), 30, lineHeight = 40)
+                        PersonEmoji(ix, 30)
                         Txt(Fingerprint.spoken(ix), 13, color = Theme.dim)
                         Txt("When someone checks you, read them these. If their phone shows the same, it's really you writing.", 14, color = Theme.dim)
                     }
@@ -680,18 +769,30 @@ private fun SettingsSheet(s: AppState, a: MainActivity, all: List<Message>, invi
                     Txt(if (Here.internet) "The ways your messages travel. All but Internet keep working in a blackout." else "The ways your messages travel. They keep working in a blackout.", 15, color = Theme.dim)
                     if (s.permissionsMissing) NearbyPermissionCard(a)
                 } else {
-                    EverydayRows(s, a) { page = it }
+                    EverydayRows(s, a, { over = "risk" }) { page = it }
                     Box(Modifier.padding(start = 6.dp, top = 6.dp)) { Kicker("Advanced") }
                 }
                 AdvancedRows(s, a, showBlocked = !connections) { page = it }
+                if (!connections) s.group?.let { g ->
+                    Box(Modifier.padding(start = 6.dp, top = 6.dp)) { Kicker("This ${Here.device}") }
+                    RowCard {
+                        LinkRow(R.drawable.ic_logout, "Leave ${g.name}") { over = "leave" }
+                        LinkRow(R.drawable.ic_delete, "Erase everything", danger = true) { over = "erase" }
+                    }
+                }
             }
         }
     }
+    when (over) {
+        "risk" -> HighRiskSheet(s, a) { over = "" }
+        "leave" -> s.group?.let { g -> LeaveSheet(s, a, g) { over = "" } }
+        "erase" -> EraseScreen(a) { over = "" }
+    }
 }
 
-/** Settings' first card: name, groups, location, notifications, sharing the app, help. */
+/** Settings' first card: name, groups, location, notifications, the lock, high-risk mode, sharing the app, help. */
 @Composable
-private fun EverydayRows(s: AppState, a: MainActivity, open: (String) -> Unit) {
+private fun EverydayRows(s: AppState, a: MainActivity, highRisk: () -> Unit, open: (String) -> Unit) {
     val g = s.group
     val groups = remember(g) { (listOfNotNull(g?.name) + Groups.others(a).map { it.name }).joinToString(", ") }
     val noLocation = s.shareLocation && !Locator.allowed(a)
@@ -708,14 +809,17 @@ private fun EverydayRows(s: AppState, a: MainActivity, open: (String) -> Unit) {
         if (Here.notifications) LinkRow(R.drawable.ic_notifications, "Notifications", if (s.notificationsOff) "Off" else "On") { open("notifications") }
         if (Here.lock) {
             val noScreenLock = !AppLock.available(a); val canLock = s.lockOn || !noScreenLock
-            ToggleRow(R.drawable.ic_shield, "Lock DarkProof", s.lockOn,
+            ToggleRow(R.drawable.ic_lock, "Lock DarkProof", s.lockOn,
                 if (s.lockOn && noScreenLock) "This phone has no screen lock any more, so this lock can't protect DarkProof. Set one in the phone's settings."
+                else if (s.highRisk) "On because of high-risk mode"
                 else if (canLock) "Asks for your fingerprint, face or phone PIN when you open DarkProof. Hides message text in notifications and blocks screenshots. “I need help” still works while it's locked."
                 else "Set a screen lock on this phone first.", if (s.lockOn && noScreenLock) Theme.help else Theme.dim) { on ->
-                if (canLock) AppLock.ask(a, if (on) "Turn on the lock" else "Turn off the lock") { a.setAppLock(on) }
+                if (s.highRisk) Toast.makeText(a, "On because of high-risk mode", Toast.LENGTH_LONG).show() // it can't be turned off while that is on
+                else if (canLock) AppLock.ask(a, if (on) "Turn on the lock" else "Turn off the lock") { a.setAppLock(on) }
                 else Toast.makeText(a, "Set a screen lock on this phone first", Toast.LENGTH_LONG).show()
             }
         }
+        LinkRow(R.drawable.ic_shield, "High-risk mode", if (s.highRisk) "On" else "Off", dot = s.highRisk, onClick = highRisk)
         if (Here.shareApp) LinkRow(R.drawable.ic_share, "Share the app", detail = "To an Android phone nearby, no internet needed") { ApkShare.share(a) }
         LinkRow(R.drawable.ic_help, "Help and privacy") { open("help") }
     }
@@ -761,7 +865,7 @@ private fun AdvancedRows(s: AppState, a: MainActivity, showBlocked: Boolean, ope
             val hours = remember(s.tick / 20) { BatteryLife.hoursLeft(a) }
             ToggleRow(R.drawable.ic_battery_full, "Battery saver", MeshEngine.batterySaver(a),
                 hours?.let { "Battery: about $it h left at this rate" } ?: "Looks for phones less often, so the battery lasts longer") {
-                MeshEngine.setBatterySaver(it); s.tick++
+                MeshEngine.setBatterySaver(it); Motion.calm = calmNow(a); s.tick++
             }
         }
         if (Here.wifiBoard) LinkRow(R.drawable.ic_chat, "Wi-Fi board", if (WifiBoard.running) "On" else "Off") { open("board") }
@@ -999,7 +1103,7 @@ fun needsLine(p: Person): String? =
 
 @Composable
 fun PersonRow(p: Person, tap: () -> Unit, find: (Spot) -> Unit) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(role = Role.Button, onClick = tap).padding(vertical = 6.dp, horizontal = 4.dp),
+    Row(Modifier.fillMaxWidth().tap(RowPress, onClick = tap).padding(vertical = 6.dp, horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Avatar(p.name, p.checkIn, report = p.isReport)
         Spacer(Modifier.width(14.dp))
@@ -1009,10 +1113,10 @@ fun PersonRow(p: Person, tap: () -> Unit, find: (Spot) -> Unit) {
             when (p.checkIn) {
                 CheckIn.SAFE -> Txt(line!!, 15, FontWeight.Medium, Theme.safe, maxLines = 2)
                 CheckIn.HELP -> Txt(line!!, 15, FontWeight.Medium, Theme.help, maxLines = 2)
-                null -> Txt("Last seen ${ago(p.lastTs)}", 15, color = Theme.dim)
+                null -> Txt(if (p.lastTs == 0L) "No check-in yet" else "Last seen ${ago(p.lastTs)}", 15, color = Theme.dim)
             }
             needsLine(p)?.let { Txt(it, 14, color = if (p.checkIn == CheckIn.HELP) Theme.text else Theme.dim, maxLines = 2) }
-            if (!p.isReport && MeshEngine.newKeyFor(MeshEngine.currentCode, p.id, p.name)) Txt("New key: check their emoji", 14, FontWeight.SemiBold, Theme.help)
+            if (!p.isReport) CheckBadge(MeshEngine.currentCode, p)
         }
         p.battery?.let { BatteryLabel(it); Spacer(Modifier.width(12.dp)) }
         p.spot?.let { sp -> RoundIcon(R.drawable.ic_navigation, 46.dp, desc = "Find ${p.name}") { find(sp) } }

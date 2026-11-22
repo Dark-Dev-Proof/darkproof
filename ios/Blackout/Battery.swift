@@ -21,6 +21,9 @@ final class BatteryMonitor: ObservableObject {
         sample()
     }
 
+    /// Everything is erased: the levels measured so far go, here and in what is saved. Main thread.
+    func forget() { samples = []; save(); hoursLeft = nil }
+
     /// Records the current level; charging starts the measurement over. Main thread.
     func sample() {
         let d = UIDevice.current

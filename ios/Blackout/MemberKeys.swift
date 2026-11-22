@@ -269,3 +269,40 @@ final class GroupSecrets: ObservableObject, @unchecked Sendable { // guarded by 
     func noteForTests() { DebugLog.write("code now " + SHA256.hash(data: Data(code.utf8)).prefix(4).map { String(format: "%02x", $0) }.joined()) }
     #endif
 }
+
+// MARK: - Leaving a group, erasing everything (Wipe.swift)
+
+extension Vault {
+    /// The Keychain services the app keeps things under: the vault, and the member keys made outside the chip.
+    static var services: [String] { [service, MemberKeys.keychainService] }
+}
+
+extension MemberKeys {
+    fileprivate static var keychainService: String { service }
+
+    /// Forgets the signing keys held in memory: `tag`'s (its group was left), or all of them (everything was erased).
+    /// Their Keychain entries are deleted by the caller; without this, the group joined again would get the old key back.
+    static func forget(_ tag: String? = nil) {
+        lock.lock(); defer { lock.unlock() }
+        if let tag { cache[tag] = nil } else { cache = [:] }
+    }
+}
+
+extension GroupSecrets {
+    /// A group was left: `codes` (the code it has and those it had) are no longer saved, founded or named in an invite
+    /// here, and the group in use is `next` ("" when none is left).
+    func forget(_ codes: [String], next: String) {
+        change { s in
+            s.groups.removeAll { codes.contains($0.code) }
+            s.found.removeAll { codes.contains($0) }
+            for c in codes { s.pins?[c] = nil }
+            s.code = next
+        }
+    }
+
+    /// Everything was erased, the Keychain entry with it: what is held in memory goes too. Main thread.
+    func forgetAll() {
+        lock.withLock { saved = Saved() }
+        objectWillChange.send()
+    }
+}

@@ -24,6 +24,12 @@ object MemberKeys {
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1")).setDigests(KeyProperties.DIGEST_SHA256).build())
         }.generateKeyPair()
     }
+
+    /** The group [tag] was left: this phone's member key there is deleted from the Keystore. Joining again makes a new one. */
+    @Synchronized fun forget(tag: String) {
+        cache.remove(tag)
+        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry("darkproof-member-$tag") }
+    }
 }
 
 /**

@@ -67,6 +67,10 @@ struct Banner: Identifiable, Equatable {
     let body: String
     let group: String       // group code of the message ("" for Everyone)
     let tab: Nav.Tab
+    /// For `.ask`: the one-tap answers under it. Off for a banner that asks nothing of this phone's user, such as
+    /// another member's check-in clock running out: "I'm safe" there would answer for the wrong person.
+    var answers = true
+    var symbol: String? = nil // instead of the kind's own
 }
 
 /// A stable, short, non-secret label for a group (for notification data, so codes never sit in the alert database).
@@ -131,6 +135,13 @@ final class Unread: ObservableObject {
     func rename(_ old: String, _ new: String) {
         guard let t = lastRead.removeValue(forKey: tag(old)) else { return }
         lastRead[tag(new)] = t
+        UserDefaults.standard.set(lastRead, forKey: key)
+    }
+
+    /// A group was left (`channel`: its code), or everything is erased (nil): what was read there is forgotten, here
+    /// and in what is saved, so it isn't written back later.
+    func forget(_ channel: String?) {
+        if let channel { lastRead[tag(channel)] = nil } else { lastRead = [:] }
         UserDefaults.standard.set(lastRead, forKey: key)
     }
 
@@ -209,7 +220,7 @@ struct BannerView: View {
         let tint: Color = banner.kind == .help ? Theme.help : banner.kind == .ask ? Theme.text : Theme.dim
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: banner.kind == .help ? "sos" : banner.kind == .ask ? "questionmark.bubble.fill" : "bubble.left.fill")
+                Image(systemName: banner.symbol ?? (banner.kind == .help ? "sos" : banner.kind == .ask ? "questionmark.bubble.fill" : "bubble.left.fill"))
                     .scaledFont(17, .bold).foregroundStyle(tint).frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(banner.title).scaledFont(16, .bold).foregroundStyle(Theme.text)
@@ -221,7 +232,7 @@ struct BannerView: View {
                 }
                 .accessibilityLabel("Close")
             }
-            if banner.kind == .ask {
+            if banner.kind == .ask && banner.answers {
                 HStack(spacing: 10) {
                     Button("I'm safe") { answer(.safe) }.buttonStyle(GhostButton())
                     Button("I need help") { nav.banner = nil; nav.open(group: banner.group, tab: .home); nav.sheet = .help }

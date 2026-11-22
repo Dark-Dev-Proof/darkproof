@@ -65,9 +65,11 @@ final class WifiLink {
     var isOn: Bool { q.sync { running } }
     var manualAddress: String? { q.sync { manualTarget.map { "\($0.host):\($0.port)" } } }
 
+    private var ended = false // `stopAndWait` was called: nothing starts again; q
+
     func start() {
         q.async {
-            guard !self.running else { return }
+            guard !self.running, !self.ended else { return }
             self.running = true
             self.listen(on: Self.port)
             self.browse()
@@ -91,9 +93,14 @@ final class WifiLink {
         }
     }
 
+    /// `stop`, for good (the engine was shut down: a group was left, or everything erased): returns once the listener,
+    /// the browser and every connection are cancelled. From any thread but `q`.
+    func stopAndWait() { q.sync { ended = true }; stop(); q.sync {} }
+
     /// Keeps a link to an address the user typed, redialing every 5 s, until `stopManual()` or another address.
     func connect(host: String, port: UInt16) {
         q.async {
+            guard !self.ended else { return }
             self.stopManualLocked()
             self.manualTarget = (host, port); self.manualNode = nil
             self.dialManual(self.manualGen, host, port)

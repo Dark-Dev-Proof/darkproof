@@ -89,6 +89,25 @@ class Screen(private val width: Int = 2040, private val height: Int = 1290, dens
         scene.sendKeyEvent(androidx.compose.ui.input.key.KeyEvent(key, androidx.compose.ui.input.key.KeyEventType.KeyUp, isShiftPressed = shift)); settle()
     }
 
+    /** Holds a finger on what says [text] for [ms], as a long press, then lifts it. */
+    fun hold(text: String, ms: Int = 700, nth: Int = 0) {
+        val at = find(text, nth).boundsInWindow.center
+        scene.sendPointerEvent(PointerEventType.Press, at, type = PointerType.Touch); here.run()
+        // A long press is timed by the clock on the wall, not by the frames: the finger stays down that long for real.
+        repeat(ms / 16) { here.run(); time += 16_000_000L; scene.render(time); Thread.sleep(16) }
+        scene.sendPointerEvent(PointerEventType.Release, at, type = PointerType.Touch); settle()
+    }
+
+    /** Clicks the mouse's right button on what says [text]. */
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
+    fun rightClick(text: String, nth: Int = 0) {
+        val at = find(text, nth).boundsInWindow.center
+        val right = androidx.compose.ui.input.pointer.PointerButtons(isSecondaryPressed = true)
+        scene.sendPointerEvent(PointerEventType.Move, at, type = PointerType.Mouse); here.run()
+        scene.sendPointerEvent(PointerEventType.Press, at, type = PointerType.Mouse, buttons = right, button = androidx.compose.ui.input.pointer.PointerButton.Secondary); here.run()
+        scene.sendPointerEvent(PointerEventType.Release, at, type = PointerType.Mouse, buttons = androidx.compose.ui.input.pointer.PointerButtons(), button = androidx.compose.ui.input.pointer.PointerButton.Secondary); settle()
+    }
+
     fun tapAt(at: Offset) {
         scene.sendPointerEvent(PointerEventType.Press, at, type = PointerType.Touch); here.run(); time += 16_000_000L; scene.render(time)
         scene.sendPointerEvent(PointerEventType.Release, at, type = PointerType.Touch); here.run()

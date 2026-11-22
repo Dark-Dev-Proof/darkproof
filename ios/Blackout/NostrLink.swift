@@ -59,7 +59,9 @@ final class NostrLink {
     /// With "Connect through Tor": true while traffic is known to leave through Tor, false while waiting. Nil without.
     var throughTor: Bool? { q.sync { links[""]?.throughTor } }
 
-    func start() { q.async { self.running = true; self.sync() } }
+    private var ended = false // `stopAndWait` was called: this link never starts again; q
+
+    func start() { q.async { guard !self.ended else { return }; self.running = true; self.sync() } }
 
     func stop() {
         q.async {
@@ -67,6 +69,19 @@ final class NostrLink {
             self.links.values.forEach { $0.stop() }
             self.links = [:]
         }
+    }
+
+    /// `stop`, for good (the engine was shut down: a group was left, or everything erased): returns once every link set
+    /// has closed its sockets and saved its lists, so nothing of this link is written afterwards. From any thread but
+    /// the links' queues.
+    func stopAndWait() {
+        let all = q.sync { () -> [RelayScope] in
+            running = false; ended = true // a late tap on "Internet" starts nothing: there is no engine behind this link any more
+            let l = Array(links.values); links = [:]
+            return l
+        }
+        all.forEach { $0.stopAndWait() }
+        q.sync {} // their last `scopeUp(false)`: the router hears that the relays are gone
     }
 
     func setSaver(_ on: Bool) { q.async { self.saver = on; self.links.values.forEach { $0.setSaver(on) } } }
@@ -190,8 +205,23 @@ final class RelayScope: NSObject, URLSessionWebSocketDelegate {
     /// With "Connect through Tor": true while traffic is known to leave through Tor, false while waiting. Nil without.
     var throughTor: Bool? { q.sync { torOK } }
 
+    private var ended = false // `stop` was called: the sessions are let go, and this link set never links again; q
+
     func start() { q.async { self.startNow() } }
-    func stop() { q.async { self.stopNow() } }
+    /// For good: this link set was dropped (its group is no longer saved, the internet was switched off, the engine was
+    /// shut down). The sockets close and both sessions are let go: a session holds on to its delegate, and with it this
+    /// link set, the router and every packet the router holds in memory, until it is invalidated.
+    func stop() { q.async { self.endNow() } }
+    /// `stop`, and returns once it is done. From any thread but `q`.
+    func stopAndWait() { q.sync { endNow() } }
+
+    private func endNow() {
+        stopNow()
+        guard !ended else { return }
+        ended = true
+        session.invalidateAndCancel()
+        torSession?.invalidateAndCancel(); torSession = nil
+    }
 
     /// "Battery saver" on or off: the phone's own messages still go up at once; lookups for bridged packets come every
     /// 40 s instead of 10, bridged packets go up every 8 ticks instead of 3, and lost relays are retried less often.
@@ -220,7 +250,7 @@ final class RelayScope: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func startNow() {
-        guard !running else { return }
+        guard !running, !ended else { return }
         running = true
         q.asyncAfter(deadline: .now() + (scope.isEmpty ? 0 : Double.random(in: 0..<Self.startSpread))) { [weak self] in
             guard let self, self.running else { return }

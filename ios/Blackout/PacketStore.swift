@@ -16,6 +16,7 @@ final class PacketStore {
     /// A longer record is never written, as the reader would take it for damage and stop there.
     private let limit: Int
     private let lock = NSLock() // appends and rewrites; reading needs no lock (a rewrite replaces the file atomically)
+    private var closed = false  // lock
     private static let piece = 1 << 20
 
     /// `file`: "history.bin" holds this phone's readable copies of messages whose keys are deleted (spec "Message keys").
@@ -42,17 +43,23 @@ final class PacketStore {
         try? u.setResourceValues(v)
     }
 
+    /// The engine this store belongs to was shut down (a group was left, or everything erased): from now on it reads
+    /// and writes nothing. The file may be deleted, and the next engine's store may open one of the same name: work
+    /// still queued for this one (a ttl to raise, a packet to append) must not reach that file. Any thread.
+    func close() { lock.withLock { closed = true } }
+    private var isClosed: Bool { lock.withLock { closed } }
+
     /// Calls `body` with every stored packet, in the order they were stored, reading 1 MB at a time. Any thread; may
     /// run while packets are appended (a torn last record is ignored).
     func forEach(_ body: (Packet) -> Void) {
-        guard let h = try? FileHandle(forReadingFrom: url) else { return }
+        guard !isClosed, let h = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? h.close() }
         Self.records(h, limit) { _, p in if let p { body(p) } }
     }
 
     /// Like `forEach`, with the name each packet goes by (`Naming`).
     func forEachNamed(_ body: (Packet, String) -> Void) {
-        guard let h = try? FileHandle(forReadingFrom: url) else { return }
+        guard !isClosed, let h = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? h.close() }
         var seen = Set<String>()
         Self.records(h, limit) { _, p in if let p { body(p, name(p, &seen)) } }
@@ -72,7 +79,7 @@ final class PacketStore {
     func remove(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
         lock.lock(); defer { lock.unlock() }
-        guard let h = try? FileHandle(forReadingFrom: url) else { return }
+        guard !closed, let h = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? h.close() }
         let tmp = url.appendingPathExtension("new")
         guard FileManager.default.createFile(atPath: tmp.path, contents: nil), let out = try? FileHandle(forWritingTo: tmp) else { return }
@@ -94,7 +101,7 @@ final class PacketStore {
         guard !ttls.isEmpty else { return }
         let ids = Set(ttls.keys.map { String($0.prefix(16)) }) // a key starts with the packet id: only those records are hashed
         lock.lock(); defer { lock.unlock() }
-        guard let h = try? FileHandle(forUpdating: url) else { return }
+        guard !closed, let h = try? FileHandle(forUpdating: url) else { return }
         defer { try? h.close() }
         var at: UInt64 = 0, found: [(at: UInt64, ttl: UInt8)] = []
         Self.records(h, limit) { record, p in
@@ -113,6 +120,7 @@ final class PacketStore {
         let e = p.encode()
         let rec = Data([UInt8(e.count >> 24 & 0xFF), UInt8(e.count >> 16 & 0xFF), UInt8(e.count >> 8 & 0xFF), UInt8(e.count & 0xFF)]) + e
         lock.lock(); defer { lock.unlock() }
+        guard !closed else { return }
         if let h = try? FileHandle(forWritingTo: url) {
             defer { try? h.close() }
             _ = try? h.seekToEnd(); try? h.write(contentsOf: rec)
@@ -138,5 +146,58 @@ final class PacketStore {
             }
             buf.removeFirst(i)
         }
+    }
+}
+
+/// Where "Keeps less" (high-risk mode) keeps its book (`DayBook`): since when each message and receipt of a group has been
+/// on this phone, and the gone list. A small file next to the packet stores and, like them, never in a backup. Packet
+/// names and times, no content. Readable from the first unlock on, which is also the earliest an engine starts (the
+/// group's code is in the Keychain), so an engine never reads it as empty while it is there.
+enum DayBookFile {
+    private static var url: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("daybook.txt")
+    }
+
+    static func read() -> DayBook { (try? Data(contentsOf: url)).map { DayBook(saved: $0) } ?? DayBook() }
+
+    /// Writes the whole book in one piece, or removes the file when there is nothing to keep.
+    static func write(_ book: DayBook) {
+        let u = url
+        if book.isEmpty { try? FileManager.default.removeItem(at: u); return }
+        try? FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard (try? book.saved.write(to: u, options: .atomic)) != nil else { return }
+        var f = u, v = URLResourceValues(); v.isExcludedFromBackup = true; try? f.setResourceValues(v)
+    }
+}
+
+/// Each group's check-in clocks (`QuietBook`, spec "If I go quiet", rule Q10): a file per group beside the day book, in
+/// the app's own folder, excluded from backups, never in the preferences (which go into backups and stay readable on a
+/// phone after its first unlock). A book that an older version kept in the preferences is moved here when first read.
+enum QuietFile {
+    private static func url(_ group: String) -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("quiet.\(group).txt")
+    }
+
+    static func read(_ group: String) -> [String] {
+        if let d = try? Data(contentsOf: url(group)) { return String(decoding: d, as: UTF8.self).split(separator: "\n").map(String.init) }
+        let old = UserDefaults.standard.stringArray(forKey: "quiet.\(group)") ?? []
+        if !old.isEmpty { write(group, old) }
+        UserDefaults.standard.removeObject(forKey: "quiet.\(group)")
+        return old
+    }
+
+    /// Writes the whole book in one piece, or removes the file when there is nothing to keep.
+    static func write(_ group: String, _ lines: [String]) {
+        let u = url(group)
+        if lines.isEmpty { try? FileManager.default.removeItem(at: u); return }
+        try? FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+        guard (try? Data(lines.joined(separator: "\n").utf8).write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil else { return }
+        var f = u, v = URLResourceValues(); v.isExcludedFromBackup = true; try? f.setResourceValues(v)
+    }
+
+    /// The group was left: its clocks go.
+    static func remove(_ group: String) {
+        try? FileManager.default.removeItem(at: url(group))
+        UserDefaults.standard.removeObject(forKey: "quiet.\(group)")
     }
 }

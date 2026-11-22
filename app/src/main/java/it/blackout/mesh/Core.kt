@@ -62,7 +62,36 @@ class Packet(val id: String, val ts: Long, val ttl: Int, val cipher: ByteArray) 
 data class Message(val id: String, val ts: Long, val sender: String, val name: String, val text: String,
                    val public: Boolean = false, val photo: ByteArray? = null, val group: String? = null,
                    /** false: the sender's public key isn't known yet, so its signature couldn't be checked (spec "Signatures"). */
-                   val verified: Boolean = true)
+                   val verified: Boolean = true,
+                   /** What it is about, read from the 5th field (spec "Replies and reactions"); null for an ordinary message. */
+                   val about: About? = null,
+                   /**
+                    * What a reply or reaction to it names: its packet id and the start of its signed digest ([About.Target]). Not
+                    * sent on the wire; set by the phone from the opened packet, or from its own copy of the message.
+                    */
+                   val mark: About.Target? = null,
+                   /**
+                    * A voice note's frames (`len` ‖ Opus packet, repeated; the 4th field after its type byte, [Voice]), or null.
+                    * Set only when the field passed every rule ([Voice.of]); play it only if [Voice.playable].
+                    */
+                   val voice: ByteArray? = null,
+                   /** What else its 5th field says (spec "The 5th field"): a notice of the group's timer, or a leave note; null for none. */
+                   val notice: Notice? = null) {
+    /**
+     * What a Public channel reader keeps of a message: no photo, no voice note, no 5th field (they are for groups only), and
+     * so the text as written ([said], [GroupCrypto.Opened.said]), also under a field that a group reads as a check-in clock.
+     */
+    fun onPublic(said: String = text) = copy(public = true, text = said, photo = null, about = null, voice = null, notice = null)
+
+    /**
+     * True for a group message that is never a chat row, an alert or a receipt: a reaction, a type `0x02` message that
+     * isn't one, a notice written only for apps that don't know what it is about (the timer's), or a leave note (a line instead).
+     */
+    val silent: Boolean get() = about?.isSilent == true || notice?.isSilent == true
+
+    /** True for a group message that stays off LoRa, like a receipt: a reaction, a type `0x02` message that isn't one, the timer's notice. A leave note goes on the radio. */
+    val offRadio: Boolean get() = about?.isSilent == true || notice?.staysOffRadio == true
+}
 
 class GroupCrypto private constructor(private val keyBytes: ByteArray, mailbox: Int?) {
     constructor(code: String) : this(deriveKey(code), null)
@@ -117,18 +146,15 @@ class GroupCrypto private constructor(private val keyBytes: ByteArray, mailbox: 
     private fun header(index: Int, counter: Int) = byteArrayOf(index.toByte(), (counter ushr 8).toByte(), counter.toByte())
 
     /**
-     * Seals a signed packet: [sign] gets the signed message and returns r ‖ s. [photo] or [extra] is the 4th field.
+     * Seals a signed packet: [sign] gets the signed message and returns r ‖ s. [photo], [voice] or [extra] is the 4th field.
      * [iv] is random in normal use; tests pass a fixed one to reproduce spec/test-vectors.txt. Zero bytes after the
      * fields pad the packet ([pad]): they are encrypted and signed, and readers ignore them, so relays can't tell a
      * short message from a long one or count a group's members from the size of a new key.
      */
     fun seal(id: String, ts: Long, sender: String, name: String, text: String, photo: ByteArray? = null, extra: ByteArray? = null,
-             iv: ByteArray = ByteArray(12).also(rnd::nextBytes), pad: Pad = Pad.SIZE, sign: (ByteArray) -> ByteArray): ByteArray {
-        require(photo == null || photo.size <= Photo.MAX_BYTES) { "photo too big" }
-        val fields = ByteArrayOutputStream().also { b ->
-            b.putStr(sender); b.putStr(name); b.putStr(text)
-            if (photo != null) b.putBytes(byteArrayOf(Photo.JPEG) + photo) else if (extra != null) b.putBytes(extra)
-        }.toByteArray()
+             iv: ByteArray = ByteArray(12).also(rnd::nextBytes), pad: Pad = Pad.SIZE, about: About? = null, voice: ByteArray? = null,
+             fifth: ByteArray? = null, sign: (ByteArray) -> ByteArray): ByteArray {
+        val fields = fields(sender, name, text, photo, extra, about, voice, fifth)
         val body = fields + ByteArray(Packet.padding(Packet.OVERHEAD + fields.size, pad))
         val sig = sign(signed(id, ts, body)); require(sig.size == 64) { "signature must be r ‖ s" }
         val c = Cipher.getInstance("AES/GCM/NoPadding")
@@ -136,10 +162,20 @@ class GroupCrypto private constructor(private val keyBytes: ByteArray, mailbox: 
         return iv + c.doFinal(sig + body)
     }
 
-    /** An opened packet: the message, its signature, SHA-256 of what it signs, and the raw 4th field. Not checked yet. */
-    class Opened(val message: Message, val signature: ByteArray, val digest: ByteArray, val extra: ByteArray?) {
+    /**
+     * An opened packet: the message, its signature, SHA-256 of what it signs, and the raw 4th field. Not checked yet.
+     * [aboutField]: the raw 5th field, when it is one this app reads ([About.read]): this phone's copy of the message keeps it.
+     * [fifth]: the raw 5th field, whatever it is, if the body has one that isn't empty (spec "The 5th field"). In a new key
+     * it carries the group's timer ([GroupTimer.read]).
+     */
+    class Opened(val message: Message, val signature: ByteArray, val digest: ByteArray, val extra: ByteArray?, val aboutField: ByteArray? = null,
+                 val fifth: ByteArray? = null,
+                 /** The text as written: [message]'s, except under a check-in clock's field, where a group shows what the field says ([QuietClock.shown]). */
+                 val said: String = message.text) {
         /** The message key that opened it, if one did. */
         var leaf: Leaf? = null
+        /** The epoch that opened it, with a message key or the epoch's own key: what a leave note is judged by ([LeaveNote.verdict]). */
+        var opener: Keyring.Epoch? = null
         /**
          * Names what a signature check of this packet is about: its id, and what it signs together with the signature.
          * Packets that share an id differ in it, unless they are the same signed message sealed again ([KeyWait]).
@@ -166,14 +202,15 @@ class GroupCrypto private constructor(private val keyBytes: ByteArray, mailbox: 
             ((((p.cipher[13].toInt() xor m[1].toInt()) and 0xFF) shl 8) or ((p.cipher[14].toInt() xor m[2].toInt()) and 0xFF))
     }
 
-    /** Seals a message with its own key [mk]: message [counter] of the sender at [index] in the epoch's member list. */
+    /**
+     * Seals a message with its own key [mk]: message [counter] of the sender at [index] in the epoch's member list.
+     * [about]: what the message is about, the 5th field (spec "Replies and reactions"); only in a group. [voice]: a voice
+     * note's frames ([Voice]), the 4th field instead of a photo.
+     */
     fun sealWith(mk: ByteArray, index: Int, counter: Int, id: String, ts: Long, sender: String, name: String, text: String, photo: ByteArray? = null,
-                 iv: ByteArray = ByteArray(12).also(rnd::nextBytes), pad: Pad = Pad.SIZE, sign: (ByteArray) -> ByteArray): ByteArray {
-        require(photo == null || photo.size <= Photo.MAX_BYTES) { "photo too big" }
-        val fields = ByteArrayOutputStream().also { b ->
-            b.putStr(sender); b.putStr(name); b.putStr(text)
-            if (photo != null) b.putBytes(byteArrayOf(Photo.JPEG) + photo)
-        }.toByteArray()
+                 iv: ByteArray = ByteArray(12).also(rnd::nextBytes), pad: Pad = Pad.SIZE, about: About? = null, voice: ByteArray? = null,
+                 fifth: ByteArray? = null, sign: (ByteArray) -> ByteArray): ByteArray {
+        val fields = fields(sender, name, text, photo, null, about, voice, fifth)
         val body = fields + ByteArray(Packet.padding(Packet.OVERHEAD + 3 + fields.size, pad))
         val sig = sign(signedWith(index, counter, id, ts, body)); require(sig.size == 64) { "signature must be r ‖ s" }
         val h = header(index, counter); val m = headerMask(iv)
@@ -196,11 +233,19 @@ class GroupCrypto private constructor(private val keyBytes: ByteArray, mailbox: 
         if (plain.size < 64 + 6) null else {
             val body = plain.copyOfRange(64, plain.size)
             DataInputStream(ByteArrayInputStream(body)).run {
-                val sender = getStr(); val name = getStr(); val text = getStr()
-                val extra = if (available() >= 2) runCatching { getBytes() }.getOrNull()?.takeIf { it.isNotEmpty() } else null // padding reads as an empty field
+                val sender = getStr(); val name = getStr(); val text = getBytes()
+                val fourth = if (available() >= 2) runCatching { getBytes() }.getOrNull() else null
+                val extra = fourth?.takeIf { it.isNotEmpty() } // padding reads as an empty field
                 val photo = extra?.takeIf { it.size > 1 && it[0] == Photo.JPEG && it.size - 1 <= Photo.MAX_BYTES }?.copyOfRange(1, extra.size)
-                Opened(Message(id, ts, sender, name, text, photo = photo), plain.copyOf(64),
-                    java.security.MessageDigest.getInstance("SHA-256").digest(covered(body)), extra)
+                val voice = Voice.of(extra, text) // type 0x02, only if every rule holds; else the message is its text
+                // The 5th field (spec "Replies and reactions"). Padding reads as an empty one; what follows it is ignored.
+                val fifth = if (fourth != null && available() >= 2) runCatching { getBytes() }.getOrNull() else null
+                val about = About.read(fifth, text)
+                val notice = Notice.read(fifth, ts) // a check-in clock's deadline is checked against the signed time (rule Q2)
+                // A clock message's free text is never read as a check-in, a help report or a question ([QuietClock.shown]).
+                val said = String(text, Charsets.UTF_8); val shown = if (notice is Notice.Clock) QuietClock.shown(said, notice.deadline, ts) else said
+                Opened(Message(id, ts, sender, name, shown, photo = photo, about = about, voice = voice, notice = notice), plain.copyOf(64),
+                    java.security.MessageDigest.getInstance("SHA-256").digest(covered(body)), extra, if (about == null) null else fifth, fifth?.takeIf { it.isNotEmpty() }, said)
             }
         }
     } catch (_: Exception) { null }
@@ -261,6 +306,29 @@ class GroupCrypto private constructor(private val keyBytes: ByteArray, mailbox: 
             val prk = Mac.getInstance("HmacSHA256").run { init(SecretKeySpec(ByteArray(32), "HmacSHA256")); doFinal(k) }
             return Mac.getInstance("HmacSHA256").run { init(SecretKeySpec(prk, "HmacSHA256")); update(info.toByteArray()); doFinal(byteArrayOf(1)) }
         }
+        /**
+         * The body's fields, each behind its 2-byte length, without padding: `sender`, `name`, `text`, then the 4th field
+         * ([photo], a voice note's frames [voice], or [extra] as it is) and the 5th ([about], spec "Replies and reactions").
+         * With a 5th field and nothing for the 4th, the 4th is there and empty. A reaction carries no photo or voice note, and
+         * its text has to be a listed reaction or empty ([ReactionList.accepts]). A voice note's text is exactly
+         * [Voice.PLACEHOLDER] and its frames pass every reader rule ([Voice.packets]). [raw]: another 5th field, as it is (spec
+         * "The 5th field"), when there is no [about]: in a new key, the group's timer. Same as the iPhone's GroupCrypto.fields.
+         */
+        internal fun fields(sender: String, name: String, text: String, photo: ByteArray?, extra: ByteArray?, about: About?, voice: ByteArray? = null,
+                            raw: ByteArray? = null): ByteArray {
+            require(photo == null || photo.size <= Photo.MAX_BYTES) { "photo too big" }
+            require(voice == null || (photo == null && extra == null)) { "a photo or a voice note, never both" }
+            require(voice == null || (text == Voice.PLACEHOLDER && Voice.split(voice) != null)) { "not a voice note readers accept" }
+            val t = text.toByteArray(Charsets.UTF_8)
+            require(about !is About.Reaction || (photo == null && extra == null && voice == null && ReactionList.accepts(t))) { "not a reaction" }
+            val fifth = about?.field ?: raw
+            return ByteArrayOutputStream().also { b ->
+                b.putStr(sender); b.putStr(name); b.putBytes(t)
+                if (photo != null) b.putBytes(byteArrayOf(Photo.JPEG) + photo) else if (voice != null) b.putBytes(byteArrayOf(Voice.TYPE) + voice) else if (extra != null) b.putBytes(extra) else if (fifth != null) b.putBytes(ByteArray(0))
+                if (fifth != null) b.putBytes(fifth)
+            }.toByteArray()
+        }
+
         /** Text field: 2-byte big-endian length, then standard UTF-8 (not Java's modified UTF-8, so other platforms can read it). */
         private fun ByteArrayOutputStream.putStr(s: String) = putBytes(s.toByteArray(Charsets.UTF_8))
         private fun ByteArrayOutputStream.putBytes(b: ByteArray) {
@@ -290,7 +358,23 @@ class Keyring {
      */
     class Epoch(val number: Long, val made: Long, val secret: ByteArray, val members: List<String> = emptyList(), val admins: List<String> = emptyList(),
                 val code: String? = null, val via: String? = null, val removes: String? = null, val by: String? = null, val rank: Int = Int.MAX_VALUE,
-                @Volatile var messageKeys: MessageKeys? = null, val taken: Long = made) {
+                @Volatile var messageKeys: MessageKeys? = null, val taken: Long = made,
+                /**
+                 * The timer its new key carried (spec "Disappearing messages"): the seconds as read, null if it had none.
+                 * Whether it counts depends on who made the key ([Keyring.retime]).
+                 */
+                val timerRaw: Int? = null,
+                /** This phone's user chose that value with this key: then this phone knows who set it. */
+                val timerSetHere: Boolean = false,
+                timer: Int? = null, timerBy: String? = null, timerCounts: Boolean = false) {
+        /**
+         * The group's timer in this epoch: seconds, 0 for off, null while this phone doesn't know it. [timerBy]: who set it,
+         * if this phone saw the change. [timerCounts]: [timerRaw] was its maker's to set, as last judged. Worked out by the
+         * keyring under its lock ([Keyring.retime]), and saved with the epoch.
+         */
+        @Volatile var timer: Int? = timer; internal set
+        @Volatile var timerBy: String? = timerBy; internal set
+        @Volatile var timerCounts: Boolean = timerCounts; internal set
         val group = GroupCrypto.fromSecret(secret); val receipts = group.receipts(); val intros = group.intros()
         val hash: String = sha256(secret)
         /**
@@ -301,7 +385,7 @@ class Keyring {
         /** From when this phone counts this epoch's age: its date, or its arrival here if that was later. A maker can't move it back. */
         val since: Long get() = maxOf(made, taken)
         /** The same epoch with no member list. Numbered below the current one, it opens old messages and proves nothing about who is in. */
-        fun forReadingOnly() = Epoch(number, made, secret, emptyList(), admins, code, via, removes, by, rank, messageKeys, taken)
+        fun forReadingOnly() = Epoch(number, made, secret, emptyList(), admins, code, via, removes, by, rank, messageKeys, taken, timerRaw, timerSetHere, null, null, timerCounts)
 
         /** Everyone this epoch's secret was sealed to: its message keys keep the list when [members] is left empty ([forReadingOnly]). */
         val roster: List<String> get() = messageKeys?.members ?: members
@@ -319,9 +403,9 @@ class Keyring {
             val keys = messageKeys
             if (keys != null) group.header(p)?.let { (i, n) -> keys.key(i, n)?.let { mk -> group.openWith(mk, i, n, p)?.let { o ->
                 if (keys.members.getOrNull(i) != o.message.sender.removePrefix("web-")) return null // sealed under someone else's position: it must not use up their key
-                o.leaf = Leaf(this, i, n); return o
+                o.leaf = Leaf(this, i, n); o.opener = this; return o
             } } }
-            return group.openSigned(p)?.takeIf { lists(it.message.sender) }
+            return group.openSigned(p)?.takeIf { lists(it.message.sender) }?.also { it.opener = this }
         }
 
         /** A receipt of this epoch (spec "Delivery receipts"), from someone in it. */
@@ -330,8 +414,10 @@ class Keyring {
         companion object {
             /** A new epoch from its random [secret], which isn't kept: only what it derives is, each sender's message keys included (spec "Message keys"). */
             fun fresh(number: Long, made: Long, secret: ByteArray, members: List<String>, admins: List<String>, code: String? = null, via: String? = null,
-                      removes: String? = null, by: String? = null, rank: Int = Int.MAX_VALUE, taken: Long = made) =
-                Epoch(number, made, MessageKeys.outer(secret), members, admins, code, via, removes, by, rank, MessageKeys.of(secret, members), taken)
+                      removes: String? = null, by: String? = null, rank: Int = Int.MAX_VALUE, taken: Long = made,
+                      timerRaw: Int? = null, timerSetHere: Boolean = false, timer: Int? = null, timerCounts: Boolean = false) =
+                Epoch(number, made, MessageKeys.outer(secret), members, admins, code, via, removes, by, rank, MessageKeys.of(secret, members), taken,
+                    timerRaw, timerSetHere, timer, null, timerCounts)
             private fun sha256(b: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }
         }
     }
@@ -357,8 +443,84 @@ class Keyring {
         // maker has at most a few here, and when the keyring is full they go before any epoch that was the group's own.
         if (e.members.isEmpty() && e.by != null) list.filter { it.members.isEmpty() && it.by == e.by }.let { theirs -> if (theirs.size > MAX_READING_PER_MAKER) list.remove(theirs.maxWith(order)) }
         if (list.size > MAX_EPOCHS) list.remove(list.filter { it.members.isEmpty() }.ifEmpty { list }.maxWith(order)) // every packet is tried with each of them: a flood can't make that endless
+        retime()
         return true
     }
+
+    // The group's timer (spec "Disappearing messages")
+
+    /** What a phone knows of the group's timer: seconds (0 off, null not known), who set it if it saw that, and whether the key's own value counted. */
+    data class Timer(val seconds: Int?, val by: String?, val counts: Boolean = false)
+
+    /**
+     * Works out every held epoch's timer again, lowest number first. Same as the iPhone's Keyring.retime.
+     * - The timer a new key carries counts if its maker is an admin of the epoch before it, by the same test that decides
+     *   the admin list ([counting]). A phone that had no epoch goes by the admin list of the key that let it in, and a key
+     *   whose epoch before isn't here by what was judged when it came ([Epoch.timerCounts]).
+     * - Any other epoch has the timer of the epoch before it: the first of those numbered one lower. Among them counts,
+     *   besides the epochs that say who is in, an admin's key that came late and is kept only to read with, if it carries
+     *   the timer and [standsIn] for its number: it decides nothing about people, but it is that admin's word on the
+     *   timer, and without it a phone that got a rival first, then a member's next key, would keep the rival's value for
+     *   good. Any other key kept only to read with sets, freezes and passes on nothing (one without the field is shown
+     *   with the timer of the epoch before it, for the chat's lines only).
+     * - Judged again whenever the keyring changes, not once when a key comes, so phones that hold the same keys agree
+     *   whatever order they came in.
+     * - Once the epochs before it are gone (a week after they were replaced), an epoch keeps what was worked out last.
+     * Who set it is known only where this phone saw the value change, or its own user chose it.
+     */
+    private fun retime() {
+        val cur = currentOrNull() ?: return
+        for (e in list.sortedBy { it.number }) {
+            val readOnly = e.members.isEmpty()
+            // Kept only to read with, and not standing in for its number: it says nothing about the timer.
+            if (readOnly && !standsIn(e)) { e.timer = null; e.timerBy = null; e.timerCounts = false; continue }
+            val held = list.any { it.number == e.number - 1 && it.members.isNotEmpty() }
+            val before = if (held) counting(e.number - 1, cur) else emptyList()
+            if (readOnly) e.timerCounts = e.timerRaw != null // [standsIn] judged its maker already
+            else if (held) e.timerCounts = e.timerRaw != null && before.any { (e.by ?: "") in it.admins }
+            val late = list.filter { it.number == e.number - 1 && it.members.isEmpty() && it.timerRaw != null && standsIn(it) }
+            val pred = (before + late).minWithOrNull(order)
+            val raw = e.timerRaw
+            if (e.timerCounts && raw != null) {
+                if (e.timerSetHere) e.timerBy = e.by
+                else if (pred != null) e.timerBy = if (pred.timer == raw) pred.timerBy else if (pred.timer == null) null else e.by
+                e.timer = raw
+            } else if (pred != null) {
+                e.timer = pred.timer; e.timerBy = pred.timerBy
+            }
+        }
+    }
+
+    /**
+     * True if [e], a key kept only to read with, stands in for its number in the chat's lines ("joined", "made an admin",
+     * the timer's line) and, if it carries the field, in the timer ([retime]): it is the first of every epoch held at its
+     * number ([won]), its maker is an admin of the winning epoch before it (the first with a member list one number lower;
+     * once that number is gone, as judged when the key came), and no removal that won took its maker out since. Same as
+     * the iPhone's (spec "Disappearing messages", review round 2b M4). Hold the lock.
+     */
+    private fun standsIn(e: Epoch): Boolean {
+        val by = e.by ?: return false
+        if (e.members.isNotEmpty() || !won(e) || outSince(by, e.number)) return false
+        val before = list.filter { it.number == e.number - 1 && it.members.isNotEmpty() }.minWithOrNull(order)
+        return if (before != null) by in before.admins else e.rank == BY_ADMIN
+    }
+
+    /**
+     * For the chat's lines ([MeshEngine.groupLines]), lowest number first, one per number: the epoch that wins it among
+     * those with a member list and the keys kept only to read with that [standsIn] for it. Any other key kept only to read
+     * with is left out: its member list is whatever its maker wrote, and it would read as everyone joining.
+     */
+    @Synchronized fun lineEpochs(): List<Epoch> =
+        list.filter { it.members.isNotEmpty() || standsIn(it) }.groupBy { it.number }.toSortedMap().values.map { it.minWith(order) }
+
+    /** The group's timer: the current epoch's. Seconds null: this phone doesn't know it and keeps the normal rule. */
+    @Synchronized fun timer(): Timer = currentOrNull()?.let { Timer(it.timer, it.timerBy, it.timerCounts) } ?: Timer(null, null)
+
+    /** Every held epoch's timer as worked out last, by epoch id: saved with the epochs. */
+    @Synchronized fun timers(): Map<String, Timer> = list.associateBy({ it.id }, { Timer(it.timer, it.timerBy, it.timerCounts) })
+
+    /** Whether the timer in a new key [r] that this phone's own user makes now would count: this phone is an admin of the epoch before it. */
+    @Synchronized fun setsTimer(r: Rekey, maker: String): Boolean = currentOrNull()?.let { cur -> counting(r.epoch - 1, cur).any { maker in it.admins } } ?: false
 
     /** Everyone in a member list this phone holds: in the group now, or until a removal or a new key not long ago. */
     @Synchronized fun everyone(): Set<String> = list.flatMapTo(HashSet()) { it.members }
@@ -476,10 +638,11 @@ class Keyring {
      * is one the invite named, or the invite named nobody. [named]: the invite named admins and its maker is one of them:
      * only then does a removal that leaves a joining phone out close its invite. [inUse]: the codes of the other groups
      * saved on this phone: a removal can't move this group onto one of them. [open] opens this phone's sealed part.
+     * [timer]: the timer the key's packet carries in its 5th field ([GroupTimer.read]), null if it has none.
      */
     @Synchronized fun take(r: Rekey, maker: String, me: String, door: String, oldDoor: Boolean, removedAt: Pair<Long, Int>?,
                            now: Long = System.currentTimeMillis(), pinned: Boolean = true, removedBy: String? = null, named: Boolean = pinned,
-                           inUse: Collection<String> = emptyList(), open: (ByteArray) -> ByteArray?): Taken {
+                           inUse: Collection<String> = emptyList(), timer: Int? = null, open: (ByteArray) -> ByteArray?): Taken {
         val seniority = rank(r, maker); val mine = r.parts.firstOrNull { it.first == me }
         if (mine == null && me in r.members) return Taken.Ignored // this phone's part is in another packet of the same key
         if (removedAt != null && !(r.removal && mine != null && undoes(r, seniority, removedAt, removedBy))) return Taken.Ignored
@@ -506,10 +669,17 @@ class Keyring {
             }
         if (code != null && code in inUse) return Taken.Ignored // that code is another group's on this phone: following it would put this group in its place
         parts.add(mark); partsChanged = true
-        val e = Epoch.fresh(r.epoch, r.made, secret, r.members, admins, code, if (r.removal) door else null, if (r.removal) r.answers else null, maker, level, now)
-        val counted = !exempt(r, maker)
         // A removal can become the current epoch again even when it arrives late, and only an admin can make one.
-        if (!add(if (cur != null && r.epoch < cur.number && !r.removal) e.forReadingOnly() else e)) return Taken.Ignored
+        val forReadingOnly = cur != null && r.epoch < cur.number && !r.removal
+        // The timer: whether its maker may set it is judged as the admin list is: an admin of the epoch before (a removal
+        // is always an admin's). A phone that had no epoch can't judge that, and goes by the key's own admin list, so it
+        // is never told a value by someone that key doesn't name as an admin. [retime] judges again as keys come.
+        val mayTime = timer != null && (if (cur == null) maker in r.admins else r.removal || level == BY_ADMIN)
+        val inherited = cur?.let { counting(r.epoch - 1, it).firstOrNull()?.timer }
+        val e = Epoch.fresh(r.epoch, r.made, secret, r.members, admins, code, if (r.removal) door else null, if (r.removal) r.answers else null, maker, level, now,
+            timerRaw = timer, timer = if (forReadingOnly) null else inherited, timerCounts = mayTime)
+        val counted = !exempt(r, maker)
+        if (!add(if (forReadingOnly) e.forReadingOnly() else e)) return Taken.Ignored
         if (counted) arrived(maker, now)
         val follow = code != null && (leads(e) || (below && won(e)))
         if (follow) dropAbove(e.number)
@@ -539,7 +709,7 @@ class Keyring {
     }
 
     /** After a removal: anything numbered above it was made through the old door by someone who hadn't heard. */
-    @Synchronized fun dropAbove(number: Long) { list.removeAll { it.number > number } }
+    @Synchronized fun dropAbove(number: Long) { list.removeAll { it.number > number }; retime() }
 
     /** True if [id] was removed before [ts]: what a removed member writes afterwards isn't shown. A removal that lost doesn't count. */
     @Synchronized fun removedBefore(id: String, ts: Long) = list.any { it.removes == id && ts > it.made && won(it) }
@@ -559,6 +729,27 @@ class Keyring {
         val lists = list.filter { it.members.isNotEmpty() }
         if (lists.isNotEmpty() && lists.none { id in it.members }) return true
         return list.any { it.removes == id && won(it) && (!had || ts > it.made) }
+    }
+
+    /**
+     * True if a leave note from [id] that epoch [e] opened may count (spec "Leaving the group", rule L1): [e] is held here
+     * and has a member list (an epoch kept only to read with has whatever list its maker wrote); at every number from [e]'s
+     * up to the current epoch's, the epoch that wins it among those with a member list (the one this keyring goes by for
+     * that number) lists [id]; and no removal that won took [id] out. A rival that lost doesn't count either way: a
+     * member's weekly key that raced the admin's key letting [id] in must not shut [id] out for its week. A note from
+     * before a removal, played back after the same key was let in again, fails: the removal won its number and doesn't
+     * list them. A number with no such epoch here fails too, since nothing here shows that it listed them. Same as the
+     * iPhone's Keyring.listsThrough.
+     */
+    @Synchronized fun listsThrough(id: String, e: Epoch): Boolean {
+        val m = id.removePrefix("web-")
+        val cur = currentOrNull() ?: return false
+        if (list.none { it === e } || e.members.isEmpty() || e.number > cur.number) return false
+        for (n in e.number..cur.number) {
+            val winner = list.filter { it.number == n && it.members.isNotEmpty() }.minWithOrNull(order) ?: return false
+            if (m !in winner.members) return false
+        }
+        return list.none { it.removes == m && won(it) }
     }
 
     /** True if no other epoch with [e]'s number comes before it. */
@@ -984,6 +1175,13 @@ class MeshRouter(
         }
         prune()
     }
+    /**
+     * The packets [which] picks are no longer kept here for passing on: this phone left their group and removed them from
+     * its store. They stay seen, so a link that brings one again while the app runs changes nothing. Returns how many went.
+     */
+    @Synchronized fun forgetWhere(which: (Packet) -> Boolean): Int = stored.filterValues(which).keys.toList().onEach(::drop).size
+    /** How many packets are kept for passing on (tests). */
+    @Synchronized fun kept(): Int = stored.size
     private fun drop(k: String) {
         stored.remove(k); raisedByOther.remove(k); arrival.remove(k); cameFrom.remove(k)
         chargedTo.remove(k)?.let { f -> val n = (held[f] ?: 1) - 1; if (n > 0) held[f] = n else held.remove(f) }
@@ -1268,6 +1466,7 @@ class RecentIds(private val max: Int, initial: Collection<String> = emptyList())
         return true
     }
     operator fun contains(id: String) = id in set
+    fun removeAll(ids: Collection<String>) { set.removeAll(ids.toSet()) }
     val size get() = set.size
     fun toList(): List<String> = set.toList()
 }
@@ -1333,8 +1532,11 @@ class KeyWait<C, T>(private val max: Int = MAX) {
         return out
     }
 
-    /** The chat rows [ids] are gone (the store was trimmed): nothing waits for them any more. */
-    fun forget(ids: Collection<String>) { for (id in ids) rows[id]?.let { (c, k) -> remove(c, k) } }
+    /** The chat rows [ids] are gone (the store was trimmed): nothing waits for them any more. Returns what waited. */
+    fun forget(ids: Collection<String>): List<Entry<T>> = ids.mapNotNull { id -> rows[id]?.let { (c, k) -> remove(c, k) } }
+
+    /** A whole [channel] is gone (its group was left): nothing waits there any more. */
+    fun forgetChannel(channel: C) { channels.remove(channel)?.values?.forEach { e -> if (e.row != null && rows[e.row]?.second == e.key) rows.remove(e.row) } }
 
     /** How many packets wait in [channel]. */
     fun count(channel: C): Int = channels[channel]?.size ?: 0
@@ -1348,11 +1550,12 @@ class KeyWait<C, T>(private val max: Int = MAX) {
         return true
     }
 
-    private fun remove(channel: C, key: String) {
-        val list = channels[channel] ?: return
-        val e = list.remove(key) ?: return
+    private fun remove(channel: C, key: String): Entry<T>? {
+        val list = channels[channel] ?: return null
+        val e = list.remove(key) ?: return null
         if (e.row != null && rows[e.row]?.second == key) rows.remove(e.row)
         if (list.isEmpty()) channels.remove(channel)
+        return e
     }
 
     companion object { const val MAX = 1_000 }

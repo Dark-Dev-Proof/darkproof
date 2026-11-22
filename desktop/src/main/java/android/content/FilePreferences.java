@@ -88,6 +88,9 @@ final class FilePreferences implements SharedPreferences {
         @Override public void apply() { toMemory(); writer.execute(FilePreferences.this::save); }
     }
 
+    /** "Erase everything": what is held in memory goes, and nothing is left to write. */
+    synchronized void forget() { values.clear(); dirty = false; open.remove(this); }
+
     /** Writes the file if something changed since the last write. */
     private boolean save() {
         String text;

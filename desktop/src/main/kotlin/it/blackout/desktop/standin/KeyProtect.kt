@@ -71,7 +71,7 @@ object KeyProtect {
         }
     }
 
-    /** Removes any OS-store item for data folder [dir] (used only in tests that exercise the secure path). */
+    /** Removes any OS-store item for data folder [dir]: "Erase everything" ([Wipe]), and tests that exercise the secure path. */
     fun clear(dir: File) {
         when {
             isMac -> run(listOf("security", "delete-generic-password", "-a", account(dir), "-s", SERVICE))

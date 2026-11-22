@@ -1,5 +1,6 @@
 import UIKit
 import UserNotifications
+import CryptoKit
 import BlackoutCore
 
 /// Alerts for new group messages and check-ins, made on this phone (no push server), for every saved group. While
@@ -9,19 +10,33 @@ import BlackoutCore
 final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = Notifier()
     static let askCategory = "ask"
+    /// The sender's own reminder before their check-in clock runs out (spec "If I go quiet", rule Q8): "I'm safe" only.
+    static let remindCategory = "remind"
     @Published private(set) var status: UNAuthorizationStatus = .notDetermined
 
     private var pending: [(m: Message, group: String)] = [] // main thread; group = its saved group's name
     private var task = UIBackgroundTaskIdentifier.invalid
     private let center = UNUserNotificationCenter.current()
 
-    /// The answers under "Are you safe?". With "Lock DarkProof" on there is no "I'm safe": the phone's own unlock
-    /// isn't DarkProof's, and whoever holds an unlocked phone mustn't say it for you (as on Android and in Shortcuts).
+    /// The answers under "Are you safe?" and under the check-in clock's reminder. With "Lock DarkProof" on there is no
+    /// "I'm safe": the phone's own unlock isn't DarkProof's, and whoever holds an unlocked phone mustn't say it for you
+    /// (as on Android and in Shortcuts). Without it, "I'm safe" asks for the phone's unlock first
+    /// (`.authenticationRequired`): from a locked phone's lock screen, whoever holds it can't send it, nor stop a
+    /// check-in clock with it. "I need help" opens DarkProof (`.foreground`), which a locked phone unlocks for first.
+    /// The reminder's lock-screen text, when previews are hidden, says only that a clock ends soon.
     func updateActions() {
-        let safe = UNNotificationAction(identifier: "safe", title: "I'm safe", options: [])
+        let safe = UNNotificationAction(identifier: "safe", title: "I'm safe", options: [.authenticationRequired])
         let help = UNNotificationAction(identifier: "help", title: "I need help", options: [.foreground, .destructive])
         let actions = AppLock.shared.enabled ? [help] : [safe, help]
-        center.setNotificationCategories([UNNotificationCategory(identifier: Self.askCategory, actions: actions, intentIdentifiers: [])])
+        center.setNotificationCategories([UNNotificationCategory(identifier: Self.askCategory, actions: actions, intentIdentifiers: []),
+                                          UNNotificationCategory(identifier: Self.remindCategory, actions: AppLock.shared.enabled ? [] : [safe], intentIdentifiers: [],
+                                                                 hiddenPreviewsBodyPlaceholder: QuietWords.remindHidden, options: [])])
+        #if DEBUG
+        center.getNotificationCategories { cats in // for the tests' log: which answers ask for the unlock
+            let lines = cats.sorted { $0.identifier < $1.identifier }.map { c in c.identifier + ": " + c.actions.map { "\($0.identifier)\($0.options.contains(.authenticationRequired) ? "+unlock" : "")" }.joined(separator: ",") }
+            DebugLog.write("notification answers: " + lines.joined(separator: " | "))
+        }
+        #endif
     }
 
     /// Why a one-tap answer wasn't sent, as an alert: "I'm safe" answers without opening DarkProof.
@@ -66,6 +81,9 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
         center.getNotificationSettings { s in DispatchQueue.main.async { self.status = s.authorizationStatus } }
     }
 
+    /// "Erase everything": alerts that were waiting to be posted together are dropped, not posted.
+    func forgetAll() { pending = [] }
+
     func requestPermission(then: (() -> Void)? = nil) {
         center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in
             self.refresh()
@@ -77,6 +95,9 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
 
     /// A group message from someone else just arrived, in any saved group. Main thread.
     func received(_ m: Message) {
+        #if DEBUG
+        DebugLog.write("alert for \(m.id)") // for the tests' log: the id only, never who or what
+        #endif
         let group = Mesh.shared.engine?.groupName(m.group) ?? "your group"
         Unread.shared.updateAppBadge()
         if UIApplication.shared.applicationState == .active && !AppLock.shared.isLocked { return inApp(m, group: group) }
@@ -131,7 +152,10 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
             if let h = Self.help(m) {
                 let needs = Self.needsLine(m)
                 let body = (h.by.map { "Reported by \($0). " } ?? "") + (needs.isEmpty ? "" : needs + ". ") + "Open DarkProof to see where and to answer."
-                post(m, title: "\(h.who) needs help", body: body, subtitle: group, tab: .people, urgent: true)
+                // A report's name is the reporter's free text: in a group whose messages go within a day it stays out of
+                // the alert, which iOS keeps until the user clears it (`alertBody` does the same for message text).
+                let who = h.by != nil && Mesh.shared.engine?.alertsWithoutText(m.group) == true ? "Someone" : h.who
+                post(m, title: "\(who) needs help", body: body, subtitle: group, tab: .people, urgent: true)
             } else if let a = AreYouSafe.of(m.text), a.isFor(myName) {
                 post(m, title: a.to == nil ? "\(m.name) asks: is everyone safe?" : "\(m.name) asks if you are safe",
                      body: "Answer with one tap.", subtitle: group, tab: .chat, category: Self.askCategory)
@@ -143,7 +167,7 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
         for code in order { // per group: up to 3 alerts, else one summary
             let msgs = rest.filter { ($0.m.group ?? "") == code }
             if msgs.count <= 3 {
-                for (m, group) in msgs { post(m, title: m.name, body: Self.body(m), subtitle: group, tab: CheckIn.of(m.text) == nil ? .chat : .people) }
+                for (m, group) in msgs { post(m, title: m.name, body: Self.alertBody(m), subtitle: group, tab: CheckIn.of(m.text) == nil ? .chat : .people) }
             } else if let last = msgs.last {
                 let names = Array(Set(msgs.map(\.m.name))).sorted()
                 let who = names.count <= 2 ? names.joined(separator: " and ") : "\(names[0]), \(names[1]) and \(names.count - 2) more"
@@ -153,6 +177,9 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
     }
 
     static func body(_ m: Message) -> String {
+        if !m.isPublic, case .clock(let d)? = m.notice { // a check-in clock (spec "If I go quiet"): none of its sender's words
+            return d == 0 ? "Stopped the check-in clock." : "Started a check-in clock. Ends \(Engine.hm(d))."
+        }
         if let c = CheckIn.of(m.text) {
             let battery = CheckIn.battery(in: m.text).map { ", battery \($0)%" } ?? ""
             return c == .safe ? "Is safe\(battery)." : "Needs help\(battery)."
@@ -162,11 +189,23 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
         return String(m.text.prefix(300))
     }
 
+    /// What an alert on the lock screen says of a message. In a group whose messages disappear after a day or less it
+    /// carries none of the message's own words: iOS shows an alert until the user clears it, and this app can't take it
+    /// back while it is suspended, so the text would outlive the message. A check-in has no words of its sender's.
+    static func alertBody(_ m: Message) -> String {
+        if !m.isPublic, case .clock? = m.notice { return body(m) }
+        guard CheckIn.of(m.text) == nil, Mesh.shared.engine?.alertsWithoutText(m.group) == true else { return body(m) }
+        return "New message"
+    }
+
     private func post(_ m: Message, title: String, body: String, subtitle: String? = nil, tab: Nav.Tab, urgent: Bool = false,
                       category: String? = nil) {
         let c = UNMutableNotificationContent()
-        // With "Lock DarkProof" on, nothing about who or what shows on a locked or borrowed phone.
-        let hide = AppLock.shared.enabled
+        // With "Lock DarkProof" on, nothing about who or what shows on a locked or borrowed phone. High-risk mode keeps
+        // the lock on and says still less: only that there is a new message, or that someone needs help. A question
+        // for you is then a new message like any other, with no answer under it.
+        let hide = AppLock.shared.enabled || HighRisk.shared.isOn, least = HighRisk.shared.isOn
+        let category = least ? nil : category
         c.title = hide ? "DarkProof" : title
         c.body = !hide ? body : category == Self.askCategory ? "Someone asks if you are safe. Open DarkProof." : urgent ? "Someone needs help. Open DarkProof." : "New message"
         if let subtitle, !hide { c.subtitle = subtitle }
@@ -188,6 +227,11 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
     /// On screen, the app itself shows what arrived (in-app banner): no system banner.
     func userNotificationCenter(_ c: UNUserNotificationCenter, willPresent n: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        // A check-in clock's alert or reminder that iOS posts on time (spec "If I go quiet"): the app's own banner.
+        let id = n.request.identifier
+        if id.hasPrefix(QuietAlerts.prefix), !AppLock.shared.isLocked {
+            return DispatchQueue.main.async { done(Mesh.shared.engine?.quietPresented(id) == true ? [] : [.banner, .sound]) }
+        }
         done(AppLock.shared.isLocked ? [.banner, .sound] : []) // the lock screen hides the in-app banner
     }
 
@@ -225,5 +269,25 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
                 done()
             }
         }
+    }
+}
+
+/// The identifiers of check-in clock alerts (spec "If I go quiet"): a hash of the group's id and the member's, so neither
+/// sits in the alert database, and the same member's newer clock replaces what waits.
+enum QuietAlerts {
+    static let prefix = "quiet."
+    static func id(group: String, member: String) -> String { prefix + hash("m|\(group)|\(member)") }
+    static func remindId(group: String) -> String { prefix + "r." + hash("r|\(group)") }
+    /// At `at` by this phone's clock, `now` being its time now.
+    static func trigger(_ at: Int64, now: Int64) -> UNTimeIntervalNotificationTrigger {
+        UNTimeIntervalNotificationTrigger(timeInterval: max(1, Double(at - now) / 1000), repeats: false)
+    }
+    /// A group was left: every clock alert waiting goes; the next engine hands iOS again those of the groups that stay.
+    static func forgetAll() {
+        let c = UNUserNotificationCenter.current()
+        c.getPendingNotificationRequests { r in c.removePendingNotificationRequests(withIdentifiers: r.map(\.identifier).filter { $0.hasPrefix(prefix) }) }
+    }
+    private static func hash(_ s: String) -> String {
+        SHA256.hash(data: Data(("darkproof-quiet|" + s).utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 }

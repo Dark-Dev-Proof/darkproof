@@ -33,16 +33,24 @@ class MainActivity : ComponentActivity() {
     private val main = Handler(Looper.getMainLooper())
     private var shareLocationAsked = false
     private var afterCredential: (() -> Unit)? = null
+    private var credentialFailed: (() -> Unit)? = null
+    /**
+     * The phone's own unlock screen is up because the app asked for it. Coming back from it with the right answer is as
+     * good as unlocking the app; coming back without one locks it, if it was due to lock meanwhile ([lockIfNoAnswer]).
+     */
+    private var askingCredential = false
+    private var lockIfNoAnswer = false
     private val credential = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { r ->
-        if (r.resultCode == RESULT_OK) afterCredential?.invoke()
-        afterCredential = null
+        askingCredential = false
+        if (r.resultCode == RESULT_OK) afterCredential?.invoke() else { if (lockIfNoAnswer) state.locked = true; credentialFailed?.invoke() }
+        afterCredential = null; credentialFailed = null; lockIfNoAnswer = false
     }
 
     /** Before Android 11: the phone's own unlock screen ([AppLock.ask]). */
     @Suppress("DEPRECATION")
-    fun confirmCredential(title: String, ok: () -> Unit) {
+    fun confirmCredential(title: String, no: () -> Unit = {}, ok: () -> Unit) {
         val i = getSystemService(android.app.KeyguardManager::class.java).createConfirmDeviceCredentialIntent(title, null) ?: run { ok(); return }
-        afterCredential = ok; credential.launch(i)
+        afterCredential = ok; credentialFailed = no; askingCredential = true; credential.launch(i)
     }
 
     /** With the lock on, screenshots and the recent-apps picture are blocked. */
@@ -88,12 +96,14 @@ class MainActivity : ComponentActivity() {
             startStore()
             if (wanted.any { !granted(it) && !asked(it) } && b == null) state.introPermissions = true else check()
         }
+        if (b == null) intent?.getStringArrayExtra(Wipe.ERASED)?.let { Wipe.erased = it.toList() } // started again by "Erase everything": its last screen
         if (b == null) handle(intent) // a new screen after a restart already handled it
         val filter = IntentFilter().apply { addAction(BluetoothAdapter.ACTION_STATE_CHANGED); addAction(LocationManager.PROVIDERS_CHANGED_ACTION) }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(phoneSettings, filter, RECEIVER_NOT_EXPORTED) else registerReceiver(phoneSettings, filter) // system broadcasts only
         updatePhoneSettings()
         applySecure()
         setContent { DarkProofApp(state, this) }
+        Buzz.view = window.decorView // touch feedback goes through the window, so the phone's own setting applies
     }
 
     override fun onSaveInstanceState(b: Bundle) { super.onSaveInstanceState(b); state.save(b) }
@@ -136,13 +146,22 @@ class MainActivity : ComponentActivity() {
         if (MeshEngine.router != null) f() else if (tries > 0) main.postDelayed({ whenReady(tries - 1, f) }, 250)
     }
 
-    override fun onStart() { super.onStart(); if (AppLock.due(this)) state.locked = true }
+    override fun onStart() {
+        super.onStart()
+        if (AppLock.due(this)) { if (askingCredential) lockIfNoAnswer = true else state.locked = true }
+        if (HighRisk.on(this)) MeshEngine.keepLess() // each time the app comes to the front, not only with the hourly clean-up
+        MeshEngine.cleanUpIfTimed() // a group's timer, the same way (spec "Disappearing messages")
+        Telling.backInFront() // an erase that waited for its leave notes while the app was away: it runs now (spec "Leaving the group", LW4)
+    }
     override fun onStop() { if (!isChangingConfigurations) AppLock.left(state.locked); super.onStop() }
+    /** Back in front: a copy whose minute ended while another app was in front comes off the clipboard now ([Copied]). */
+    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) Copied.expire(this) }
 
     override fun onResume() {
         super.onResume()
         if (!state.locked) unlocked() // while locked, alerts go out as notifications, without their text
         updatePhoneSettings()
+        Motion.calm = calmNow(this) // animations removed, power saver or DarkProof's saver, as they are now
         if (state.group != null && !state.introPermissions) check() // back from Settings
     }
 
@@ -157,7 +176,8 @@ class MainActivity : ComponentActivity() {
     fun started(name: String, g: SavedGroup) {
         Groups.setUp(this, name, g)
         state.name = name; state.group = g
-        startStore()
+        // The engine is already up when the last group was left and this is the next one: it only has to show it.
+        if (MeshEngine.router != null) { MeshEngine.rename(name); MeshEngine.switchGroup(g.code) } else startStore()
         if (wanted.all(::granted)) check() else state.introPermissions = true
     }
 
@@ -268,6 +288,7 @@ class MainActivity : ComponentActivity() {
     // A new screen can start before the old one is destroyed: only unhook our own listener.
     override fun onDestroy() {
         if (MeshEngine.listener === refresh) MeshEngine.listener = null
+        if (Buzz.view === window.decorView) Buzz.view = null
         MeshService.onStop = null
         runCatching { unregisterReceiver(phoneSettings) }
         super.onDestroy()

@@ -28,9 +28,11 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import it.blackout.mesh.EmptyScreen
 import it.blackout.mesh.MainActivity
 import it.blackout.mesh.MeshEngine
 import it.blackout.mesh.Theme
+import it.blackout.mesh.Wipe
 import it.blackout.mesh.WifiLink
 import kotlinx.coroutines.delay
 import org.jetbrains.skia.Image
@@ -53,6 +55,10 @@ private fun window(test: Boolean) = application {
     LaunchedEffect(Unit) { delay(2500); open = true } // whatever happens to the title bar, the window opens
     Window(onCloseRequest = { MeshEngine.shutdown(); exitApplication() }, visible = open, title = "DarkProof", icon = remember { appIcon() }, state = rememberWindowState(size = DpSize(1360.dp, 860.dp))) {
         LaunchedEffect(Unit) {
+            // High-risk mode's 24-hour rule also runs each time the window comes to the front, as on the phones.
+            window.addWindowFocusListener(object : java.awt.event.WindowAdapter() {
+                override fun windowGainedFocus(e: java.awt.event.WindowEvent?) { if (it.blackout.mesh.HighRisk.on(a)) MeshEngine.keepLess() }
+            })
             window.minimumSize = java.awt.Dimension(900, 620)
             var bar = TitleBar.Answer(error = "not Windows"); var asked = "not asked"
             if (TitleBar.onWindows) {
@@ -87,6 +93,7 @@ internal fun App(a: MainActivity) {
     CompositionLocalProvider(LocalContext provides a) {
         Box(Modifier.fillMaxSize().background(Theme.bg)) {
             DesktopApp(a)
+            Wipe.erased?.let { lines -> EmptyScreen(lines) { Wipe.emptySeen() } } // "This computer is empty", once, after "Erase everything"
             Toasts.text?.let { t ->
                 // Above the tab bar and the message box, and light on dark so it can't be taken for one of the screen's own cards.
                 Box(Modifier.align(Alignment.BottomCenter).padding(start = 24.dp, end = 24.dp, bottom = 96.dp).clip(RoundedCornerShape(22.dp)).background(Theme.text).padding(horizontal = 18.dp, vertical = 11.dp)) {

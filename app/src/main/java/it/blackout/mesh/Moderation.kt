@@ -34,11 +34,20 @@ object Moderation {
         blockedCache = m; prefs(c).edit().putString("blocked", JSONObject(m).toString()).apply()
     }
 
+    /** The group whose id is [groupId] was left: who was blocked there is forgotten with it. */
+    fun forgetGroup(c: Context, groupId: String) { val b = blocked(c); val rest = b.filterKeys { !it.startsWith("$groupId|") }; if (rest.size != b.size) saveBlocked(c, rest) }
+
     /** Ids of messages the user reported or hid. */
     fun hidden(c: Context): Set<String> = hiddenCache ?: (prefs(c).getStringSet("hidden", emptySet())!!.toSet()).also { hiddenCache = it }
     fun hide(c: Context, messageId: String) {
         val s = (hidden(c) + messageId).toList().takeLast(2_000).toSet()
         hiddenCache = s; prefs(c).edit().putStringSet("hidden", s).apply()
+    }
+
+    /** Messages that are gone from this phone with their group: their ids leave the hidden list too. */
+    fun forgetMessages(c: Context, ids: Collection<String>) {
+        val h = hidden(c); val rest = h - ids.toSet()
+        if (rest.size != h.size) { hiddenCache = rest; prefs(c).edit().putStringSet("hidden", rest).apply() }
     }
 
     fun visible(c: Context, m: Message): Boolean {

@@ -37,8 +37,11 @@ final class MeshCoreLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
         super.init()
     }
 
+    private var ended = false // `stopAndWait` was called: nothing starts again, and no late tap saves or forgets a radio; q
+
     func start() {
         q.async {
+            guard !self.ended else { return }
             self.cm = CBCentralManager(delegate: self, queue: self.q)
             let t = DispatchSource.makeTimerSource(queue: self.q) // sends at most one queued packet per interval
             t.schedule(deadline: .now() + 1, repeating: 1)
@@ -46,6 +49,19 @@ final class MeshCoreLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
             t.resume()
             self.timer = t
             self.status(UserDefaults.standard.string(forKey: Self.savedKey) == nil ? "no radio" : "connecting…")
+        }
+    }
+
+    /// Ends this link for good (its engine was shut down: a group was left, or everything erased): the radio is
+    /// disconnected and nothing reconnects. The paired radio stays saved. Returns once that is so. From any thread but `q`.
+    func stopAndWait() {
+        q.sync {
+            ended = true
+            timer?.cancel(); timer = nil
+            close()
+            if cm?.state == .poweredOn { cm?.stopScan() }
+            cm?.delegate = nil; cm = nil // `connect` does nothing without it
+            onFound = nil; discovered = [:]
         }
     }
 
@@ -68,6 +84,7 @@ final class MeshCoreLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
     /// Forgets the paired radio: disconnects and stops reconnecting. iOS may keep its Bluetooth pairing (Settings > Bluetooth).
     func forget() {
         q.async {
+            guard !self.ended else { return }
             UserDefaults.standard.removeObject(forKey: Self.savedKey)
             self.close()
             self.status("no radio")
@@ -76,6 +93,7 @@ final class MeshCoreLink: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
 
     func select(_ id: UUID) {
         q.async {
+            guard !self.ended else { return }
             UserDefaults.standard.set(id.uuidString, forKey: Self.savedKey)
             self.close()
             self.connect()

@@ -108,9 +108,11 @@ public struct KeyWait<Channel: Hashable, Item> {
         return out
     }
 
-    /// The chat rows `ids` are gone (the store was trimmed): nothing waits for them any more.
-    public mutating func forget<S: Sequence>(_ ids: S) where S.Element == String {
-        for id in ids { if let had = rows[id] { remove(had.channel, had.key) } }
+    /// The chat rows `ids` are gone (the store was trimmed): nothing waits for them any more. Returns what waited.
+    @discardableResult public mutating func forget<S: Sequence>(_ ids: S) -> [Entry] where S.Element == String {
+        var out: [Entry] = []
+        for id in ids { if let had = rows[id], let e = remove(had.channel, had.key) { out.append(e) } }
+        return out
     }
 
     /// How many packets wait in `channel`.
@@ -131,10 +133,11 @@ public struct KeyWait<Channel: Hashable, Item> {
         return true
     }
 
-    private mutating func remove(_ channel: Channel, _ key: String) {
-        guard var list = channels[channel], let i = list.firstIndex(where: { $0.key == key }) else { return }
+    @discardableResult private mutating func remove(_ channel: Channel, _ key: String) -> Entry? {
+        guard var list = channels[channel], let i = list.firstIndex(where: { $0.key == key }) else { return nil }
         let e = list.remove(at: i)
         if let row = e.row, rows[row]?.key == key { rows[row] = nil }
         channels[channel] = list.isEmpty ? nil : list
+        return e
     }
 }

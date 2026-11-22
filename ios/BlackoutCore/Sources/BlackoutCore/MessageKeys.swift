@@ -121,12 +121,18 @@ public enum History {
         d.append(contentsOf: [UInt8(b.count >> 24 & 255), UInt8(b.count >> 16 & 255), UInt8(b.count >> 8 & 255), UInt8(b.count & 255)]); d.append(b)
     }
 
+    /// Nil for a type 0x02 message that is no reaction (`About.nothing`) and for a notice apps like this one never show
+    /// (`Notice.isSilent`): nothing of either is ever shown, so no copy is kept.
     public static func seal(key: Data, id: String, group: String, epoch: String, _ o: GroupCrypto.Opened, index: Int, counter: Int) -> Data? {
+        if case .nothing? = o.message.about { return nil }
+        if o.message.notice?.isSilent == true { return nil }
         var d = Data()
         withUnsafeBytes(of: o.message.ts.bigEndian) { d.append(contentsOf: $0) }
         d.append(o.digest); d.append(o.signature)
         d.append(contentsOf: [UInt8(index >> 8 & 255), UInt8(index & 255), UInt8(counter >> 24 & 255), UInt8(counter >> 16 & 255), UInt8(counter >> 8 & 255), UInt8(counter & 255)])
         for f in [Data(group.utf8), Data(epoch.utf8), Data(o.message.sender.utf8), Data(o.message.name.utf8), Data(o.message.text.utf8), o.extra ?? Data()] { field(&d, f) }
+        // The 5th field (spec "Replies and reactions"), after everything an older copy holds: a copy without it reads as before.
+        if let fifth = o.aboutField ?? (o.message.notice == nil ? nil : o.fifth) { field(&d, fifth) }
         return (try? AES.GCM.seal(d, using: SymmetricKey(data: key), authenticating: Data(id.utf8)))?.combined
     }
 
@@ -141,8 +147,15 @@ public enum History {
               let group = text(), let epoch = text(), let sender = text(), let name = text(), let msg = text(), let extra = next() else { return nil }
         var photo: Data?
         if extra.first == Photo.jpeg, extra.count > 1, extra.count - 1 <= Photo.maxBytes { photo = Data(extra.dropFirst()) }
-        let m = Message(id: id, ts: Int64(bitPattern: ts), sender: sender, name: name, text: msg, photo: photo)
-        return Saved(group: group, epoch: epoch, opened: GroupCrypto.Opened(message: m, signature: sig, digest: digest, extra: extra.isEmpty ? nil : extra), index: index, counter: counter)
+        var m = Message(id: id, ts: Int64(bitPattern: ts), sender: sender, name: name, text: msg, photo: photo)
+        m.voice = Voice.of(extra: extra, text: Data(msg.utf8)) // the same rules as the packet's: a copy shows only what the packet showed
+        // Read like the packet was: a copy is kept of a reply or a reaction, whose text is a listed one or empty, never
+        // of a type 0x02 message that isn't one, so the text read back here has the bytes the packet had.
+        let fifth = next()
+        m.about = About.read(field: fifth, text: Data(msg.utf8))
+        m.notice = Notice.read(field: fifth, ts: m.ts)
+        return Saved(group: group, epoch: epoch, opened: GroupCrypto.Opened(message: m, signature: sig, digest: digest, extra: extra.isEmpty ? nil : extra, aboutField: m.about == nil ? nil : fifth, fifth: fifth),
+                     index: index, counter: counter)
     }
 
     /// True if copy `s` goes with the epochs in `gone`, which this phone has just deleted from its group: the copy goes

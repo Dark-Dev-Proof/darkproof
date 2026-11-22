@@ -8,9 +8,11 @@ import BlackoutCore
 /// "Lock DarkProof" (Settings), off unless turned on: the app asks for Face ID, Touch ID or the phone's passcode when it
 /// opens, and again after a minute away. While it is on, alerts don't show message text and the app switcher shows a
 /// blank screen. Asking for help never needs it: the lock screen has the button, and shortcuts keep working. Main thread.
+/// High-risk mode (HighRisk.swift) keeps it on, and without the minute: it asks every time the app was left.
 final class AppLock: ObservableObject {
     static let shared = AppLock()
-    @Published private(set) var enabled = UserDefaults.standard.bool(forKey: "appLock")
+    /// Always true while high-risk mode is on: whatever asks "is the lock on?" (alerts, shortcuts) then hides as much.
+    @Published private(set) var enabled = UserDefaults.standard.bool(forKey: "appLock") || HighRiskSetting.isOn()
     private(set) var isLocked = false
     // When the app was left: on a clock nobody can set, which keeps counting while the phone sleeps. The phone's date
     // and time can be set back in Settings, which made the time away negative and skipped the lock.
@@ -24,23 +26,46 @@ final class AppLock: ObservableObject {
     var available: Bool { LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) }
 
     /// Asks for the phone's own unlock, then runs `ok`. If the phone has no passcode any more, nobody is shut out.
-    func ask(_ reason: String, ok: @escaping () -> Void) {
+    /// `failed`: the unlock didn't go through, was cancelled, or another request took its place.
+    func ask(_ reason: String, failed: (() -> Void)? = nil, ok: @escaping () -> Void) {
         context?.invalidate() // a second tap replaces the first request
         let c = LAContext()
         context = c
         guard c.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else { return ok() }
-        c.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in if success { DispatchQueue.main.async(execute: ok) } }
+        c.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, _ in
+            DispatchQueue.main.async { if success { ok() } else { failed?() } }
+        }
     }
 
-    /// The switch in Settings.
+    /// The switch in Settings. It can't be turned off while high-risk mode is on (the switch says so).
     func change(_ on: Bool) {
+        if !on && HighRisk.shared.isOn { return }
         if on && !available { Nav.shared.toast("Set a passcode on this iPhone first"); return }
-        ask(on ? "Turn on the lock" : "Turn off the lock") {
-            self.enabled = on; self.unlockedOnce = true
-            UserDefaults.standard.set(on, forKey: "appLock")
-            Notifier.shared.updateActions()
-            if on { UNUserNotificationCenter.current().removeAllDeliveredNotifications() } // alerts already showing still have their text
+        ask(on ? "Turn on the lock" : "Turn off the lock") { self.save(on) }
+    }
+
+    /// The switch, turned on for high-risk mode: asks for the phone's own unlock like `change`, also when the lock is on
+    /// already, and tells `done` whether that went through. The lock is on afterwards only if it did.
+    func turnOn(_ reason: String, then done: @escaping (Bool) -> Void) {
+        ask(reason, failed: { done(false) }) {
+            if !self.enabled { self.save(true) }
+            done(true)
         }
+    }
+
+    private func save(_ on: Bool) {
+        enabled = on; unlockedOnce = true
+        UserDefaults.standard.set(on, forKey: "appLock")
+        Notifier.shared.updateActions()
+        if on { UNUserNotificationCenter.current().removeAllDeliveredNotifications() } // alerts already showing still have their text
+        Mesh.shared.engine?.quietPass() // check-in clock alerts that wait are made again with what they may say now
+    }
+
+    /// "Erase everything": as on a fresh install, the lock is off and nothing is covered.
+    func reset() {
+        context?.invalidate(); context = nil
+        enabled = false; isLocked = false; unlockedOnce = false; leftAt = nil
+        hide()
     }
 
     func unlock() { ask("Unlock DarkProof") { self.unlocked() } }
@@ -56,12 +81,21 @@ final class AppLock: ObservableObject {
     #endif
 
     func phaseChanged(_ phase: ScenePhase) {
+        if phase == .active { Wipe.finishIfWaiting() } // an "Erase everything" the app's end cut short
+        // A group's timer: iOS stops the app's own timers while it is suspended, so what is due goes on coming back.
+        if phase == .active { Mesh.shared.engine?.cleanUpIfTimed() }
         guard enabled else { return hide() }
         switch phase {
         case .active:
+            let risk = HighRisk.shared.isOn
+            // "Keeps less": iOS stops the hourly clean-up while the app is suspended, so it also runs on coming back.
+            if risk { Mesh.shared.engine?.cleanUpNow() }
             if isLocked { return }
             let away = leftAt.map { Self.seconds(ContinuousClock.now - $0) }
-            if LockGrace.asksAgain(unlockedOnce: unlockedOnce, awaySeconds: away) { lock() } else { hide() }
+            // High-risk mode: no minute. Left at all (`leftAt` is set in the background, cleared on unlocking), it asks.
+            let asks = risk ? HighRiskLock.asksAgain(unlockedOnce: unlockedOnce, awaySeconds: away)
+                            : LockGrace.asksAgain(unlockedOnce: unlockedOnce, awaySeconds: away)
+            if asks { lock() } else { hide() }
         case .inactive:
             if !isLocked { show(AnyView(LockCover())) }
         case .background:
@@ -153,6 +187,10 @@ struct SettingsSheet: View {
     @ObservedObject private var loc = LocationService.shared
     @ObservedObject private var notifier = Notifier.shared
     @ObservedObject private var lock = AppLock.shared
+    @ObservedObject private var risk = HighRisk.shared
+    @State private var askingRisk = false
+    @State private var askingLeave = false
+    @State private var erasing = false
 
     var body: some View {
         SheetPage(title: "Settings") {
@@ -168,17 +206,35 @@ struct SettingsSheet: View {
                 LinkRow(icon: "bell.fill", title: "Notifications", value: notificationsValue) { NotificationsPage() }
                 SwitchRow(icon: "lock.fill", title: "Lock DarkProof",
                           detail: lock.enabled && !lock.available ? "This iPhone has no passcode any more, so this lock can't protect DarkProof. Set one in the iPhone's Settings."
+                              : risk.isOn ? "On because of high-risk mode"
                               : lock.enabled || lock.available
                               ? "Asks for Face ID or your passcode when you open DarkProof. Hides message text in alerts and in the app switcher. “I need help” still works while it's locked."
                               : "Set a passcode on this iPhone first.",
                           detailColor: lock.enabled && !lock.available ? Theme.help : Theme.dim,
                           isOn: Binding(get: { lock.enabled }, set: { lock.change($0) }))
+                    .disabled(risk.isOn) // high-risk mode keeps it on
+                ActionRow(icon: "shield.fill", title: "High-risk mode", value: risk.isOn ? "On" : "Off", on: risk.isOn) { askingRisk = true }
                 LinkRow(icon: "questionmark.circle.fill", title: "Help and privacy") { HelpPrivacyPage() }
             }
             Kicker("Advanced").padding(.top, 8).padding(.leading, 4)
             AdvancedRows(engine: engine)
+            Kicker("This phone").padding(.top, 8).padding(.leading, 4)
+            RowCard {
+                ActionRow(icon: "rectangle.portrait.and.arrow.right", title: "Leave \(groupName)") { askingLeave = true }
+                ActionRow(icon: "trash.fill", title: "Erase everything", tint: Theme.help) { erasing = true }
+            }
         }
-        .onAppear { notifier.refresh() }
+        .onAppear {
+            notifier.refresh()
+            #if DEBUG
+            // With `sheet settings`, for pictures: `askLeave` opens the leave sheet, `askErase` the erase screen.
+            let args = CommandLine.arguments
+            if args.contains("askLeave") { askingLeave = true } else if args.contains("askErase") { erasing = true }
+            #endif
+        }
+        .sheet(isPresented: $askingRisk) { HighRiskSheet() }
+        .sheet(isPresented: $askingLeave) { LeaveSheet(groupName: groupName, code: code) }
+        .fullScreenCover(isPresented: $erasing) { EraseScreen() }
     }
 
     private var groupNames: String {
@@ -375,6 +431,38 @@ struct LinkRow<Destination: View>: View {
                 Spacer(minLength: 8)
                 if let value, !value.isEmpty {
                     Text(value).scaledFont(15).foregroundStyle(Theme.dim).lineLimit(1)
+                }
+                Image(systemName: "chevron.right").scaledFont(14, .semibold).foregroundStyle(Theme.decor).accessibilityHidden(true)
+            }
+            .frame(minHeight: 44)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A line that opens a question or does something: like `LinkRow`, without a page behind it. `on`: a green dot before
+/// the value. `tint`: red for the one thing that can't be undone.
+struct ActionRow: View {
+    let icon: String
+    let title: String
+    var value: String? = nil
+    var on = false
+    var tint = Theme.text
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                HStack(spacing: 14) {
+                    Image(systemName: icon).scaledFont(17, .semibold).foregroundStyle(tint).frame(width: 30).accessibilityHidden(true)
+                    Text(title).scaledFont(17, .semibold).foregroundStyle(tint).lineLimit(2).multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 8)
+                if on { Circle().fill(Theme.safe).frame(width: 8, height: 8).accessibilityHidden(true) }
+                if let value, !value.isEmpty {
+                    Text(value).scaledFont(15).foregroundStyle(on ? Theme.safe : Theme.dim).lineLimit(1)
                 }
                 Image(systemName: "chevron.right").scaledFont(14, .semibold).foregroundStyle(Theme.decor).accessibilityHidden(true)
             }

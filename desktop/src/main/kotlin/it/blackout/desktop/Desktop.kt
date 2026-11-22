@@ -6,6 +6,7 @@ import it.blackout.mesh.LocalAi
 import it.blackout.mesh.MainActivity
 import it.blackout.mesh.MeshEngine
 import it.blackout.mesh.Notifier
+import it.blackout.mesh.Wipe
 import java.io.File
 
 /** What the desktop app does where a phone's activity starts up: the same steps, without the phone-only ones. */
@@ -18,6 +19,7 @@ object Desktop {
      * they write is not for the real relays.
      */
     fun activity(dir: File = Home.folder(), relays: Boolean = true): MainActivity {
+        Wipe.finish(dir) // an erase that waited for its leave notes and was cut short: finished before anything opens the folder
         val a = MainActivity(dir); Home.set(a)
         relayDefault(a.getSharedPreferences("mesh", 0), relays)
         a.state = AppState(a)

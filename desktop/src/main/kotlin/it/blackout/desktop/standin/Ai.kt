@@ -124,8 +124,8 @@ object LocalAi {
     var graphicsAsked by mutableStateOf(false); private set
     val hasGraphicsEngine get() = Llama.command(true) != null
 
-    fun chooseThinkFirst(on: Boolean) { thinkFirst = on; prefs.edit().putBoolean("thinkFirst", on).apply() }
-    fun chooseGraphics(on: Boolean) { graphics = on; graphicsAsked = true; prefs.edit().putBoolean("graphics", on).putBoolean("graphicsAsked", true).apply() }
+    fun chooseThinkFirst(on: Boolean) { if (erased) return; thinkFirst = on; prefs.edit().putBoolean("thinkFirst", on).apply() }
+    fun chooseGraphics(on: Boolean) { if (erased) return; graphics = on; graphicsAsked = true; prefs.edit().putBoolean("graphics", on).putBoolean("graphicsAsked", true).apply() }
 
     /** What the Ask page's menu offers besides the model, each said as it is now. The engine starts anew with the next question. */
     fun switches(): List<AiSwitch> = buildList {
@@ -183,7 +183,7 @@ object LocalAi {
 
     fun model(id: String?) = all.firstOrNull { it.id == id }
 
-    fun select(m: AiModel) { if (states[m.id] == State.Ready) { selected = m.id; prefs.edit().putString("model", m.id).apply() } }
+    fun select(m: AiModel) { if (!erased && states[m.id] == State.Ready) { selected = m.id; prefs.edit().putString("model", m.id).apply() } }
 
     // MARK: - Download
 
@@ -199,6 +199,7 @@ object LocalAi {
 
     /** Downloads the model, going on from a part that is already there. [mobileData] means nothing on a computer. */
     fun download(m: AiModel, mobileData: Boolean = true) {
+        if (erased) return
         if (states[m.id] is State.Downloading || states[m.id] == State.Verifying) return
         spaceProblem(m)?.let { states[m.id] = State.Failed(it); return }
         cancelled.remove(m.id)
@@ -231,10 +232,25 @@ object LocalAi {
             downloads.remove(m.id); verify(m)
         } catch (e: IOException) {
             downloads.remove(m.id)
+            if (erased) { p.delete(); return }
             if (cancelled.remove(m.id)) { p.delete(); return } // cancel() has set the state; the part goes once the file is closed
             main.post { states[m.id] = State.Failed("The download stopped (${e.message ?: "no connection"}). Try again: it goes on from where it stopped.") }
         }
     }
+
+    /** Before everything is erased ([Wipe]): downloads stop and the engine program ends, so nothing holds a file of the data folder open. */
+    fun halt() {
+        erased = true
+        if (app == null) return
+        stop(); downloads.values.forEach { it.cancel() }; downloads.clear()
+        runCatching { work.submit { engine?.close(); engine = null; engineModel = null }.get(10, TimeUnit.SECONDS) }
+    }
+
+    /**
+     * Set when everything is being erased ([halt]) and never taken back: the app ends right after. A download or a file
+     * check that finishes from then on puts nothing back: no model file, no setting, no conversation.
+     */
+    @Volatile private var erased = false
 
     fun cancel(m: AiModel) {
         val running = downloads.remove(m.id)
@@ -261,10 +277,13 @@ object LocalAi {
     private fun verify(m: AiModel) {
         main.post { states[m.id] = State.Verifying }
         val p = part(m)
-        val ok = p.length() == m.bytes && runCatching { sha256(p) == m.sha256 }.getOrDefault(false)
-        val moved = ok && p.renameTo(file(m))
+        val ok = !erased && p.length() == m.bytes && runCatching { sha256(p) == m.sha256 }.getOrDefault(false)
+        val moved = ok && !erased && p.renameTo(file(m))
         if (!moved) p.delete()
+        // The check takes a while on a file of gigabytes: if everything was erased meanwhile, the model must not come back.
+        if (erased) { file(m).delete(); p.delete(); return }
         main.post {
+            if (erased) return@post
             states[m.id] = if (moved) State.Ready else State.Failed("The downloaded file was damaged. Try again.")
             if (moved && (selected == null || states[selected!!] != State.Ready)) select(m)
         }
@@ -279,6 +298,7 @@ object LocalAi {
         return Math.round(if (s.size % 2 == 1) s[s.size / 2] else (s[s.size / 2 - 1] + s[s.size / 2]) / 2).toInt()
     }
     private fun record(m: AiModel, seconds: Double) {
+        if (erased) return
         val old = prefs.getString("seconds.${m.id}", "")!!.split(",").filter { it.isNotEmpty() }
         prefs.edit().putString("seconds.${m.id}", (old + "%.1f".format(java.util.Locale.ROOT, seconds)).takeLast(10).joinToString(",")).apply()
     }
@@ -363,6 +383,7 @@ object LocalAi {
     }
 
     private fun save() {
+        if (erased) return
         val a = JSONArray(); conversation.takeLast(100).forEach { a.put(JSONObject().put("role", it.role).put("text", it.text).put("error", it.isError)) }
         runCatching { conversationFile.writeText(a.toString()) }
     }

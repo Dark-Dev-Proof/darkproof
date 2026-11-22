@@ -43,6 +43,13 @@ class EncKeys(private val c: android.content.Context, private val groupId: Strin
         return true
     }
 
+    /** The group was left: every key of this phone there is deleted for good, with the list of them. */
+    @Synchronized fun wipe() {
+        list.forEach { Vault.forgetEncryptionKey(c, name(it.n)); Vault.put(c, "mlkem.${name(it.n)}", null) }
+        list = emptyList(); pairs.clear(); pqs.clear()
+        prefs.edit().remove("encs.$groupId").apply()
+    }
+
     /** What was sealed to any key still kept, newest first; null if none opens it. */
     @Synchronized fun open(box: ByteArray, info: ByteArray, aad: ByteArray): ByteArray? =
         list.asReversed().firstNotNullOfOrNull { Hybrid.open(box, pair(it.n), pq(it.n).second, info, aad) }

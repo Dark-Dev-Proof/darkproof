@@ -23,6 +23,26 @@ class MeshService : Service() {
         fun permitted(c: Context) = Build.VERSION.SDK_INT < 31 || listOf(Manifest.permission.BLUETOOTH_ADVERTISE,
             Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN).all { c.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
 
+        /** The service while it runs, for [halt]. */
+        @Volatile private var live: MeshService? = null
+
+        /**
+         * Before everything is erased ([Wipe]): Nearby stops looking, announcing and linking. Unlike "Stop DarkProof" it sets
+         * nothing and doesn't end the app: the erase does that itself. The service itself stays in the foreground until
+         * the erase is done ([end]): with it Android keeps the app running if it is sent to the background in that moment.
+         */
+        fun halt() {
+            val s = live ?: return
+            if (s::client.isInitialized) runCatching { s.client.stopAdvertising(); s.client.stopDiscovery(); s.client.stopAllEndpoints() }
+            s.ui.removeCallbacksAndMessages(null)
+        }
+
+        /** The erase is done: the service ends with its notification, so that Android doesn't start it again by itself. */
+        fun end() {
+            val s = live ?: return
+            runCatching { s.stopForeground(STOP_FOREGROUND_REMOVE) }; s.stopSelf()
+        }
+
         /** Starts the mesh in the background if the phone allows it; false if it couldn't. */
         fun start(c: Context): Boolean {
             if (!permitted(c)) return false
@@ -43,9 +63,12 @@ class MeshService : Service() {
     private var discovering = false
 
     override fun onBind(i: Intent?): IBinder? = null
+    override fun onCreate() { super.onCreate(); live = this }
+    override fun onDestroy() { if (live === this) live = null; super.onDestroy() }
 
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
         if (i?.action == ACTION_STOP) { stopAll(); return START_NOT_STICKY }
+        if (MeshEngine.stopped) { stopSelf(); return START_NOT_STICKY } // everything is being erased: no link starts now
         // Without Bluetooth permission the links would crash: don't start, and don't come back by itself.
         if (!permitted(this)) { stopSelf(); return START_NOT_STICKY }
         Notifier.setUp(this) // message alerts also when no screen is open
@@ -69,7 +92,7 @@ class MeshService : Service() {
             started = true
             io.execute {
                 MeshEngine.start(this, name, code)
-                ui.post { runCatching { begin() }.onFailure { status("Not available right now"); DebugTools.log("mesh start failed: $it") } }
+                ui.post { if (!MeshEngine.stopped) runCatching { begin() }.onFailure { status("Not available right now"); DebugTools.log("mesh start failed: $it") } }
             }
         }
         return START_STICKY // name and group come from the saved settings

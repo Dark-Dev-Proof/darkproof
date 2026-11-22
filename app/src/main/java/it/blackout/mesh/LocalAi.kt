@@ -123,7 +123,7 @@ object LocalAi {
 
     fun model(id: String?) = all.firstOrNull { it.id == id }
 
-    fun select(m: AiModel) { if (states[m.id] == State.Ready) { selected = m.id; prefs.edit().putString("model", m.id).apply() } }
+    fun select(m: AiModel) { if (!erased && states[m.id] == State.Ready) { selected = m.id; prefs.edit().putString("model", m.id).apply() } }
 
     // MARK: - Download
 
@@ -144,6 +144,7 @@ object LocalAi {
 
     /** [mobileData]: false waits for Wi-Fi (or another network that isn't metered). */
     fun download(m: AiModel, mobileData: Boolean = true) {
+        if (erased) return
         if (states[m.id] is State.Downloading || states[m.id] == State.Verifying) return
         spaceProblem(m)?.let { states[m.id] = State.Failed(it); return }
         part(m).delete()
@@ -161,7 +162,17 @@ object LocalAi {
         watch(m)
     }
 
+    /**
+     * Set when everything is being erased ([halt]) and never taken back: the app ends right after. A download or a file
+     * check that finishes from then on puts nothing back: no model file, no setting, no conversation.
+     */
+    @Volatile private var erased = false
+
+    /** Before everything is erased ([Wipe]): no answer is being written any more. Downloads and files are taken back there. */
+    fun halt() { erased = true; if (::app.isInitialized) runCatching { stop() } }
+
     fun cancel(m: AiModel) {
+        if (erased) return
         prefs.getLong("download.${m.id}", -1).takeIf { it >= 0 }?.let { app.getSystemService(DownloadManager::class.java).remove(it) }
         prefs.edit().remove("download.${m.id}").apply()
         part(m).delete(); states[m.id] = State.Missing
@@ -178,6 +189,7 @@ object LocalAi {
 
     /** Follows a DownloadManager download every second, then checks size and SHA-256 before using the file. */
     private fun watch(m: AiModel) {
+        if (erased) return // the erase took the download back: nothing is followed, checked or noted any more
         val id = prefs.getLong("download.${m.id}", -1).takeIf { it >= 0 } ?: return
         val dm = app.getSystemService(DownloadManager::class.java)
         val row = runCatching { dm.query(DownloadManager.Query().setFilterById(id))?.use { q ->
@@ -223,10 +235,13 @@ object LocalAi {
         states[m.id] = State.Verifying
         work.execute {
             val p = part(m)
-            val ok = p.length() == m.bytes && runCatching { sha256(p) == m.sha256 }.getOrDefault(false)
-            val moved = ok && p.renameTo(file(m))
+            val ok = !erased && p.length() == m.bytes && runCatching { sha256(p) == m.sha256 }.getOrDefault(false)
+            val moved = ok && !erased && p.renameTo(file(m))
             if (!moved) p.delete()
+            // The check takes a while on a file of gigabytes: if everything was erased meanwhile, the model must not come back.
+            if (erased) { file(m).delete(); p.delete(); return@execute }
             main.post {
+                if (erased) return@post
                 states[m.id] = if (moved) State.Ready else State.Failed("The downloaded file was damaged. Try again.")
                 if (moved && (selected == null || states[selected!!] != State.Ready)) select(m)
             }
@@ -242,6 +257,7 @@ object LocalAi {
         return Math.round(if (s.size % 2 == 1) s[s.size / 2] else (s[s.size / 2 - 1] + s[s.size / 2]) / 2).toInt()
     }
     private fun record(m: AiModel, seconds: Double) {
+        if (erased) return
         val old = prefs.getString("seconds.${m.id}", "")!!.split(",").filter { it.isNotEmpty() }
         prefs.edit().putString("seconds.${m.id}", (old + "%.1f".format(java.util.Locale.ROOT, seconds)).takeLast(10).joinToString(",")).apply()
     }
@@ -369,6 +385,7 @@ object LocalAi {
     }
 
     private fun save() {
+        if (erased) return
         val a = JSONArray(); conversation.takeLast(100).forEach { a.put(JSONObject().put("role", it.role).put("text", it.text).put("error", it.isError)) }
         runCatching { conversationFile.writeText(a.toString()) }
     }

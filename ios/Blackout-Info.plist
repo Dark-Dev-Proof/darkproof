@@ -19,6 +19,13 @@
 			<array><string>darkproof</string></array>
 		</dict>
 	</array>
+	<!-- The screen iOS shows while the app starts: black like the app, also when the iPhone is in light mode
+	     (the generated one took the system background, a white flash). -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
