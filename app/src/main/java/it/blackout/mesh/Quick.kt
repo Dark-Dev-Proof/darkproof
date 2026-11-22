@@ -28,37 +28,6 @@ object Actions {
         .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 }
 
-/** A check-in sent from outside the screen (tile, shortcut, notification): starts the mesh if needed, never waits for GPS. */
-object QuickCheckIn {
-    fun ready(c: Context) = Groups.code(c) != null
-
-    /**
-     * Sends [check] to [group] (the group in use if null), under its new code if a removal gave it one ([AnswerGroup]);
-     * [done] runs on a background thread with false if there is no group, or if [group] isn't saved here any more:
-     * then nothing is sent, not to another group, and a toast says so.
-     */
-    fun send(c: Context, check: CheckIn, group: String? = null, done: (Boolean) -> Unit = {}) {
-        val app = c.applicationContext
-        val prefs = app.getSharedPreferences("mesh", 0)
-        val name = prefs.getString("name", null); val code = Groups.code(app)
-        if (name == null || code == null) { done(false); return }
-        Thread {
-            MeshEngine.start(app, name, code) // does nothing if it runs already
-            val to = AnswerGroup.of(group, { Groups.find(app, it) != null }, MeshEngine::movedCode) as? AnswerTo.Group
-            if (to == null) {
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    Toast.makeText(app, "Not sent: the group that asked isn't on this phone any more. Open DarkProof to answer.", Toast.LENGTH_LONG).show()
-                }
-                done(false); return@Thread
-            }
-            val spot = if (prefs.getBoolean("shareLocation", false)) runCatching { Locator.lastKnown(app) }.getOrNull() else null
-            MeshEngine.send(check.text(batteryPercent(app), spot), group = to.code)
-            MeshService.start(app) // passes it on, also if the user stopped DarkProof before
-            done(true)
-        }.start()
-    }
-}
-
 /** "I'm safe" in an "Are you safe?" notification: answers in that group without opening the app. */
 class AnswerReceiver : BroadcastReceiver() {
     companion object { const val NOTIFICATION = "notification" }
@@ -116,12 +85,4 @@ private fun TileService.openApp(i: Intent) {
     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     if (Build.VERSION.SDK_INT >= 34) startActivityAndCollapse(PendingIntent.getActivity(this, 3, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
     else startActivityAndCollapse(i)
-}
-
-/** The "Get ready" steps done so far that the app can't see otherwise (saved on the phone). */
-object Ready {
-    const val INVITE = "invite"; const val TILE = "tile"; const val PRACTICE = "practice"; const val HIDDEN = "hidden"
-    private fun prefs(c: Context) = c.getSharedPreferences("ready", 0)
-    fun done(c: Context, step: String) = prefs(c).getBoolean(step, false)
-    fun mark(c: Context, step: String) { if (!done(c, step)) prefs(c).edit().putBoolean(step, true).apply() }
 }

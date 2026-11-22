@@ -1088,6 +1088,15 @@ object StoreCap {
      */
     fun door(mine: Boolean, member: Boolean) = if (mine || member) Kind.GROUP else Kind.DOOR
 
+    /**
+     * The class of a message or receipt a saved group's key opened, by its signature ([MeshEngine.check]): the group's
+     * own ([Kind.GROUP]), or [Kind.PUBLIC] on the Everyone channel, once it checks (true) or while its sender's key is
+     * still awaited (null) — but [Kind.UNREADABLE] when the signature is forged or from a non-member (false), so that,
+     * like any packet nobody can open, it is the first to go and never pushes a real message out. Receipts are never
+     * public. The message path has always classed this way; receipts must too (a forged receipt is no safer).
+     */
+    fun received(ok: Boolean?, public: Boolean = false) = if (ok == false) Kind.UNREADABLE else if (public) Kind.PUBLIC else Kind.GROUP
+
     /** True once the [Kind.DOOR] packets take twice their room: the store is then trimmed without waiting for the cap. */
     fun doorFull(count: Int, bytes: Long) = count > 2 * DOOR_COUNT || bytes > 2 * DOOR_BYTES
 

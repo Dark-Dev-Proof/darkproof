@@ -77,7 +77,7 @@ fun HelpDetailsSheet(s: AppState, a: MainActivity, group: String?, close: () -> 
     fun sent() { close(); s.everyone = false; s.tab = 1 }
     SheetPage("I need help", close) {
         Txt(if (links.any) "Goes to $to now and hops from phone to phone$where."
-            else "No phone or internet is in reach right now. It waits on this phone$where and goes out as soon as one is.", 16, color = Theme.dim)
+            else "No phone or internet is in reach right now. It waits on this ${Here.device}$where and goes out as soon as one is.", 16, color = Theme.dim)
         DangerButton("Send “I need help”", icon = R.drawable.ic_sos) {
             if (checkIn(a, s, CheckIn.HELP, needsOf(needs), people.takeIf { it > 1 }, group)) sent()
         }
@@ -191,7 +191,7 @@ fun VouchSheet(s: AppState, a: MainActivity, close: () -> Unit) {
 fun PersonSheet(s: AppState, a: MainActivity, messages: List<Message>, id: String, close: () -> Unit) {
     val p = remember(messages, id) { Person.all(messages, MeshEngine.deviceId).firstOrNull { it.id == id } }
     var ask by remember { mutableStateOf(false) }
-    if (p == null) { SheetPage("Person", close) { Txt("No news from this person on this phone any more.", 16, color = Theme.dim) }; return }
+    if (p == null) { SheetPage("Person", close) { Txt("No news from this person on this ${Here.device} any more.", 16, color = Theme.dim) }; return }
     val me = remember { Locator.lastKnown(a) }
     SheetPage(p.name, close) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -229,7 +229,7 @@ private fun AdminButtons(s: AppState, a: MainActivity, p: Person, close: () -> U
     val admin = remember(tick, code, p.id) { MeshEngine.isAdmin(code, p.id) }
     val canAct = remember(tick, code, p.id) { p.id != me && MeshEngine.isAdmin(code, me) && MeshEngine.inGroup(code, p.id) && !MeshEngine.removed(code) }
     var ask by remember { mutableStateOf<String?>(null) }
-    fun result(ok: Boolean, done: String) { Toast.makeText(a, if (ok) done else "Not everyone's keys have reached this phone yet. Try again when they're in reach.", Toast.LENGTH_LONG).show() }
+    fun result(ok: Boolean, done: String) { Toast.makeText(a, if (ok) done else "Not everyone's keys have reached this ${Here.device} yet. Try again when they're in reach.", Toast.LENGTH_LONG).show() }
     if (admin) Txt("${p.name} is an admin of this group.", 15, color = Theme.dim)
     if (canAct) {
         if (!admin) SecondaryButton("Make admin") { ask = "admin" }
@@ -257,7 +257,7 @@ private fun CheckCard(p: Person, code: String?) {
         }
         if (newKey) Txt("You checked ${p.name} before, with another key. If ${p.name} didn't reinstall DarkProof or reset their phone, someone else may be using their name. Check their emoji before you trust these messages.", 15, color = Theme.dim)
         if (pub == null) {
-            Txt("${p.name}'s key hasn't reached this phone yet, so their messages show “Not verified yet”. It comes by itself when their phone or the internet is in reach.", 15, color = Theme.dim)
+            Txt("${p.name}'s key hasn't reached this ${Here.device} yet, so their messages show “Not verified yet”. It comes by itself when their phone or the internet is in reach.", 15, color = Theme.dim)
         } else {
             val ix = remember(pub) { P256.emoji(pub) }
             Txt(Fingerprint.emojiLines(ix), 30, lineHeight = 40)
@@ -330,11 +330,11 @@ fun ReadyCard(s: AppState, a: MainActivity, hasPeople: Boolean) {
     val ai = LocalAi.catalog.firstOrNull()
     val steps = listOfNotNull(
         Step("Invite your people", "So you can reach each other", hasPeople || Ready.done(a, Ready.INVITE), R.drawable.ic_qr_code_2) { s.sheet = Sheet.Invite },
-        Step("Save the map of your area", "It then works with no internet", OfflineMap.state is OfflineMap.State.Ready, R.drawable.ic_map) { s.placesMap = true; s.tab = 2 },
-        Step("Add the “I'm safe” tile", "One tap from the top of the screen", Ready.done(a, Ready.TILE), R.drawable.ic_verified_user) { a.addTile() },
+        Step("Save the map of your area", "It then works with no internet", OfflineMap.state is OfflineMap.State.Ready, R.drawable.ic_map) { s.placesMap = true; s.tab = 2 }.takeIf { Here.map },
+        Step("Add the “I'm safe” tile", "One tap from the top of the screen", Ready.done(a, Ready.TILE), R.drawable.ic_verified_user) { a.addTile() }.takeIf { Here.tile },
         Step("Try a practice run", "Ask for help without sending anything", Ready.done(a, Ready.PRACTICE), R.drawable.ic_sos) { s.sheet = Sheet.Practice },
-        Step("Turn on notifications", "Know when someone needs help", !s.notificationsOff, R.drawable.ic_notifications) { a.askNotifications() },
-        ai?.let { m -> Step("Download the offline AI", "Optional. Big: ${"%.1f".format(m.bytes / 1e9)} GB, use Wi-Fi.",
+        Step("Turn on notifications", "Know when someone needs help", !s.notificationsOff, R.drawable.ic_notifications) { a.askNotifications() }.takeIf { Here.notifications },
+        ai?.takeIf { Here.ai }?.let { m -> Step("Download the offline AI", "Optional. Big: ${"%.1f".format(m.bytes / 1e9)} GB, use Wi-Fi.",
             LocalAi.states.values.any { it == LocalAi.State.Ready }, R.drawable.ic_auto_awesome) { s.tab = 4 } },
     )
     val done = steps.count { it.done }

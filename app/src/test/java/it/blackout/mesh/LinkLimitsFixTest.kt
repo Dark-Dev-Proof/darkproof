@@ -258,9 +258,9 @@ class LinkLimitsFixTest {
     private val nodes = ArrayList<Node>(); private val open = ArrayList<java.io.Closeable>()
     private fun node(id: String, perMinute: Int = 0, local: (InetAddress) -> Boolean = { true }) = Node(id, perMinute, local).also { nodes += it }
     @After fun tearDown() { nodes.forEach { it.wifi.stop() }; open.forEach { runCatching { it.close() } } }
-    private fun waitFor(what: String, cond: () -> Boolean) {
+    private fun waitFor(what: String, now: () -> String = { "" }, cond: () -> Boolean) {
         val end = System.currentTimeMillis() + 15_000
-        while (!cond()) { if (System.currentTimeMillis() > end) fail("timed out: $what"); Thread.sleep(20) }
+        while (!cond()) { if (System.currentTimeMillis() > end) fail("timed out: $what ${now()}".trim()); Thread.sleep(20) }
     }
     /** A raw client; with [node] it says HELLO, and then it never reads. */
     private fun raw(port: Int, node: String? = null): Socket = Socket("127.0.0.1", port).also { s ->
@@ -322,8 +322,10 @@ class LinkLimitsFixTest {
     @Test fun oneAddressHoldsEightLinksAndOneAllowance() {
         val a = node("node-a", perMinute = 5)
         val port = a.wifi.listen(0)
-        val clients = (1..12).map { raw(port, "fake-$it") }               // one device, twelve node ids
-        waitFor("the links settle at eight") { a.wifi.linkCount() == LinkLimits.PER_ADDRESS }
+        // One device, twelve node ids. The first eight come one after the other: while they wait for their HELLO to be
+        // read, at most four connections of one address are kept, so on a slow machine twelve at once leave four links.
+        val clients = (1..12).map { n -> raw(port, "fake-$n").also { if (n <= LinkLimits.PER_ADDRESS) waitFor("link $n", { "(${a.wifi.linkCount()} links now)" }) { a.wifi.linkCount() == n } } }
+        waitFor("the links settle at eight", { "(${a.wifi.linkCount()} links now)" }) { a.wifi.linkCount() == LinkLimits.PER_ADDRESS }
         Thread.sleep(300)
         assertEquals(LinkLimits.PER_ADDRESS, a.wifi.linkCount()); assertEquals(LinkLimits.PER_ADDRESS, a.router.peerCount())
         // three new packets on each connection (four of them are closed by now)

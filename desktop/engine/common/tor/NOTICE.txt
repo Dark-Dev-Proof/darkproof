@@ -1,0 +1,10 @@
+The program beside this note is Tor, version 0.4.9.16, from the Tor Project's "expert bundle" 16.0.1.
+It is unchanged, except that the Mac copy is signed again on the computer that builds DarkProof, because a Mac
+does not run it with the signature it comes with.
+
+This build of Tor is covered by the GNU General Public License, version 3. Tor's own licence and those of the
+libraries built into it are in the folder "licences". Its source: https://gitlab.torproject.org/tpo/core/tor
+(commit c51547ca15ea6659), and https://www.torproject.org/download/tor/
+
+DarkProof starts it as a program of its own, only while the internet relays are switched on with "Through Tor",
+and reaches the relays through it so that they do not see this computer's internet address.

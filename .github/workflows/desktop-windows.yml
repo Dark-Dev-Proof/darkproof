@@ -1,0 +1,195 @@
+# Builds the desktop app (desktop/) for Windows and for the Mac.
+#
+# Windows: runs every test there, makes the installer, checks that the built app starts its engine and the AI engine
+# (DarkProof --self-test), installs the installer over the one people can download from darkproof.app to see that it
+# replaces it, and opens the app's real window to photograph it (DarkProof --window-test). A second job opens the
+# window on the older Windows too, which draws title bars its own way.
+# Mac: makes the disk image on a Mac and checks that the built app starts its engine and the AI engine.
+#
+# -PaiEngine has the build fetch the AI engine (llama.cpp's server, one pinned build, checked by SHA-256: see
+# desktop/build.gradle.kts) into the app, and -Ptor the Tor Project's Tor program, pinned and checked the same way.
+# No model is fetched. Tor is only asked for its version here: it must never be started for real on a build machine
+# (it was once, on 2026-11-21, and the GitHub account was suspended within minutes). Installers and pictures are kept for 14 days.
+# Every run gives its builds the next build number (0.4.<run>), so a newer installer replaces an older DarkProof.
+# This file's name stays as it is: a workflow under a new name would start counting from 1 again.
+name: Desktop app (Windows and Mac)
+
+on:
+  push:
+    branches: [windows-desktop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Keep the files' line endings as they are
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Run every test on Windows
+        run: ./gradlew -Pdesktop :desktop:test --no-daemon --console=plain
+      - name: Build the app and its installer
+        run: ./gradlew -Pdesktop -PaiEngine -Ptor :desktop:createDistributable :desktop:packageMsi --no-daemon --console=plain
+      - name: Start the built app's engine (self-test)
+        shell: pwsh
+        run: |
+          # A folder with a space in its name, as many people's own folders have: the database, the AI and Tor all get paths under it
+          $env:DARKPROOF_HOME = Join-Path $env:RUNNER_TEMP 'darkproof self test'
+          $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter DarkProof.exe | Select-Object -First 1
+          if (-not $exe) { throw 'DarkProof.exe was not built' }
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--self-test' -PassThru
+          if (-not $p.WaitForExit(240000)) { $p.Kill(); throw 'the self-test did not finish in four minutes' }
+          $report = Join-Path $env:DARKPROOF_HOME 'self-test.txt'
+          if (Test-Path $report) { Get-Content $report } else { Write-Host 'no self-test.txt was written' }
+          if ($p.ExitCode -ne 0) { throw "the self-test failed with exit code $($p.ExitCode)" }
+      - name: Keep the test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: desktop/build/reports/tests/test
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Keep the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: DarkProof-windows-installer
+          path: desktop/build/compose/binaries/main/msi/*.msi
+          if-no-files-found: error
+          retention-days: 14
+      - name: Install it over the installer from darkproof.app (update check)
+        shell: pwsh
+        run: |
+          # The installer people can download today, by its fingerprint: is it replaced, not doubled, by this build's?
+          # (Its address and fingerprint here are changed by hand whenever a new installer goes on the website.)
+          $old = Join-Path $env:RUNNER_TEMP 'darkproof-public.msi'
+          try { Invoke-WebRequest -Uri 'https://darkproof.app/downloads/darkproof-0.4.13-windows.msi' -OutFile $old } catch { Write-Host "the public installer could not be downloaded ($_): skipping"; exit 0 }
+          $sha = (Get-FileHash $old -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne '2e305e28dd8ce1c07c605aec2ee833b800f6a72e399375d34f01674e69cb4835') { Write-Host "the public installer is another file now ($sha): nothing to compare with, skipping"; exit 0 }
+          $new = Get-ChildItem desktop/build/compose/binaries/main/msi -Filter *.msi | Select-Object -First 1
+          function Installed { Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'DarkProof' } }
+          function Install($file, $log) {
+            $p = Start-Process msiexec -ArgumentList '/i', "`"$file`"", '/qn', '/norestart', '/l*v', "`"$log`"" -PassThru -Wait
+            if ($p.ExitCode -ne 0) { Get-Content $log -Tail 40; throw "msiexec ended with $($p.ExitCode) for $file" }
+          }
+          Install $old (Join-Path $env:RUNNER_TEMP 'install-old.log')
+          $before = @(Installed); Write-Host "after the public installer: $($before.Count) DarkProof, version $($before.DisplayVersion)"
+          if ($before.Count -ne 1) { throw 'the public installer did not install one DarkProof' }
+          Install $new.FullName (Join-Path $env:RUNNER_TEMP 'install-new.log')
+          $after = @(Installed); Write-Host "after this build's installer ($($new.Name)): $($after.Count) DarkProof, version $($after.DisplayVersion)"
+          if ($after.Count -ne 1) { throw "there are $($after.Count) DarkProof installed: the new one did not replace the old one" }
+          if ([version]$after[0].DisplayVersion -le [version]$before[0].DisplayVersion) { throw 'the installed DarkProof is not the newer one' }
+          # The installed program itself starts its engine
+          $where = $after[0].InstallLocation
+          $exe = if ($where) { Join-Path $where 'DarkProof.exe' } else { $null }
+          if (-not $exe -or -not (Test-Path $exe)) { $exe = (Get-ChildItem (Join-Path $env:LOCALAPPDATA 'DarkProof') -Recurse -Filter DarkProof.exe -ErrorAction SilentlyContinue | Select-Object -First 1).FullName }
+          if (-not $exe) { throw 'the installed DarkProof.exe was not found' }
+          Write-Host "installed at $exe"
+          $env:DARKPROOF_HOME = Join-Path $env:RUNNER_TEMP 'darkproof-installed-self-test'
+          $p = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru
+          if (-not $p.WaitForExit(240000)) { $p.Kill(); throw "the installed app's self-test did not finish in four minutes" }
+          Get-Content (Join-Path $env:DARKPROOF_HOME 'self-test.txt')
+          if ($p.ExitCode -ne 0) { throw "the installed app's self-test failed with exit code $($p.ExitCode)" }
+      - name: Open the built app's window and photograph it (window test)
+        shell: pwsh
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force } catch { Write-Host "the screen keeps its size: $_" }
+          $env:DARKPROOF_HOME = Join-Path $env:RUNNER_TEMP 'darkproof-window-test'
+          $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter DarkProof.exe | Select-Object -First 1
+          if (-not $exe) { throw 'DarkProof.exe was not built' }
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--window-test' -PassThru
+          if (-not $p.WaitForExit(180000)) { $p.Kill(); throw 'the window test did not finish in three minutes' }
+          $report = Join-Path $env:DARKPROOF_HOME 'window-test.txt'
+          if (Test-Path $report) { Get-Content $report } else { Write-Host 'no window-test.txt was written' }
+          if ($p.ExitCode -ne 0) { throw "the window test ended with exit code $($p.ExitCode)" }
+      - name: Keep the pictures of the window
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: window-pictures-windows-latest
+          path: |
+            ${{ runner.temp }}/darkproof-window-test/window-*.png
+            ${{ runner.temp }}/darkproof-window-test/window-test.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The same window on the older Windows (the Windows 10 family), which takes a dark title bar differently.
+  older-windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Keep the files' line endings as they are
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build the app
+        run: ./gradlew -Pdesktop -PaiEngine -Ptor :desktop:createDistributable --no-daemon --console=plain
+      - name: Open the built app's window and photograph it (window test)
+        shell: pwsh
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force } catch { Write-Host "the screen keeps its size: $_" }
+          $env:DARKPROOF_HOME = Join-Path $env:RUNNER_TEMP 'darkproof-window-test'
+          $exe = Get-ChildItem desktop/build/compose/binaries/main/app -Recurse -Filter DarkProof.exe | Select-Object -First 1
+          if (-not $exe) { throw 'DarkProof.exe was not built' }
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--window-test' -PassThru
+          if (-not $p.WaitForExit(180000)) { $p.Kill(); throw 'the window test did not finish in three minutes' }
+          $report = Join-Path $env:DARKPROOF_HOME 'window-test.txt'
+          if (Test-Path $report) { Get-Content $report } else { Write-Host 'no window-test.txt was written' }
+          if ($p.ExitCode -ne 0) { throw "the window test ended with exit code $($p.ExitCode)" }
+      - name: Keep the pictures of the window
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: window-pictures-windows-2022
+          path: |
+            ${{ runner.temp }}/darkproof-window-test/window-*.png
+            ${{ runner.temp }}/darkproof-window-test/window-test.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The Mac's disk image. The tests are run on a Mac before every push; here the app is built and its engines started.
+  mac:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build the app and its disk image
+        run: ./gradlew -Pdesktop -PaiEngine -Ptor :desktop:createDistributable :desktop:packageDmg --no-daemon --console=plain
+      - name: Open the disk image and start the app's engines from it (self-test)
+        run: |
+          # The disk image itself, opened the way a Mac opens it: nothing on it can be changed, so what runs here is what was shipped
+          uname -m; sw_vers -productVersion
+          dmg=$(ls desktop/build/compose/binaries/main/dmg/*.dmg | head -1)
+          hdiutil attach "$dmg" -mountpoint "$RUNNER_TEMP/darkproof-image" -nobrowse -readonly
+          app="$RUNNER_TEMP/darkproof-image/DarkProof.app"
+          engine="$app/Contents/app/resources/llama"
+          ls -la "$engine" "$app/Contents/app/resources/tor"
+          codesign -dv "$engine/llama-server" 2>&1 | head -6 || true
+          codesign --verify -v "$app/Contents/app/resources/tor/tor" 2>&1 | head -3 || true
+          "$engine/llama-server" --version 2>&1 | head -3
+          test "${PIPESTATUS[0]}" = 0 || { echo 'the AI engine on the disk image cannot be started as it is'; exit 1; }
+          export DARKPROOF_HOME="$RUNNER_TEMP/darkproof self test"
+          "$app/Contents/MacOS/DarkProof" --self-test
+          hdiutil detach "$RUNNER_TEMP/darkproof-image" || true
+      - name: Keep the disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: DarkProof-mac
+          path: desktop/build/compose/binaries/main/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14

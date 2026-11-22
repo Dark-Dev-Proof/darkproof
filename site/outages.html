@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- connect-src 'self': this page reads outages.json from this site and can reach no other address. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Internet outages around the world | DarkProof</title>
+<meta name="description" content="A globe of the countries where internet connectivity dropped in the last 24 hours, from IODA measurements, renewed every hour.">
+<link rel="canonical" href="https://darkproof.app/outages.html">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://darkproof.app/outages.html">
+<meta property="og:title" content="Internet outages around the world">
+<meta property="og:description" content="A globe of the countries where internet connectivity dropped in the last 24 hours.">
+<meta property="og:image" content="https://darkproof.app/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon-dark.png?v=3" type="image/png" sizes="96x96" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="favicon.png?v=3" type="image/png" sizes="96x96" media="(prefers-color-scheme: light)">
+<link rel="icon" href="favicon.svg?v=3" type="image/svg+xml" media="(prefers-color-scheme: light)">
+<link rel="apple-touch-icon" href="logo.png">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="outages.css">
+<script src="outage-map.js" defer></script>
+<script src="globe.js" defer></script>
+<script src="outages.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap wide">
+<header class="site">
+  <a class="home" href="./"><span class="dots">DarkProof</span></a>
+  <a class="act act-light act-sm" href="./#stage">Try the demo</a>
+</header>
+
+<main id="main">
+  <section class="oh" aria-labelledby="title">
+    <p class="label">[ Internet outages · last 24 hours ]</p>
+    <h1 id="title">Where the internet went dark</h1>
+    <p class="lead">Each red country had a drop in connectivity picked up by IODA, a measurement project at Georgia
+    Tech. Detection is automatic, so a signal is not always a shutdown.</p>
+    <p class="label status" id="status" role="status" aria-live="polite">Loading the latest copy</p>
+  </section>
+
+  <section class="world" aria-label="Globe and list of outages">
+    <div class="stage">
+      <canvas id="globe" role="img" aria-label="A globe of dots. Countries with outages are red. The list after it has the same information."></canvas>
+      <p class="readout" id="readout" aria-live="polite" hidden></p>
+      <div class="bar">
+        <div class="seg" role="group" aria-label="View">
+          <button type="button" class="seg-b" data-view="globe" aria-pressed="true">Globe</button>
+          <button type="button" class="seg-b" data-view="map" aria-pressed="false">Map</button>
+        </div>
+        <ul class="legend label" aria-label="Signal strength">
+          <li><span class="k k3"></span>Strong</li>
+          <li><span class="k k2"></span>Medium</li>
+          <li><span class="k k1"></span>Weak</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="side">
+      <h2 id="list-title">Strongest signals</h2>
+      <ol class="rows" id="rows" aria-labelledby="list-title">
+        <li class="sk" aria-hidden="true"><span></span></li>
+        <li class="sk" aria-hidden="true"><span></span></li>
+        <li class="sk" aria-hidden="true"><span></span></li>
+        <li class="sk" aria-hidden="true"><span></span></li>
+        <li class="sk" aria-hidden="true"><span></span></li>
+        <li class="sk" aria-hidden="true"><span></span></li>
+      </ol>
+      <button type="button" class="button" id="more" hidden>Show all</button>
+      <div class="problem" id="problem" hidden>
+        <p>The outage list did not load. The globe shows the land only.</p>
+        <button type="button" class="button" id="retry">Try again</button>
+      </div>
+      <noscript><p class="dim">The globe and the list need JavaScript. This page reads one file from darkproof.app and
+      contacts nobody else.</p></noscript>
+    </div>
+  </section>
+
+  <section class="pitch" aria-labelledby="pitch-title">
+    <h2 id="pitch-title">When it reaches you</h2>
+    <p>DarkProof keeps messages moving from phone to phone over Bluetooth and Wi-Fi when the network is gone. It is
+    free and needs no account.</p>
+    <a class="act act-light" href="./#stage">Try the demo</a>
+  </section>
+
+  <section class="read" aria-labelledby="read-title">
+    <h2 id="read-title">How to read this</h2>
+    <ul>
+      <li>The data comes from IODA, Internet Outage Detection and Analysis, at the Georgia Institute of Technology.
+      It watches internet routing, probes networks and follows traffic levels, country by country.</li>
+      <li>A signal says the measurements dropped. It does not say why.</li>
+      <li>Strong, medium and weak come from IODA's outage score for the last 24 hours: 10,000 or more, 1,000 or more,
+      and below 1,000.</li>
+      <li>Some places in the list are too small to draw at this scale. They are marked.</li>
+      <li>This site keeps its own copy and renews it every hour. Opening this page contacts darkproof.app and nobody
+      else.</li>
+      <li>Power cuts are not shown. This map covers internet connectivity only.</li>
+    </ul>
+    <p class="dim">Outage data © Georgia Tech Research Corporation, from
+    <a href="https://ioda.inetintel.cc.gatech.edu/" rel="noopener noreferrer">IODA</a>. Country outlines from Natural
+    Earth.</p>
+  </section>
+</main>
+
+<footer class="site">
+  <nav aria-label="Footer">
+    <a href="./">About DarkProof</a>
+    <a href="privacy.html">Privacy policy</a>
+    <a href="terms.html">Terms of use</a>
+    <a href="mailto:support@darkproof.app">support@darkproof.app</a>
+  </nav>
+</footer>
+</div>
+</body>
+</html>

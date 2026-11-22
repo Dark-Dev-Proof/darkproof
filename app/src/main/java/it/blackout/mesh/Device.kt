@@ -34,27 +34,45 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.text.DateFormat
 import java.util.Date
 import kotlin.math.roundToInt
 
+/**
+ * What this device is and can do, for the words and rows the screens show. This is a phone's answer: everything. The
+ * desktop app gives its own (desktop/src/main/kotlin/it/blackout/desktop/standin/Phone.kt), so the same screens say
+ * "this computer" there and leave out what a computer can't do yet.
+ */
+object Here {
+    /** What the screens call this device: "this phone". */
+    val device = "phone"
+    val bluetooth = true      // phones nearby link by themselves over Bluetooth and Wi-Fi Direct
+    val internet = true       // the internet relays, through Tor inside the app
+    val radios = true         // a LoRa radio can be paired
+    val batterySaver = true
+    val wifiBoard = true
+    val notifications = true
+    val lock = true           // "Lock DarkProof"
+    val shareApp = true       // the Android app's file can be sent to a phone nearby
+    val position = true       // GPS, for check-ins and places
+    val map = true
+    val tile = true           // the "I'm safe" quick tile
+    val ai = true             // the offline AI
+    val scan = true           // a camera that scans an invite's QR code
+    val background = true     // DarkProof keeps passing messages on while the app is closed
+    val allModels = false     // the AI models shown are the ones this phone can run; a computer lists them all and says what each needs
+    val aiSwitches = emptyList<AiSwitch>() // what a computer's Ask menu offers besides the model; a phone's AI has no such choices
+    val tabBar = true         // the tabs float over the bottom of the screen, so each tab leaves room for them
+    val wide = false          // a wide window with panes side by side: pages open in the middle of it, not as a sheet from below
+}
+
+/** Android's version number (API level). The screens ask through this, so that they also run where there is no Android. */
+fun androidSdk(): Int = Build.VERSION.SDK_INT
+
 /** Phone battery level in percent, or null if unknown. */
 fun batteryPercent(c: Context): Int? =
     c.getSystemService(BatteryManager::class.java)?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
-
-/** "just now", "5 min ago", "2 h ago", "3 d ago". */
-fun ago(ts: Long, now: Long = System.currentTimeMillis()): String {
-    val s = (now - ts) / 1000
-    return when {
-        s < 60 -> "just now"
-        s < 3600 -> "${s / 60} min ago"
-        s < 86_400 -> "${s / 3600} h ago"
-        else -> "${s / 86_400} d ago"
-    }
-}
 
 fun clock(c: Context, ts: Long): String = android.text.format.DateFormat.getTimeFormat(c).format(Date(ts))
 
@@ -257,149 +275,6 @@ fun qrBitmap(text: String, size: Int = 720): Bitmap {
 }
 
 /**
- * The group in use and the ones the user switched away from, so they can come back (like the iPhone's SavedGroups).
- * [pins]: only on an invite that was read, the admins it names (spec "Invites"); kept when the user joins with it.
- */
-data class SavedGroup(val name: String, val code: String, val pins: String = "")
-
-object Groups {
-    private fun prefs(c: Context) = c.getSharedPreferences("mesh", 0)
-
-    /** The group in use, the others, the codes of groups made here that have no first epoch yet, and the admins invites named, by code. */
-    private data class Saved(val code: String? = null, val name: String? = null, val others: List<SavedGroup> = emptyList(), val founded: Set<String> = emptySet(),
-                             val pins: Map<String, String> = emptyMap())
-    private var cache: Saved? = null
-
-    private fun groupsFrom(a: JSONArray) = (0 until a.length()).map { a.getJSONObject(it) }.map { SavedGroup(it.optString("name", "Group"), it.optString("code")) }
-
-    /**
-     * Group codes are kept in the [Vault], encrypted with a key that never leaves the Keystore: a code is what lets
-     * someone ask to join. Read once, then from memory. Codes saved in plain preferences by older builds move here.
-     */
-    @Synchronized private fun saved(c: Context): Saved {
-        cache?.let { return it }
-        val p = prefs(c)
-        val s = Vault.get(c, "groups")?.let { raw -> runCatching { JSONObject(String(raw)).let { o ->
-            Saved(o.optString("code").ifEmpty { null }, o.optString("name").ifEmpty { null }, groupsFrom(o.getJSONArray("others")),
-                o.getJSONArray("founded").let { f -> (0 until f.length()).map(f::getString).toSet() },
-                o.optJSONObject("pins")?.let { m -> m.keys().asSequence().associateWith { m.getString(it) } }.orEmpty())
-        } }.getOrNull() } ?: Saved(p.getString("code", null), p.getString("groupName", null),
-            runCatching { groupsFrom(JSONArray(p.getString("groups", "[]"))) }.getOrDefault(emptyList()), p.getStringSet("found", emptySet())!!.toSet())
-        cache = s
-        if (p.contains("code") || p.contains("groups") || p.contains("found")) {
-            write(c, s)
-            if (Vault.get(c, "groups") != null) p.edit().remove("code").remove("groupName").remove("groups").remove("found").apply()
-        }
-        return s
-    }
-
-    @Synchronized private fun write(c: Context, s: Saved) {
-        if (s.code != cache?.code) DebugTools.noteCode(s.code)
-        cache = s
-        Vault.put(c, "groups", JSONObject().put("code", s.code ?: "").put("name", s.name ?: "")
-            .put("others", JSONArray(s.others.map { JSONObject().put("name", it.name).put("code", it.code) }))
-            .put("founded", JSONArray(s.founded.toList())).put("pins", JSONObject(s.pins)).toString().toByteArray())
-    }
-
-    /** The code of the group in use, or null before setup. */
-    fun code(c: Context) = saved(c).code
-    fun current(c: Context) = saved(c).let { s -> s.code?.let { SavedGroup(s.name ?: "Group", it) } }
-    fun others(c: Context): List<SavedGroup> = saved(c).let { s -> s.others.filter { it.code.isNotEmpty() && it.code != s.code } }
-    @Synchronized private fun remember(c: Context, g: SavedGroup) = write(c, saved(c).copy(others = (listOf(g) + others(c).filter { it.code != g.code }).take(20)))
-    /** The group in use, then the others. */
-    fun all(c: Context): List<SavedGroup> = listOfNotNull(current(c)) + others(c)
-    fun find(c: Context, code: String?): SavedGroup? = code?.let { k -> all(c).firstOrNull { it.code == k } }
-    /** First setup: saves the name and group. The mesh service starts afterwards. */
-    @Synchronized fun setUp(c: Context, name: String, g: SavedGroup) {
-        prefs(c).edit().putString("name", name).apply()
-        joining(c, g)
-        write(c, saved(c).copy(code = g.code, name = g.name))
-    }
-    /** Someone was removed from a group: it now has a new code (spec "Removing and the code"). Its name stays. */
-    @Synchronized fun replaceCode(c: Context, old: String, new: String) = saved(c).let { s ->
-        write(c, s.copy(code = if (s.code == old) new else s.code, others = s.others.map { if (it.code == old) it.copy(code = new) else it }))
-    }
-    /** [old] turned out to be an old code of the saved group whose code is [now]: that group is shown in its place, and [old] isn't kept. */
-    @Synchronized fun follow(c: Context, old: String, now: String) = saved(c).let { s ->
-        val g = find(c, now) ?: return@let
-        write(c, s.copy(code = if (s.code == old) g.code else s.code, name = if (s.code == old) g.name else s.name, others = s.others.filter { it.code != old }))
-    }
-    /** Shows another group's messages; this group's stay on the phone. */
-    @Synchronized fun switchTo(c: Context, g: SavedGroup) {
-        joining(c, g)
-        current(c)?.let { remember(c, it) }
-        write(c, saved(c).copy(code = g.code, name = g.name))
-        MeshEngine.switchGroup(g.code)
-    }
-
-    /** Groups made on this phone, or saved before v0.6, that have no first epoch yet (spec "Making the first epoch"). */
-    fun founded(c: Context) = saved(c).founded
-    @Synchronized fun setFounded(c: Context, codes: Set<String>) = write(c, saved(c).copy(founded = codes))
-
-    /** The admins the invite for [code] named ("" if none): only they can let this phone in (spec "Invites"). */
-    fun pins(c: Context, code: String) = saved(c).pins[code].orEmpty()
-    /**
-     * The user chose to join [g], or to show it: if this phone doesn't have its code yet, the admins its invite names
-     * are kept from now on ([Invite.joinPins]). Nothing else writes them. Call before [g] is saved.
-     */
-    @Synchronized private fun joining(c: Context, g: SavedGroup) = saved(c).let { s ->
-        val pins = Invite.joinPins(s.pins, all(c).map { it.code }, g.code, g.pins)
-        if (pins != s.pins) write(c, s.copy(pins = pins))
-    }
-
-    /**
-     * The group name and code in invite [link] and the admins it names, or null if it isn't one. Reading a link keeps
-     * nothing: the admins are saved only when the user joins with it ([switchTo], [setUp]).
-     */
-    fun readInvite(link: String): SavedGroup? = Invite.parse(link)?.let { (name, code) -> SavedGroup(name, code, Invite.pins(link)) }
-}
-
-/**
- * People the user blocked and messages the user reported or hid: both are hidden everywhere (chats, places, people,
- * alerts). Kept only on this phone. Reports also go to the internet relays (NostrLink) when there is internet.
- * A block holds for the channel it was made in, Everyone or one group, and only a checked message's sender can be
- * blocked ([Blocks]): an unchecked message can be hidden, not its sender.
- */
-object Moderation {
-    private fun prefs(c: Context) = c.getSharedPreferences("mesh", 0)
-    @Volatile private var blockedCache: Map<String, String>? = null
-    @Volatile private var hiddenCache: Set<String>? = null
-
-    /** What is blocked ([Blocks.key]: the channel and the sender id) and the name that sender had. */
-    fun blocked(c: Context): Map<String, String> = blockedCache ?: runCatching {
-        val o = JSONObject(prefs(c).getString("blocked", "{}")!!); o.keys().asSequence().associateWith { o.getString(it) }
-    }.getOrDefault(emptyMap()).also { blockedCache = it }
-
-    /** Blocks the sender of [m] in the channel [m] came in. False, and nothing saved, if that sender can't be blocked ([Blocks.canBlock]). */
-    fun block(c: Context, m: Message): Boolean {
-        val channel = channelOf(m)
-        if (channel == null || !Blocks.canBlock(m, MeshEngine.deviceId)) return false
-        saveBlocked(c, blocked(c) + (Blocks.key(channel, m.sender) to m.name))
-        return true
-    }
-    /** [key]: a key of [blocked]. */
-    fun unblock(c: Context, key: String) = saveBlocked(c, blocked(c) - key)
-    /** The channel a message's sender is blocked in: Everyone, or its group's id (which stays when the group's code changes). */
-    private fun channelOf(m: Message): String? = if (m.public) Blocks.EVERYONE else MeshEngine.groupId(m.group)
-    private fun saveBlocked(c: Context, m: Map<String, String>) {
-        blockedCache = m; prefs(c).edit().putString("blocked", JSONObject(m).toString()).apply()
-    }
-
-    /** Ids of messages the user reported or hid. */
-    fun hidden(c: Context): Set<String> = hiddenCache ?: (prefs(c).getStringSet("hidden", emptySet())!!.toSet()).also { hiddenCache = it }
-    fun hide(c: Context, messageId: String) {
-        val s = (hidden(c) + messageId).toList().takeLast(2_000).toSet()
-        hiddenCache = s; prefs(c).edit().putStringSet("hidden", s).apply()
-    }
-
-    fun visible(c: Context, m: Message): Boolean {
-        if (m.id in hidden(c)) return false
-        val b = blocked(c)
-        return b.isEmpty() || !Blocks.hides(b.keys, channelOf(m), m.sender)
-    }
-}
-
-/**
  * "Lock DarkProof" (Settings), off unless turned on: the app asks for the phone's fingerprint, face or PIN when it opens,
  * and again after a minute away. While it is on, notifications don't show message text and screenshots are blocked.
  * Asking for help never needs it: the lock screen has the button, and tiles and shortcuts keep working.
@@ -520,20 +395,6 @@ object Notifier {
     }
 }
 
-/** When each saved group's chat was last read, so new messages show as unread (Chat tab, group switcher). */
-object ReadMarks {
-    private fun prefs(c: Context) = c.getSharedPreferences("read", 0)
-    fun lastRead(c: Context, code: String): Long = prefs(c).getLong(key(code), 0L)
-    fun markRead(c: Context, code: String, ts: Long) { if (ts > lastRead(c, code)) prefs(c).edit().putLong(key(code), ts).apply() }
-    /** Messages from others in [code] newer than the last read one. */
-    fun unread(c: Context, all: List<Message>, code: String): Int {
-        val since = lastRead(c, code)
-        return all.count { !it.public && it.group == code && it.ts > since && it.sender != MeshEngine.deviceId }
-    }
-    fun rename(c: Context, old: String, new: String) { prefs(c).edit().putLong(key(new), lastRead(c, old)).remove(key(old)).apply() }
-    private fun key(code: String) = code.hashCode().toString() // not the code itself
-}
-
 /** "Today", "Yesterday", or the date in the phone's language, for the chat. */
 fun dayLabel(c: Context, ts: Long, now: Long = System.currentTimeMillis()): String = when {
     android.text.format.DateUtils.isToday(ts) -> "Today"
@@ -543,22 +404,5 @@ fun dayLabel(c: Context, ts: Long, now: Long = System.currentTimeMillis()): Stri
             java.util.Calendar.getInstance().apply { timeInMillis = now }.get(java.util.Calendar.YEAR)
         android.text.format.DateUtils.formatDateTime(c, ts, android.text.format.DateUtils.FORMAT_SHOW_DATE or
             android.text.format.DateUtils.FORMAT_SHOW_WEEKDAY or (if (sameYear) android.text.format.DateUtils.FORMAT_NO_YEAR else android.text.format.DateUtils.FORMAT_SHOW_YEAR))
-    }
-}
-
-/** The day a message was sent, for grouping the chat by day. */
-fun dayOf(ts: Long): Int = java.util.Calendar.getInstance().apply { timeInMillis = ts }.let { it.get(java.util.Calendar.YEAR) * 1000 + it.get(java.util.Calendar.DAY_OF_YEAR) }
-
-/** Formats a day or time for the chat. */
-fun fullTime(ts: Long): String = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(ts))
-
-/** How to reach the developer (Settings, "Help and safety"); app stores ask apps with public posts to show this. */
-object Contact {
-    const val EMAIL = "support@darkproof.app"
-    const val MAIL = "mailto:support@darkproof.app?subject=DarkProof%20report"
-    const val PRIVACY = "https://darkproof.app/privacy"
-    fun open(c: android.content.Context, uri: String) {
-        runCatching { c.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uri))) }
-            .onFailure { android.widget.Toast.makeText(c, if (uri.startsWith("mailto")) "Write to $EMAIL" else uri, android.widget.Toast.LENGTH_LONG).show() }
     }
 }

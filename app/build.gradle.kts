@@ -1,10 +1,10 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id("org.jetbrains.kotlin.plugin.compose") }
 android {
     namespace = "it.blackout.mesh"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "it.darkproof.mesh"
-        minSdk = 26; targetSdk = 34; versionCode = 4; versionName = "0.4"
+        minSdk = 26; targetSdk = 36; versionCode = 5; versionName = "0.4.1"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

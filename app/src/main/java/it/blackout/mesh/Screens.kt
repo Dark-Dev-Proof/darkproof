@@ -106,10 +106,12 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
         }.start()
     }
     val typing = WindowInsets.isImeVisible
-    Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding().padding(bottom = if (typing) 0.dp else 84.dp)) { // room for the tab bar
-        Column(Modifier.padding(horizontal = 20.dp).padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            ScreenTitle(g.name, if (phones == 1) "1 phone in range" else "$phones phones in range")
-            PillSwitch(g.name, "Everyone", everyone) { s.everyone = it }
+    Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding().padding(bottom = if (typing || !Here.tabBar) 0.dp else 84.dp)) { // room for the tab bar
+        Column(Modifier.padding(horizontal = 20.dp).padding(top = if (Here.wide) 2.dp else 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (!Here.wide) { // a wide window names the chat above it and switches channels at its side
+                ScreenTitle(g.name, if (phones == 1) "1 phone in range" else "$phones phones in range")
+                PillSwitch(g.name, "Everyone", everyone) { s.everyone = it }
+            }
             Txt(if (everyone) "Anyone with DarkProof can read these, nearby or online." else "Only people in ${g.name} can read these. They disappear after one to two weeks.", 14, color = Theme.dim)
             if (!everyone && remember(tick, g) { MeshEngine.removed(g.code) }) Card(padding = 16.dp) {
                 Txt("You were removed from ${g.name}", 16, FontWeight.SemiBold)
@@ -130,7 +132,7 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
                     Txt(Fingerprint.emojiLines(P256.emoji(r.pub)), 22, lineHeight = 30)
                     Txt("Let them in only if you know it's them. Their phone shows these same emoji.", 14, color = Theme.dim)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        PrimaryButton("Let in", Modifier.weight(1f)) { MeshEngine.approveJoin(g.code, r.id) { ok -> if (!ok) Toast.makeText(ctx, "Not everyone's keys have reached this phone yet. Try again when they're in reach.", Toast.LENGTH_LONG).show() } }
+                        PrimaryButton("Let in", Modifier.weight(1f)) { MeshEngine.approveJoin(g.code, r.id) { ok -> if (!ok) Toast.makeText(ctx, "Not everyone's keys have reached this ${Here.device} yet. Try again when they're in reach.", Toast.LENGTH_LONG).show() } }
                         SecondaryButton("Not now", Modifier.weight(1f)) { MeshEngine.declineJoin(g.code, r.id) }
                     }
                 }
@@ -141,7 +143,7 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
             if (shown.isEmpty()) item {
                 Column(Modifier.fillMaxWidth().padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Txt("No messages yet", 20, FontWeight.Bold)
-                    Txt(if (everyone) "Messages here reach everyone, nearby or online." else "Say hi, or tap I'm safe on Home.", 15, color = Theme.dim)
+                    Txt(if (everyone) "Messages here reach everyone, nearby or online." else if (Here.tabBar) "Say hi, or tap I'm safe on Home." else "Say hi, or tap I'm safe.", 15, color = Theme.dim)
                 }
             }
             items(rows, key = { it.key }) { r ->
@@ -159,10 +161,7 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
             if (!everyone) RoundIcon(R.drawable.ic_photo_camera, 52.dp, desc = "Send a photo") {
                 pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             }
-            TextBox(draft, { s.drafts[channel] = it.take(1000) }, if (everyone) "Message everyone" else "Message ${g.name}", singleLine = false,
-                keyboard = KeyboardOptions(KeyboardCapitalization.Sentences), modifier = Modifier.weight(1f), shape = RoundedCornerShape(26.dp))
-            RoundIcon(R.drawable.ic_arrow_upward, 52.dp, tint = if (draft.isBlank()) Theme.dim else Color.Black,
-                bg = if (draft.isBlank()) Theme.tile else Color.White, desc = "Send") {
+            val send: () -> Unit = {
                 val t = draft.trim()
                 if (t.isNotEmpty() && meshReady(ctx)) {
                     s.drafts.remove(channel)
@@ -175,6 +174,11 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
                     }.start()
                 }
             }
+            TextBox(draft, { s.drafts[channel] = it.take(1000) }, if (everyone) "Message everyone" else "Message ${g.name}", singleLine = false,
+                keyboard = KeyboardOptions(KeyboardCapitalization.Sentences), modifier = Modifier.weight(1f), shape = RoundedCornerShape(26.dp),
+                onEnter = if (Here.wide) send else null) // at a computer's keyboard, Enter sends
+            RoundIcon(R.drawable.ic_arrow_upward, 52.dp, tint = if (draft.isBlank()) Theme.dim else Color.Black,
+                bg = if (draft.isBlank()) Theme.tile else Color.White, desc = "Send", onClick = send)
         }
     }
 }
@@ -198,7 +202,7 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
     var menu by remember { mutableStateOf(false) }
     var confirmBlock by remember { mutableStateOf(false) }
     val hold = Modifier.combinedClickable(onLongClick = { menu = true }, onClick = {}, onLongClickLabel = "Message options")
-    if (confirmBlock) Confirm("Block ${m.name}?", "You won't see their messages, places or check-ins on this phone. You can unblock them in Settings.", "Block", danger = true,
+    if (confirmBlock) Confirm("Block ${m.name}?", "You won't see their messages, places or check-ins on this ${Here.device}. You can unblock them in Settings.", "Block", danger = true,
         onYes = { confirmBlock = false; Moderation.block(ctx, m); moderated() }, onNo = { confirmBlock = false })
     // Shown under the message held (anchored to the Box around it).
     val options: @Composable () -> Unit = { DropdownMenu(menu, { menu = false }, containerColor = Theme.card) {
@@ -206,11 +210,11 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
         if (Blocks.canBlock(m, MeshEngine.deviceId)) DropdownMenuItem(text = { Txt("Block ${m.name}", 16) }, onClick = { menu = false; confirmBlock = true })
         else if (!me) DropdownMenuItem(text = { Txt("Hide this message", 16) }, onClick = {
             menu = false; Moderation.hide(ctx, m.id); moderated()
-            Toast.makeText(ctx, "Hidden on this phone", Toast.LENGTH_SHORT).show()
+            Toast.makeText(ctx, "Hidden on this ${Here.device}", Toast.LENGTH_SHORT).show()
         })
         if (!me && m.public) DropdownMenuItem(text = { Txt("Report this message", 16, color = Theme.help) }, onClick = {
             menu = false; Moderation.hide(ctx, m.id); NostrReports.report(ctx, m.id); moderated()
-            Toast.makeText(ctx, "Reported and hidden on this phone", Toast.LENGTH_SHORT).show()
+            Toast.makeText(ctx, "Reported and hidden on this ${Here.device}", Toast.LENGTH_SHORT).show()
         })
     } }
     val card = check != null || vouch != null || ask != null || place != null
@@ -396,14 +400,14 @@ fun PlacesTab(s: AppState, messages: List<Message>, open: (Sheet) -> Unit) {
         if (me == null) f.sortedWith(compareBy<Shared> { it.old }.thenByDescending { it.ts })
         else f.sortedWith(compareBy<Shared> { it.old }.thenBy { it.place.spot?.let { sp -> Geo.distance(me, sp) } ?: Double.MAX_VALUE }.thenByDescending { it.ts })
     }
-    if (s.placesMap) {
+    if (s.placesMap && Here.map) {
         var center by remember { mutableStateOf<Spot?>(null) }
         val people = remember(messages) { Person.all(messages, MeshEngine.deviceId) }
         val pins = remember(all, people) {
             all.mapNotNull { sh -> sh.place.spot?.let { Pin(sh.place.kind.word + if (sh.place.note.isNotEmpty()) ": " + Cut.units(sh.place.note, 40) else "", it, sh.ts, if (sh.old) "#6B6B6B" else "#FFFFFF") } } +
                 people.mapNotNull { p -> p.spot?.let { Pin(p.name, it, p.spotTs, when (p.checkIn) { CheckIn.HELP -> "#FF453B"; CheckIn.SAFE -> "#33D64A"; null -> "#949494" }) } }
         }
-        Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 100.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).padding(top = 8.dp, bottom = if (Here.tabBar) 100.dp else 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             ScreenTitle("Places", "Shared by anyone with DarkProof, nearby or online")
             PillSwitch("List", "Map", true) { s.placesMap = it }
             StreetMap(pins, me, Modifier.fillMaxWidth().weight(1f), open) { center = it }
@@ -412,10 +416,10 @@ fun PlacesTab(s: AppState, messages: List<Message>, open: (Sheet) -> Unit) {
         }
         return
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 120.dp),
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = if (Here.tabBar) 120.dp else 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         ScreenTitle("Places", "Shared by anyone with DarkProof, nearby or online")
-        PillSwitch("List", "Map", false) { s.placesMap = it }
+        if (Here.map) PillSwitch("List", "Map", false) { s.placesMap = it }
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip("All", null, filter == null) { filter = null }
             PlaceKind.entries.forEach { k -> FilterChip(k.word, kindIcon(k), filter == k) { filter = k } }
@@ -516,11 +520,11 @@ fun PeopleTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<Messag
     val people = remember(messages) { Person.all(messages, MeshEngine.deviceId) }
     val mine = remember(messages) { messages.lastOrNull { !it.public && it.sender == MeshEngine.deviceId && CheckIn.of(it.text) != null } }
     var askAll by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 120.dp),
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = if (Here.tabBar) 120.dp else 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) { ScreenTitle("People", "${g.name} · ${people.size} ${if (people.size == 1) "person" else "people"} · $phones nearby") }
-            RoundIcon(R.drawable.ic_settings, desc = "Settings") { open(Sheet.Settings) }
+            if (!Here.wide) RoundIcon(R.drawable.ic_settings, desc = "Settings") { open(Sheet.Settings) } // a wide window has Settings at its side
         }
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             BigCheckIn("I'm safe", R.drawable.ic_verified_user, Theme.safe, Color.Black, Modifier.weight(1f)) {
@@ -587,12 +591,12 @@ fun FindSheet(f: Sheet.Find, close: () -> Unit) {
                 Txt(if (near) "Within about ${Geo.meters(maxOf(15.0, (me.accuracy ?: 15).toDouble()))}. Look around or call out." else "${Geo.compassWord(b)} of you", 18, color = Theme.dim)
             }
             Txt("Position from ${ago(f.ts)}", 15, color = Theme.dim)
-            if (!compass) Txt("This phone has no compass right now, so the arrow assumes the top of the phone points north.", 14, color = Theme.dim)
+            if (!compass) Txt("This ${Here.device} has no compass right now, so the arrow assumes the top of the ${Here.device} points north.", 14, color = Theme.dim)
         }
         Card(padding = 16.dp) { PlusCodeRow(f.spot) }
         SecondaryButton("Open in a map app", icon = R.drawable.ic_map) {
             val geo = String.format(Locale.ROOT, "geo:%.5f,%.5f?q=%.5f,%.5f", f.spot.lat, f.spot.lon, f.spot.lat, f.spot.lon)
-            runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(geo))) }.onFailure { Toast.makeText(ctx, "No map app on this phone", Toast.LENGTH_LONG).show() }
+            runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(geo))) }.onFailure { Toast.makeText(ctx, "No map app on this ${Here.device}", Toast.LENGTH_LONG).show() }
         }
     }
 }
@@ -695,7 +699,7 @@ fun AskTab(g: SavedGroup, messages: List<Message>) {
     }
     var menu by remember { mutableStateOf(false) }
     val typing = WindowInsets.isImeVisible
-    Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding().padding(bottom = if (typing) 0.dp else 84.dp)) {
+    Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding().padding(bottom = if (typing || !Here.tabBar) 0.dp else 84.dp)) {
         Row(Modifier.padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.Top) {
             Box(Modifier.weight(1f)) { ScreenTitle("Ask", "Works with no internet. It can be wrong: double-check anything important.") }
             Spacer(Modifier.width(12.dp))
@@ -706,6 +710,7 @@ fun AskTab(g: SavedGroup, messages: List<Message>) {
                     DropdownMenuItem(text = { Txt("New conversation", 16, color = if (canNew) Theme.text else Theme.faint) }, enabled = canNew,
                         onClick = { menu = false; LocalAi.newConversation() })
                     DropdownMenuItem(text = { Txt("AI model: " + (m?.title ?: "none yet"), 16) }, onClick = { menu = false; choose = true })
+                    Here.aiSwitches.forEach { sw -> DropdownMenuItem(text = { Txt(sw.label, 16) }, onClick = { menu = false; sw.flip() }) }
                 }
             }
         }
@@ -713,8 +718,8 @@ fun AskTab(g: SavedGroup, messages: List<Message>) {
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Card {
-                    Txt("No AI model on this phone", 18, FontWeight.Bold)
-                    Txt("Download one while you still have internet. It stays on the phone and works offline afterwards.", 15, color = Theme.dim)
+                    Txt("No AI model on this ${Here.device}", 18, FontWeight.Bold)
+                    Txt("Download one while you still have internet. It stays on the ${Here.device} and works offline afterwards.", 15, color = Theme.dim)
                 }
                 ModelList()
             }
@@ -733,7 +738,7 @@ fun AskTab(g: SavedGroup, messages: List<Message>) {
                     val t = turns[i]; val me = t.role == "user"
                     Box(Modifier.fillMaxWidth(), contentAlignment = if (me) Alignment.CenterEnd else Alignment.CenterStart) {
                         Text(if (t.text == "…") AnnotatedString("Thinking…") else if (me) AnnotatedString(t.text) else markdown(t.text),
-                            Modifier.widthIn(max = 320.dp).clip(RoundedCornerShape(22.dp)).background(if (me) Color.White else Theme.tile)
+                            Modifier.widthIn(max = if (Here.wide) 560.dp else 320.dp).clip(RoundedCornerShape(22.dp)).background(if (me) Color.White else Theme.tile)
                                 .padding(horizontal = 16.dp, vertical = 11.dp),
                             color = when { me -> Color.Black; t.isError -> Theme.help; t.text == "…" -> Theme.dim; else -> Theme.text },
                             fontSize = 16.sp, lineHeight = 23.sp)
@@ -742,7 +747,7 @@ fun AskTab(g: SavedGroup, messages: List<Message>) {
             }
             Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 TextBox(draft, { draft = it.take(1000) }, "Ask anything", singleLine = false, keyboard = KeyboardOptions(KeyboardCapitalization.Sentences),
-                    modifier = Modifier.weight(1f), shape = RoundedCornerShape(26.dp))
+                    modifier = Modifier.weight(1f), shape = RoundedCornerShape(26.dp), onEnter = if (Here.wide) ({ send(draft) }) else null) // at a computer's keyboard, Enter asks
                 if (LocalAi.busy) RoundIcon(R.drawable.ic_close, 52.dp, desc = "Stop") { LocalAi.stop() }
                 else RoundIcon(R.drawable.ic_arrow_upward, 52.dp, tint = if (draft.isBlank()) Theme.dim else Color.Black,
                     bg = if (draft.isBlank()) Theme.tile else Color.White, desc = "Ask") { send(draft) }
@@ -774,7 +779,8 @@ private fun ModelList() {
         LocalAi.spaceProblem(m)?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show(); return }
         when (val net = LocalAi.network(ctx)) { "free" -> LocalAi.download(m); else -> ask = m to net }
     }
-    Txt("Models run entirely on this phone. Bigger ones answer better but slower. This phone has ${LocalAi.memoryGB} GB of memory: only models that fit are shown.",
+    Txt("Models run entirely on this ${Here.device}. Bigger ones answer better but slower. This ${Here.device} has ${LocalAi.memoryGB} GB of memory" +
+        (if (Here.allModels) ". Each model says what it needs. They are uncensored versions that other people made: they answer anything, and they can be wrong." else ": only models that fit are shown."),
         14, color = Theme.dim)
     if (LocalAi.catalog.isEmpty()) Txt("No model fits a phone with less than 4 GB of memory.", 15, FontWeight.SemiBold, Theme.help)
     LocalAi.catalog.forEach { m ->

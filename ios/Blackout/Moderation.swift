@@ -33,4 +33,5 @@ enum Contact {
     static let email = "support@darkproof.app"
     static let mail = URL(string: "mailto:support@darkproof.app?subject=DarkProof%20report")!
     static let privacy = URL(string: "https://darkproof.app/privacy")!
+    static let terms = URL(string: "https://darkproof.app/terms")!
 }

@@ -1,0 +1,5 @@
+The AI engine beside this note is llama-server from llama.cpp, build b12590, unchanged.
+Copyright (c) 2023-2026 The ggml authors. MIT licence: see the LICENSE files in this folder.
+Source and releases: https://github.com/ggml-org/llama.cpp
+
+DarkProof starts it only when the Ask page is used, with one model file, reachable from this computer only.

@@ -1,0 +1,63 @@
+# darkproof.app on Hostinger (Apache or LiteSpeed). Netlify and Cloudflare Pages ignore this file and read _headers.
+
+# The same privacy headers as in _headers.
+<IfModule mod_headers.c>
+  Header always set Referrer-Policy "no-referrer"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+</IfModule>
+
+# Hostinger lets browsers keep styles and scripts for 7 days. After an update a visitor would then get the new page
+# with old files. So browsers must ask each time. For pages the answer is then a short "not changed"; styles and
+# scripts are sent again (about 21 KB in all). Fonts and pictures may still be kept. The same goes for .json, so
+# the outages page always gets the latest outages.json.
+<FilesMatch "\.(html|css|js|json)$">
+  Header set Cache-Control "no-cache"
+  Header unset Expires
+</FilesMatch>
+
+# The iPhone app link file has no extension, so say what it is.
+<Files "apple-app-site-association">
+  ForceType application/json
+</Files>
+
+# Android app files in /downloads/: say what they are, so a phone offers to install the file instead of showing it.
+<FilesMatch "\.apk$">
+  ForceType application/vnd.android.package-archive
+</FilesMatch>
+
+# Windows installers in /downloads/: the same, so a browser saves the file instead of trying to show it.
+<FilesMatch "\.msi$">
+  ForceType application/x-msi
+</FilesMatch>
+
+# Mac disk images in /downloads/: the same.
+<FilesMatch "\.dmg$">
+  ForceType application/x-apple-diskimage
+</FilesMatch>
+
+# The AI engine of the dark room page is a WebAssembly file: browsers only run it when it is served as one.
+AddType application/wasm .wasm
+
+# Unknown addresses show the "page not found" page. Folders without a page show nothing.
+ErrorDocument 404 /404.html
+Options -Indexes
+
+RewriteEngine On
+
+# Never redirect /.well-known/: the phones' app link checks and the certificate checks need a plain answer.
+RewriteRule ^\.well-known/ - [L]
+
+# www.darkproof.app goes to darkproof.app, and http goes to https.
+RewriteCond %{HTTP_HOST} ^www\.(.+)$ [NC]
+RewriteRule ^ https://%1%{REQUEST_URI} [R=301,L]
+RewriteCond %{HTTPS} !=on
+RewriteCond %{HTTP:X-Forwarded-Proto} !https
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+# /join shows join.html, /privacy shows privacy.html, /terms shows terms.html and /outages shows outages.html. The
+# address stays as typed, so
+# there is no redirect loop, and /terms never leads to the privacy policy.
+# With a slash at the end the page's own files would not load, so that form goes to the short one first.
+RewriteRule ^(join|privacy|terms|outages|darkroom)/$ /$1 [R=301,L]
+RewriteRule ^(join|privacy|terms|outages|darkroom)$ $1.html [L]

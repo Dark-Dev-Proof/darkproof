@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,6 +25,12 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Outline
@@ -106,11 +113,15 @@ fun vaultShape(cut: Dp = 42.dp, radius: Dp = 46.dp, small: Dp = 8.dp): Shape = o
 
 /** Big title at the top of a tab. */
 @Composable fun ScreenTitle(title: String, subtitle: String) {
+    val wide = Here.wide // in a wide window this heads one pane of several, so it is smaller
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Txt(title, 32, FontWeight.Black, maxLines = 1, lineHeight = 38)
-        Txt(subtitle, 15, FontWeight.Medium, Theme.dim)
+        Txt(title, if (wide) 24 else 32, FontWeight.Black, maxLines = 1, lineHeight = if (wide) 30 else 38)
+        Txt(subtitle, if (wide) 14 else 15, FontWeight.Medium, Theme.dim)
     }
 }
+
+/** A choice in the Ask page's menu: [label] says it as it is now, and [flip] changes it. */
+class AiSwitch(val label: String, val on: Boolean, val flip: () -> Unit)
 
 /** Filled capsule tag, e.g. "Here". */
 @Composable fun Chip(text: String, color: Color = Theme.dim) =
@@ -197,8 +208,13 @@ fun vaultShape(cut: Dp = 42.dp, radius: Dp = 46.dp, small: Dp = 8.dp): Shape = o
 @Composable fun TextBox(
     value: String, onChange: (String) -> Unit, placeholder: String, singleLine: Boolean = true,
     keyboard: KeyboardOptions = KeyboardOptions.Default, modifier: Modifier = Modifier, shape: Shape = RoundedCornerShape(16.dp),
+    onEnter: (() -> Unit)? = null, // what a keyboard's Enter key does, where it should not start a new line
 ) = BasicTextField(
-    value, onChange, modifier, singleLine = singleLine, maxLines = if (singleLine) 1 else 5, keyboardOptions = keyboard,
+    value, onChange, if (onEnter == null) modifier else modifier.onPreviewKeyEvent { e ->
+        val enter = (e.key == Key.Enter || e.key == Key.NumPadEnter) && !e.isShiftPressed // with Shift it starts a new line
+        if (enter && e.type == KeyEventType.KeyDown) onEnter()
+        enter
+    }, singleLine = singleLine, maxLines = if (singleLine) 1 else 5, keyboardOptions = keyboard,
     textStyle = TextStyle(color = Theme.text, fontSize = 17.sp), cursorBrush = SolidColor(Theme.text),
     decorationBox = { inner ->
         Box(Modifier.background(Theme.tile, shape).padding(horizontal = 16.dp, vertical = 15.dp)) {
@@ -228,6 +244,7 @@ fun vaultShape(cut: Dp = 42.dp, radius: Dp = 46.dp, small: Dp = 8.dp): Shape = o
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun SheetPage(title: String, onClose: () -> Unit, onBack: (() -> Unit)? = null, scrollKey: Any? = null,
                           content: @Composable ColumnScope.() -> Unit) {
+    if (Here.wide) { WidePage(title, onClose, onBack, scrollKey, content); return }
     ModalBottomSheet(onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = Theme.bg, contentColor = Theme.text, dragHandle = null,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)) {
@@ -242,6 +259,24 @@ fun vaultShape(cut: Dp = 42.dp, radius: Dp = 46.dp, small: Dp = 8.dp): Shape = o
             Column(Modifier.weight(1f, fill = false).verticalScroll(scroll).imePadding().navigationBarsPadding(),
                 verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
             Spacer(Modifier.height(20.dp))
+        }
+    }
+}
+
+/** [SheetPage] in a wide window: the same page as a panel in the middle, over the dimmed window. */
+@Composable private fun WidePage(title: String, onClose: () -> Unit, onBack: (() -> Unit)?, scrollKey: Any?, content: @Composable ColumnScope.() -> Unit) {
+    androidx.compose.ui.window.Dialog(onClose, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(Modifier.padding(vertical = 40.dp).widthIn(max = 520.dp).fillMaxWidth().background(Theme.bg, RoundedCornerShape(28.dp))
+            .border(1.dp, Theme.line, RoundedCornerShape(28.dp)).padding(horizontal = 24.dp).padding(top = 22.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (onBack != null) { RoundIcon(R.drawable.ic_arrow_back, 36.dp, desc = "Back", onClick = onBack); Spacer(Modifier.width(12.dp)) }
+                Txt(title, if (onBack != null) 22 else 26, FontWeight.Black, modifier = Modifier.weight(1f), maxLines = 1)
+                RoundIcon(R.drawable.ic_close, 36.dp, desc = "Close", onClick = onClose)
+            }
+            Spacer(Modifier.height(16.dp))
+            val scroll = key(scrollKey) { rememberScrollState() }
+            Column(Modifier.weight(1f, fill = false).verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
+            Spacer(Modifier.height(24.dp))
         }
     }
 }
