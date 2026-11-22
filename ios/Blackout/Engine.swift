@@ -150,7 +150,9 @@ final class Engine: ObservableObject {
     }
 
     /// A message or receipt from a member whose public key isn't known yet; checked when the introduction comes.
-    private struct Pending { let k: Keys; let o: GroupCrypto.Opened; let receipt: Message? }
+    /// `row`: for a message, the chat row it is shown as (its store name) so the rescan binds its check to that row and
+    /// not to the bare packet id, which another packet may share; nil for a receipt (receipts have no row).
+    private struct Pending { let k: Keys; let o: GroupCrypto.Opened; let receipt: Message?; var row: String? = nil }
     /// What waits for a key, each group and the Public channel apart (`KeyWait`). Main thread.
     private var unchecked = KeyWait<ObjectIdentifier, Pending>()
     private static let maxKnown = 500, introEvery: Int64 = 3 * 24 * 3_600_000
@@ -1008,7 +1010,7 @@ final class Engine: ObservableObject {
         var msgs: [(Message, String)] = [], recs: [(group: String, receipt: Message)] = [], own = Set<String>(), ownR = Set<String>(), rIds = Set<String>() // msgs: with what was signed (`mark`)
         var sent: [(group: String, id: String)] = [] // this phone's own group messages, with their group's id (`Deliveries.sent`)
         var idx: [String: StoreCap.Entry] = [:], future = Set<String>()
-        var opened: [(Message, Keys, GroupCrypto.Opened, Bool, Bool, Bool)] = [] // checked once every introduction is known; the last: another packet had its id first
+        var opened: [(Message, Keys, GroupCrypto.Opened, Bool, Bool, Bool, String)] = [] // checked once every introduction is known; 6th: another packet had its id first; last: its store name
         var copies: [String: Data] = [:]
         history.forEach { copies[$0.id] = $0.cipher }
         // `name`: what the packet goes by (`StoreCap.name`): its id, or its key if another packet had that id first.
@@ -1034,8 +1036,8 @@ final class Engine: ObservableObject {
                 let ok = signed(o, r)
                 if o.message.sender == keys.me, ok { ownR.insert(p.id) }
                 _ = acceptRekey(keys, o, r, pid, d); kind = doorKind(keys, o.message.sender, signed: ok)
-            case .msg(let m, let keys, let o, let copy)?: opened.append((m.id == name ? m : m.withId(name), keys, o, false, copy, name != p.id)); kind = m.isPublic ? .isPublic : .group
-            case .receipt(let r, let keys, let o)?: opened.append((r, keys, o, true, false, false)); rIds.insert(p.id); kind = .group
+            case .msg(let m, let keys, let o, let copy)?: opened.append((m.id == name ? m : m.withId(name), keys, o, false, copy, name != p.id, name)); kind = m.isPublic ? .isPublic : .group
+            case .receipt(let r, let keys, let o)?: opened.append((r, keys, o, true, false, false, name)); rIds.insert(p.id); kind = .group
             default: kind = .unreadable
             }
             idx[name] = StoreCap.Entry(id: name, ts: p.ts, size: Packet.headerSize + p.cipher.count, kind: kind)
@@ -1043,7 +1045,7 @@ final class Engine: ObservableObject {
         store.forEachNamed { read($0, $1, false) }
         more.forEachNamed { read($0, $1, true) }
         var waiting: [Pending] = [], spent: [Keys] = []
-        for (m, keys, o, receipt, copy, other) in opened {
+        for (m, keys, o, receipt, copy, other, name) in opened {
             if other, !receipt, m.sender == deviceId { continue } // another packet under an id that was taken, naming this phone as its sender: never a row of its own
             switch check(keys, o, had: copy) {
             case true?:
@@ -1056,9 +1058,10 @@ final class Engine: ObservableObject {
                 }
             case nil:
                 if receipt { waiting.append(Pending(k: keys, o: o, receipt: m)) }
-                else { var u = m; u.verified = false; msgs.append((u, o.mark)); waiting.append(Pending(k: keys, o: o, receipt: nil)); if !copy { remember(m.id, keys, o) } }
+                else { var u = m; u.verified = false; msgs.append((u, o.mark)); waiting.append(Pending(k: keys, o: o, receipt: nil, row: m.id)); if !copy { remember(m.id, keys, o) } }
             case false?:
-                if let e = idx[m.id] { idx[m.id] = StoreCap.Entry(id: e.id, ts: e.ts, size: e.size, kind: .unreadable) }
+                // A forged message or receipt is not the group's own, whatever it is stored under (`name`): like a packet nobody can open.
+                if let e = idx[name] { idx[name] = StoreCap.Entry(id: e.id, ts: e.ts, size: e.size, kind: .unreadable) }
             }
         }
         spent.forEach(saveMessageKeys)
@@ -1098,7 +1101,7 @@ final class Engine: ObservableObject {
             for w in waiting {
                 let channel = ObjectIdentifier(w.k), sender = w.o.message.sender
                 if w.receipt != nil { self.unchecked.receipt(w.o.key, channel: channel, sender: sender, w) }
-                else { self.unchecked.message(w.o.key, channel: channel, sender: sender, id: w.o.message.id, shown: added.contains(w.o.message.id), w) }
+                else { let row = w.row ?? w.o.message.id; self.unchecked.message(w.o.key, channel: channel, sender: sender, id: row, shown: added.contains(row), w) } // the row it is shown as (its store name), not the shared packet id
             }
             self.refresh()
         }
@@ -1599,9 +1602,10 @@ final class Engine: ObservableObject {
                 Notifier.shared.received(m)
             }
         case .receipt(let r, let k, let o)?:
-            keep(p, .group)
+            let ok = check(k, o)
+            keep(p, StoreCap.received(ok)) // classed by its signature, like a message: unreadable until it checks, so junk receipts can't push real messages out
             idsLock.withLock { _ = receiptIds.add(p.id) }
-            switch check(k, o) {
+            switch ok {
             case true?: DispatchQueue.main.async { self.deliveries.add(group: k.id, r) }
             case nil: DispatchQueue.main.async { self.unchecked.receipt(o.key, channel: ObjectIdentifier(k), sender: o.message.sender, Pending(k: k, o: o, receipt: r)) }
             case false?: break

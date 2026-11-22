@@ -882,6 +882,9 @@ private fun BlockedPage(s: AppState, a: MainActivity) {
     }
 }
 
+/** The example in the Wi-Fi card's address field and its hint. Words on the screen: the app never connects to it. */
+private const val ADDRESS_EXAMPLE = "192.168.1.20:7777" // NOSONAR kotlin:S1313: an example for the person to read, not an address the app uses
+
 /** Links over Wi-Fi networks: what is linked, this phone's address, and an address to dial by hand. [tick] redraws it. */
 @Composable
 private fun WifiCard(tick: Int) {
@@ -897,11 +900,11 @@ private fun WifiCard(tick: Int) {
             val n = wifi.links.linkCount()
             Txt(if (n > 0) "$n phone${if (n == 1) "" else "s"} linked over Wi-Fi" else "Looking on this network", 15, FontWeight.SemiBold, if (n > 0) Theme.safe else Theme.dim)
             localAddress()?.let { ip -> if (wifi.links.port > 0) Txt("This ${Here.device}: $ip:${wifi.links.port}", 14, color = Theme.dim) }
-            InputField("Connect to an address", address, { address = it.trim() }, "192.168.1.20:7777")
+            InputField("Connect to an address", address, { address = it.trim() }, ADDRESS_EXAMPLE)
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 GhostButton("Connect") {
                     val host = address.substringBeforeLast(':', ""); val port = address.substringAfterLast(':').toIntOrNull()
-                    if (host.isEmpty() || port == null || port !in 1..65535) Toast.makeText(ctx, "Type it as address:port, for example 192.168.1.20:7777", Toast.LENGTH_LONG).show()
+                    if (host.isEmpty() || port == null || port !in 1..65535) Toast.makeText(ctx, "Type it as address:port, for example $ADDRESS_EXAMPLE", Toast.LENGTH_LONG).show()
                     else wifi.links.connectManually(host, port)
                 }
                 if (wifi.links.manual != null) GhostButton("Stop") { wifi.links.stopManual() }

@@ -91,9 +91,16 @@ internal class Llama private constructor(private val process: Process, internal 
             val llama = Llama(process, port, key, said)
             try {
                 val end = System.nanoTime() + LOAD_S * 1_000_000_000L
+                var ours = false // once the port is seen held by our own engine it can't be taken while the engine holds it, so this is checked once
                 while (true) {
                     if (!process.isAlive) throw IOException("The AI engine stopped while loading the model. " + said.last())
-                    if (llama.loaded()) return llama
+                    // Something is listening: confirm it is our own engine before the key is ever sent (loaded() carries it),
+                    // in case another local program grabbed the port between the free-port pick above and the engine's bind.
+                    if (!ours && llama.bound()) {
+                        if (!llama.ownsPort()) throw IOException("Another program on this computer took the AI engine's address.")
+                        ours = true
+                    }
+                    if (ours && llama.loaded()) return llama
                     if (System.nanoTime() > end) throw IOException("The model took too long to load.")
                     Thread.sleep(200)
                 }
@@ -121,6 +128,18 @@ internal class Llama private constructor(private val process: Process, internal 
             if (!p.waitFor(30, TimeUnit.SECONDS)) { p.destroyForcibly(); return null }
             out.lines().firstOrNull { it.contains("version", ignoreCase = true) }?.trim()?.take(200).takeIf { p.exitValue() == 0 }
         }.getOrNull()
+
+        /** The process ids listening on 127.0.0.1:[port]; null when this computer can't be asked, empty when nothing listens yet. */
+        internal fun listenersOn(port: Int): Set<Long>? = runCatching {
+            val cmd = if (TitleBar.onWindows)
+                listOf("powershell", "-NoProfile", "-NonInteractive", "-Command",
+                    "Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess")
+            else listOf("lsof", "-nP", "-iTCP:$port", "-sTCP:LISTEN", "-t")
+            val p = ProcessBuilder(cmd).start().also { it.outputStream.close() }
+            val out = p.inputStream.bufferedReader().readText(); p.errorStream.readBytes()
+            if (!p.waitFor(5, TimeUnit.SECONDS)) { p.destroyForcibly(); return@runCatching null }
+            out.lines().mapNotNull { it.trim().toLongOrNull() }.toSet()
+        }.getOrNull()
     }
 
     /** The last lines the engine printed, kept in memory only, for the message when it fails to start. */
@@ -143,6 +162,16 @@ internal class Llama private constructor(private val process: Process, internal 
 
     private fun loaded(): Boolean = runCatching { http.newCall(request("/health").build()).execute().use { it.code == 200 } }.getOrDefault(false)
 
+    /** True once something is listening on the engine's port — a keyless TCP probe, so no key is sent to decide it. */
+    private fun bound(): Boolean = runCatching {
+        java.net.Socket().use { it.connect(java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), port), 200); true }
+    }.getOrDefault(false)
+
+    /** True unless some OTHER process holds the engine's port (which would be handed the key and the questions). A computer
+     *  that can't be asked (no lsof or PowerShell) is trusted; it does not see another user's process, so this mainly stops
+     *  a same-user program (which could in any case read the key from `ps`), the case that matters most. */
+    private fun ownsPort(): Boolean = listenersOn(port)?.all { it == process.pid() } ?: true
+
     /**
      * Asks [question] after [history] (pairs of who, "user" or "assistant", and what they said) under the [system]
      * instructions. [onText] gets the answer so far as it grows. Returns the whole answer; throws if the engine fails.
@@ -154,6 +183,7 @@ internal class Llama private constructor(private val process: Process, internal 
         messages.put(JSONObject().put("role", "user").put("content", question))
         val body = JSONObject().put("messages", messages).put("stream", true).put("max_tokens", maxTokens)
             .put("temperature", 0.7).put("top_k", 40).put("top_p", 0.95)
+        if (!ownsPort()) throw IOException("The AI engine's address is no longer held by its own engine; the question was not sent.")
         val c = http.newCall(request("/v1/chat/completions").post(body.toString().toRequestBody(JSON)).build())
         call = c
         val text = StringBuilder(); var cut = false

@@ -113,14 +113,18 @@ object MeshEngine {
     /** A packet opened with one of [Keys]: not shown before its signature is checked (spec "Signatures"). */
     private sealed class Seen {
         class Msg(val m: Message, val k: Keys, val o: GroupCrypto.Opened, val fromHistory: Boolean = false) : Seen()
-        class Receipt(val r: Message, val k: Keys, val o: GroupCrypto.Opened) : Seen()
+        class Receipt(val r: Message, val k: Keys, val o: GroupCrypto.Opened, val name: String = "") : Seen()
         class Intro(val k: Keys, val id: String, val pub: ByteArray, val key: java.security.PublicKey, val enc: ByteArray, val name: String, val ts: Long, val pq: ByteArray?) : Seen()
         class NewKey(val k: Keys, val o: GroupCrypto.Opened, val r: Rekey, val packetId: String, val door: Door) : Seen()
         object Forged : Seen() // an introduction that doesn't hold up: like a packet nobody can open
     }
 
-    /** A message or receipt from a member whose public key isn't known yet; checked when the introduction comes. */
-    private class Pending(val k: Keys, val o: GroupCrypto.Opened, val receipt: Message?)
+    /**
+     * A message or receipt from a member whose public key isn't known yet; checked when the introduction comes.
+     * [row]: for a message, the chat row it is shown as (its store name) so the rescan binds its check to that row and
+     * not to the bare packet id, which another packet may share; null for a receipt (receipts have no row).
+     */
+    private class Pending(val k: Keys, val o: GroupCrypto.Opened, val receipt: Message?, val row: String? = null)
     /** What waits for a key, each group and the Public channel apart ([KeyWait]); guarded by the messages lock. */
     private val unchecked = KeyWait<Keys, Pending>()
     private class Waiting(val from: String, val text: String, val photo: ByteArray?)
@@ -855,7 +859,7 @@ object MeshEngine {
                     is Seen.Intro -> { if (x.id == x.k.me) ownReceipts += p.id; learn(x.k, x.id, x.pub, x.key, x.enc, x.name, x.ts, x.pq); if (x.k.isPublic) StoreCap.Kind.PUBLIC else doorKind(x.k, x.id, true) }
                     is Seen.NewKey -> { val ok = signed(x); if (x.o.message.sender == x.k.me && ok) ownReceipts += p.id; acceptRekey(x); doorKind(x.k, x.o.message.sender, ok) }
                     is Seen.Msg -> { opened += if (x.m.id == name) x else Seen.Msg(x.m.copy(id = name), x.k, x.o, x.fromHistory); if (x.m.public) StoreCap.Kind.PUBLIC else StoreCap.Kind.GROUP }
-                    is Seen.Receipt -> { opened += x; rIds += p.id; StoreCap.Kind.GROUP }
+                    is Seen.Receipt -> { opened += Seen.Receipt(x.r, x.k, x.o, name); rIds += p.id; StoreCap.Kind.GROUP }
                     else -> StoreCap.Kind.UNREADABLE
                 }
                 idx[name] = StoreCap.Entry(name, p.ts, 18 + p.cipher.size, kind)
@@ -867,13 +871,13 @@ object MeshEngine {
         for (x in opened.sortedBy { it is Seen.Msg && it.m.id.length > 16 }) when (x) {
             is Seen.Msg -> if (x.m.id.length > 16 && x.m.sender == deviceId) Unit else when (check(x.k, x.o, x.fromHistory)) {
                 true -> { msgs += x.m; marks[x.m.id] = x.o.mark; if (x.m.sender == deviceId) { own += x.m.id; if (!x.m.public) sent += x.k.id to x.m.id }; if (!x.fromHistory) remember(x.m.id, x.k, x.o); if (x.o.leaf != null) { x.o.leaf?.forget(); spent += x.k } }
-                null -> { msgs += x.m.copy(verified = false); marks[x.m.id] = x.o.mark; waiting += Pending(x.k, x.o, null); if (!x.fromHistory) remember(x.m.id, x.k, x.o) }
+                null -> { msgs += x.m.copy(verified = false); marks[x.m.id] = x.o.mark; waiting += Pending(x.k, x.o, null, x.m.id); if (!x.fromHistory) remember(x.m.id, x.k, x.o) }
                 false -> idx[x.m.id]?.let { e -> idx[e.id] = StoreCap.Entry(e.id, e.ts, e.size, StoreCap.Kind.UNREADABLE) }
             }
             is Seen.Receipt -> when (check(x.k, x.o)) {
                 true -> { recs += x.k.id to x.r; if (x.r.sender == deviceId) ownReceipts += x.r.id }
                 null -> waiting += Pending(x.k, x.o, x.r)
-                false -> {}
+                false -> idx[x.name]?.let { e -> idx[e.id] = StoreCap.Entry(e.id, e.ts, e.size, StoreCap.Kind.UNREADABLE) } // a forged receipt is not the group's own, like a message that doesn't check (mirrors the line above)
             }
             else -> {}
         }
@@ -908,7 +912,7 @@ object MeshEngine {
         // A message waits only if its row was made just now from the stored packet: a row that was there already may show another packet with that id.
         for (w in l.pending) {
             if (w.receipt != null) unchecked.receipt(w.o.key, w.k, w.o.message.sender, w)
-            else unchecked.message(w.o.key, w.k, w.o.message.sender, w.o.message.id, w.o.message.id in added, w)
+            else { val row = w.row ?: w.o.message.id; unchecked.message(w.o.key, w.k, w.o.message.sender, row, row in added, w) } // bind to the row it is shown as (its store name), not the shared packet id
         }
         index.putAll(l.index) // read with the newest keys: a packet may have become readable
         indexBytes = index.values.sumOf { it.size.toLong() }
@@ -1124,9 +1128,10 @@ object MeshEngine {
                     }
                 }
                 is Seen.Receipt -> {
-                    save(p, StoreCap.Kind.GROUP)
+                    val ok = check(x.k, x.o)
+                    save(p, StoreCap.received(ok)) // classed by its signature, like a message: UNREADABLE until it checks, so junk receipts can't push real messages out
                     synchronized(ids) { receiptIds.add(p.id) }
-                    when (check(x.k, x.o)) {
+                    when (ok) {
                         true -> {
                             deliveries.add(x.k.id, x.r)
                             val confirmed = Receipt.ids(x.r.text); val mineNow = synchronized(ids) { confirmed.count { it in mine } }

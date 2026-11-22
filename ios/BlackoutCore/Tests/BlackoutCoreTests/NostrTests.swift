@@ -126,6 +126,21 @@ final class NostrTests: XCTestCase {
         XCTAssertEqual(again.end(p2.subId, complete: true, now: now)?.until, 4) // a full second: step past it
     }
 
+    /// A hostile relay that dates every event at Int64.min must not crash the catch-up: the old code computed
+    /// `oldest - 1` and trapped on the second such page, which crashed the app on every launch. Same as Android's
+    /// catchUpSurvivesHostileTimestamps.
+    func testCatchUpSurvivesHostileTimestamps() throws {
+        let now: Int64 = 2_000_000
+        let cu = CatchUp(relay: "wss://r", since: RelaySince()); cu.add([0x0001])
+        let p1 = try XCTUnwrap(cu.next(now: now))
+        let evt = #"["EVENT","\#(p1.subId)",{"id":"\#(String(repeating: "ab", count: 32))","pubkey":"\#(String(repeating: "cd", count: 32))","created_at":-9223372036854775808,"kind":\#(Nostr.kind),"tags":[],"content":""}]"#
+        for _ in 0..<Nostr.page { cu.frame(evt) } // a full page, parsed as a relay would send it
+        let p2 = try XCTUnwrap(cu.end(p1.subId, complete: true, now: now))
+        XCTAssertGreaterThanOrEqual(p2.until ?? 0, 0) // the date is floored, so the next page asks for a sane `until`
+        for _ in 0..<Nostr.page { cu.frame(evt) } // a second full page under the same tag: must not trap on oldest - 1
+        _ = cu.end(p2.subId, complete: true, now: now)
+    }
+
     private func pkt(_ n: Int, _ ts: Int64, _ cipher: Data? = nil) -> Packet {
         Packet(id: "a8d0" + String(format: "%012x", n), ts: ts, ttl: 15, cipher: cipher ?? Data([UInt8(truncatingIfNeeded: n)]))
     }

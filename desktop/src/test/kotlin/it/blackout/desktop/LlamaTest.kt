@@ -94,6 +94,17 @@ class LlamaTest {
         } finally { Llama.command = commandBefore; if (before == null) System.clearProperty("compose.application.resources.dir") else System.setProperty("compose.application.resources.dir", before) }
     }
 
+    /** The engine refuses to hand its key and questions to whoever grabbed its port: it checks who really holds it. */
+    @Test fun itSeesWhoHoldsThePort() {
+        java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { held ->
+            val pids = Llama.listenersOn(held.localPort)
+            org.junit.Assume.assumeTrue("this computer can't be asked who holds a port (no lsof or PowerShell)", pids != null)
+            assertTrue("the process holding the port is among the listeners seen", ProcessHandle.current().pid() in pids!!)
+        }
+        val free = java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { it.localPort } // closed again
+        assertEquals(emptySet<Long>(), Llama.listenersOn(free) ?: emptySet<Long>())
+    }
+
     @Test fun thinkingOutLoudIsCutFromWhatIsShown() {
         assertEquals("Boil it.", Llama.shown("<think>water... unsafe?</think>\n\nBoil it."))
         assertEquals("", Llama.shown("<think>still thinking"))

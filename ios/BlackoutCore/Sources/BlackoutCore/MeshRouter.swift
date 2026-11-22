@@ -287,6 +287,12 @@ public enum StoreCap {
     /// wrote it. `member`: it is signed by someone in the group (`Keyring.inGroup`).
     public static func door(mine: Bool, member: Bool) -> Kind { mine || member ? .group : .door }
 
+    /// The class of a message or receipt a saved group's key opened, by its signature (`Engine.check`): the group's own
+    /// (`.group`), or `.isPublic` on the Everyone channel, once it checks (true) or while its sender's key is still
+    /// awaited (nil) — but `.unreadable` when the signature is forged or from a non-member (false), so that, like any
+    /// packet nobody can open, it is the first to go and never pushes a real message out. Receipts are never public.
+    public static func received(_ ok: Bool?, public isPublic: Bool = false) -> Kind { ok == false ? .unreadable : (isPublic ? .isPublic : .group) }
+
     /// True once the `.door` packets take twice their room: the store is then trimmed without waiting for the cap.
     public static func doorFull(count: Int, bytes: Int) -> Bool { count > 2 * doorCount || bytes > 2 * doorBytes }
 

@@ -193,7 +193,10 @@ object Nostr {
     fun dated(text: String): Dated? = runCatching {
         val a = JSONArray(text)
         if (a.getString(0) != "EVENT" || a.length() < 3) return null
-        Dated(a.getString(1), a.getJSONObject(2).optLong("created_at"))
+        // Clamp to >= 0, as received() does: a hostile relay could send created_at = Long.MIN_VALUE, and the catch-up
+        // paging computes `oldest - 1` (Nostr.kt end). Kotlin wraps rather than crashing like the iPhone, but the
+        // wrapped value is a nonsense `until`. A junk event still counts toward the page; only its date is floored.
+        Dated(a.getString(1), a.getJSONObject(2).optLong("created_at").coerceAtLeast(0))
     }.getOrNull()
 
     /** [bytes] bytes of lowercase hex, as NIP-01 writes ids, keys and signatures. */
@@ -379,7 +382,9 @@ object WsLimit {
         b.addInterceptor(noExtensions)
         val tmf = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm()).apply { init(null as java.security.KeyStore?) }
         val tm = tmf.trustManagers.filterIsInstance<javax.net.ssl.X509TrustManager>().first() // the phone's own trust store, as OkHttp's default
-        val tls = javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, arrayOf(tm), null) }.socketFactory
+        // Asked for by version, newest first: Android before 10 has no "TLSv1.3" context. GuardedTls then allows only 1.3 and 1.2 on each socket.
+        val context = try { javax.net.ssl.SSLContext.getInstance("TLSv1.3") } catch (e: java.security.NoSuchAlgorithmException) { javax.net.ssl.SSLContext.getInstance("TLSv1.2") }
+        val tls = context.apply { init(null, arrayOf(tm), null) }.socketFactory
         b.sslSocketFactory(GuardedTls(tls), tm)
         if (plain) b.socketFactory(GuardedPlain)
     }
@@ -403,7 +408,13 @@ object WsLimit {
     }
 
     private class GuardedTls(private val f: javax.net.ssl.SSLSocketFactory) : javax.net.ssl.SSLSocketFactory() {
-        private fun w(s: java.net.Socket): java.net.Socket = GuardedSocket(s as javax.net.ssl.SSLSocket)
+        /** Only TLS 1.3 and 1.2, of what this device has: never an older version, whatever the context turns on by itself. */
+        private fun w(s: java.net.Socket): java.net.Socket {
+            val tls = s as javax.net.ssl.SSLSocket
+            val modern = listOf("TLSv1.3", "TLSv1.2").filter { it in tls.supportedProtocols }
+            if (modern.isNotEmpty()) tls.enabledProtocols = modern.toTypedArray()
+            return GuardedSocket(tls)
+        }
         override fun getDefaultCipherSuites(): Array<String> = f.defaultCipherSuites
         override fun getSupportedCipherSuites(): Array<String> = f.supportedCipherSuites
         override fun createSocket(s: java.net.Socket, h: String, p: Int, auto: Boolean) = w(f.createSocket(s, h, p, auto))
@@ -672,7 +683,7 @@ class CatchUp(private val relay: String, private val since: RelaySince, private 
         if (complete && !throttled) {
             val max = if (c.mailbox == Nostr.PUBLIC_MAILBOX) 1 else Nostr.MAX_PAGES
             val full = count >= Nostr.PAGE
-            val older = if (oldest == c.until) oldest - 1 else oldest // where an older page starts
+            val older = if (oldest == c.until && oldest > Long.MIN_VALUE) oldest - 1 else oldest // where an older page starts (never underflow)
             if (owed) since.owe(relay, c.mailbox, c.since, if (full) older else c.since) // a page that isn't full was the last of it
             else {
                 if (full && pages < max) return page(c.mailbox, c.since, older, now)

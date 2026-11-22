@@ -129,6 +129,20 @@ class NostrTest {
         assertEquals(4L, repeatSecond.end(p2.subId, true, now)!!.until) // a full second: step past it
     }
 
+    /** Same as the iPhone's testCatchUpSurvivesHostileTimestamps: a relay dating every event at Long.MIN_VALUE must not
+     * make the paging compute a wrapped (negative) `until`. On the iPhone the same input crashed the app on launch. */
+    @Test fun catchUpSurvivesHostileTimestamps() {
+        val now = 2_000_000L
+        val cu = CatchUp("wss://r", RelaySince()); cu.add(listOf(0x0001))
+        val p1 = cu.next(now)!!
+        val evt = """["EVENT","${p1.subId}",{"id":"${"ab".repeat(32)}","pubkey":"${"cd".repeat(32)}","created_at":-9223372036854775808,"kind":1,"tags":[],"content":""}]"""
+        repeat(Nostr.PAGE) { cu.frame(evt) } // a full page, parsed as a relay would send it
+        val p2 = cu.end(p1.subId, true, now)!!
+        assertTrue("the next page's until is floored, not a wrapped negative", p2.until!! >= 0)
+        repeat(Nostr.PAGE) { cu.frame(evt) } // a second full page under the same tag
+        cu.end(p2.subId, true, now) // must not underflow
+    }
+
     private fun pkt(n: Int, ts: Long, cipher: ByteArray = byteArrayOf(n.toByte())) = Packet("a8d0%012x".format(n), ts, 15, cipher)
 
     /** Same as the iPhone's testBridgedPacketsWaitBeforeTheLookup. */

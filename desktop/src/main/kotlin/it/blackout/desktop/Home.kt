@@ -14,7 +14,12 @@ object Home {
     fun folder(): File {
         val os = System.getProperty("os.name").lowercase(); val user = System.getProperty("user.home")
         val dir = System.getenv("DARKPROOF_HOME")?.takeIf { it.isNotBlank() }?.let(::File) ?: when {
-            "win" in os -> File(System.getenv("APPDATA")?.takeIf { it.isNotBlank() } ?: "$user\\AppData\\Roaming", "DarkProof")
+            // Local, not Roaming: keys and messages must not sync to a company server with a roaming Windows profile.
+            // An install that already has a Roaming folder keeps it, so nobody loses their groups on an update.
+            "win" in os -> {
+                val roaming = File(System.getenv("APPDATA")?.takeIf { it.isNotBlank() } ?: "$user\\AppData\\Roaming", "DarkProof")
+                if (roaming.isDirectory) roaming else File(System.getenv("LOCALAPPDATA")?.takeIf { it.isNotBlank() } ?: "$user\\AppData\\Local", "DarkProof")
+            }
             "mac" in os -> File(user, "Library/Application Support/DarkProof")
             else -> File(System.getenv("XDG_DATA_HOME")?.takeIf { it.isNotBlank() } ?: "$user/.local/share", "darkproof")
         }

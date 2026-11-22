@@ -30,11 +30,10 @@ object Vault {
     @Synchronized private fun key(c: Context): SecretKey {
         keys[c.filesDir]?.let { return it }
         val f = File(c.filesDir, KEY_FILE)
-        val raw = if (f.length() == 32L) f.readBytes() else ByteArray(32).also { SecureRandom().nextBytes(it) }.also { b ->
-            check(!f.exists() || f.length() == 0L) { "vault.key is damaged: what it protects can't be read" } // never replaced silently: that would lose every saved key
-            f.writeBytes(b)
-            runCatching { java.nio.file.Files.setPosixFilePermissions(f.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")) }
-        }
+        // KeyProtect holds the key in the computer's own key store (Keychain, DPAPI, Secret Service) in the real app, so
+        // a copy of this folder alone can't read what the Vault encrypts. It returns null only when there is no key yet;
+        // a present-but-unreadable file throws rather than being silently replaced (that would lose every saved key).
+        val raw = KeyProtect.read(c.filesDir, f) ?: ByteArray(32).also { SecureRandom().nextBytes(it); KeyProtect.write(c.filesDir, f, it) }
         return SecretKeySpec(raw, "AES").also { keys[c.filesDir] = it }
     }
 

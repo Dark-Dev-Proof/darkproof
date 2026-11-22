@@ -196,7 +196,10 @@ public enum Nostr {
     public static func dated(_ text: String) -> (subId: String, createdAt: Int64)? {
         guard let a = array(text), a.count >= 3, a[0] as? String == "EVENT",
               let sub = a[1] as? String, let e = a[2] as? [String: Any] else { return nil }
-        return (sub, (e["created_at"] as? NSNumber)?.int64Value ?? 0)
+        // Clamp to >= 0, as `received()` does above: a hostile relay could send created_at = Int64.min, and the catch-up
+        // paging below computes `oldest - 1`, which traps on Int64.min and crashes the app on every launch. A junk event
+        // still counts toward the page (so a relay can't end a catch-up early); only its date is floored.
+        return (sub, Swift.max(0, (e["created_at"] as? NSNumber)?.int64Value ?? 0))
     }
 
     /// `bytes` bytes of lowercase hex, as NIP-01 writes ids, keys and signatures.
@@ -480,7 +483,7 @@ public final class CatchUp {
         if complete && !throttled {
             let max = c.mailbox == Nostr.publicMailbox ? 1 : Nostr.maxPages
             let full = count >= Nostr.page
-            let older = oldest == c.until ? oldest - 1 : oldest // where an older page starts
+            let older = (oldest == c.until && oldest > Int64.min) ? oldest - 1 : oldest // where an older page starts (never underflow)
             if owed { since.owe(relay, c.mailbox, from: c.since, until: full ? older : c.since) } // a page that isn't full was the last of it
             else {
                 if full && pages < max { return page(c.mailbox, from: c.since, until: older, now: now) }

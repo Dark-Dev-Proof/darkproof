@@ -18,7 +18,8 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/> <!-- "Lock DarkProof", only if it is turned on -->
     <uses-permission android:name="android.permission.VIBRATE"/> <!-- help alerts while the app is open -->
     <!-- Nothing goes into a backup or a phone-to-phone transfer: group codes and messages stay on this phone. -->
-    <application android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/no_backup" android:label="DarkProof" android:icon="@mipmap/ic_launcher" android:theme="@android:style/Theme.Material.NoActionBar" android:largeHeap="true">
+    <!-- usesCleartextTraffic="false": nothing leaves the app unencrypted over HTTP or WebSocket. Debug builds allow it to 127.0.0.1 only, for the mock relay (src/debug). -->
+    <application android:usesCleartextTraffic="false" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/no_backup" android:label="DarkProof" android:icon="@mipmap/ic_launcher" android:theme="@android:style/Theme.Material.NoActionBar" android:largeHeap="true">
         <uses-native-library android:name="libOpenCL.so" android:required="false"/>
         <!-- The QR scanner (Join) comes with the app from Google Play, so it works offline later. -->
         <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="barcode_ui"/>

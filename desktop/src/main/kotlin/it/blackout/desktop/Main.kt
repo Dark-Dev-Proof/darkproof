@@ -42,6 +42,7 @@ fun main(args: Array<String>) {
     if (System.getProperty("os.name").orEmpty().startsWith("Mac")) System.setProperty("apple.awt.application.appearance", "NSAppearanceNameDarkAqua")
     val test = "--window-test" in args // the real window, photographed: see WindowTest
     if (test) WifiLink.discovery = null // a test's messages are not for real devices: it neither looks for them nor announces itself
+    it.blackout.mesh.KeyProtect.secureStore = !test // the real app keeps the Vault key in the computer's own key store; tests stay on a plain file
     window(test)
 }
 
