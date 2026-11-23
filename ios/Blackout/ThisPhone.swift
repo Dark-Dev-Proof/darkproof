@@ -171,7 +171,7 @@ struct EraseScreen: View {
                     Button("Cancel") { dismiss() }.buttonStyle(SecondaryButton()).disabled(erasing)
                     HoldToErase(erasing: erasing) {
                         // With the switch on: the notes first, at most 15 s. Then keys and files go at once, then the engine
-                        // and every link stop, then everything is deleted again, then "This phone is empty". It always
+                        // and every link stop, then everything is deleted again, then "DarkProof is empty on this phone". It always
                         // starts: a group being left right now stops where it is, and the erase goes on (`Wipe`).
                         erasing = Wipe.eraseTellingFirst(tell)
                         if !erasing { attempt += 1 }

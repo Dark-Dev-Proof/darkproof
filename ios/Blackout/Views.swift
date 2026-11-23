@@ -908,7 +908,7 @@ struct ChatView: View {
                     // Item 9: another member's card promises an alert only if this phone keeps that clock (the message
                     // checked, rule Q1 passed, newest, not cancelled), and says so when alerts are off for DarkProof.
                     let keeping = mine || QuietBook.keeps(card: clock, verified: m.verified, state: engine.quietState(m.group, m.sender, now: Engine.quietNow()))
-                    let alertsOn = [.authorized, .provisional, .ephemeral].contains(notifier.status)
+                    let alertsOn = !notifier.statusKnown || [.authorized, .provisional, .ephemeral].contains(notifier.status) // no "Alerts are off" before iOS answered
                     QuietCard(deadline: clock, name: mine ? nil : (engine.quietName(m.group, m.sender) ?? m.name), time: time, spot: QuietClock.spot(in: m.text),
                               keeping: keeping, alertsOn: alertsOn)
                     if let delivery { StatusLine(time: nil, delivery: delivery).padding(.horizontal, 6).onTapGesture(perform: showReaders) }

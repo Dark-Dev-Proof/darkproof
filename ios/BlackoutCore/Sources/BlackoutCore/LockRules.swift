@@ -54,37 +54,61 @@ public enum SafeAnswer {
     public static func needsUnlock(_ c: CheckIn) -> Bool { c == .safe }
 
     /// How long an answer from an alert keeps DarkProof running in the background for a phone, a radio or a relay to
-    /// take it: iOS may suspend the app as soon as the answer is reported done.
+    /// take it, once written: iOS may suspend the app as soon as the answer is reported done.
     public static let waitSeconds: Double = 20
+
+    /// Siri, the Action button and the Shortcuts app: the whole answer within this many seconds of being asked, since
+    /// iOS limits how long an intent may run and Siri gives up sooner (decision N1, 2026-11-23). No wait for a new
+    /// position (`waitsForFix`), and the wait for a link gets what is left (`waitAfterWritten`).
+    public static let siriSeconds: Double = 10
+
+    /// Where the answer was given: under an alert, or through Siri, the Action button or the Shortcuts app.
+    public enum From: Equatable, Sendable { case alert, siri }
+
+    /// Whether the check-in waits (up to 10 s) for a new position before it is written. From an alert, yes. Through
+    /// Siri, no: a position under 2 minutes old goes with it if the phone has one, else none.
+    public static func waitsForFix(_ f: From) -> Bool { f == .alert }
+
+    /// How long, once written, it waits for a link to take it: `waitSeconds` from an alert; through Siri, what is left
+    /// of `siriSeconds` since it was asked (`askedAgo` seconds ago), never below 0.
+    public static func waitAfterWritten(_ f: From, askedAgo: Double) -> Double {
+        switch f {
+        case .alert: return waitSeconds
+        case .siri: return max(0, siriSeconds - max(0, askedAgo))
+        }
+    }
 
     public enum Outcome: Equatable, Sendable {
         /// A phone, a radio or a relay took it ("Sent").
         case left
-        /// Written, but nothing took it within `waitSeconds`: it waits on this phone.
+        /// Written, but nothing took it in time (`waitAfterWritten`): it waits on this phone and goes out later.
         case waiting
         /// Not written: another check-in was still being written, or DarkProof had stopped.
         case notSent
     }
 
     /// While an answer waits: nil to keep waiting, else how it ended. `handedOff`: a link took it; `elapsed`: seconds
-    /// since it was written.
-    public static func outcome(handedOff: Bool, elapsed: Double) -> Outcome? {
+    /// since it was written; `limit`: how long it may wait (`waitAfterWritten`).
+    public static func outcome(handedOff: Bool, elapsed: Double, limit: Double = waitSeconds) -> Outcome? {
         if handedOff { return .left }
-        return elapsed >= waitSeconds ? .waiting : nil
+        return elapsed >= limit ? .waiting : nil
     }
 
-    /// What the alert says when the answer didn't leave the phone; nil when it did. It never says the group got it.
-    public static func line(_ o: Outcome, _ c: CheckIn) -> String? {
+    /// What the user is told when the answer didn't leave the phone; nil when it did. It never says the group got it.
+    /// `onScreen`: DarkProof is open (a toast, decision N7), so it doesn't say to open it; otherwise an alert.
+    public static func line(_ o: Outcome, _ c: CheckIn, onScreen: Bool = false) -> String? {
         let what = c == .safe ? "“I'm safe”" : "“I need help”"
         switch o {
         case .left: return nil
-        case .waiting: return "\(what) is waiting on this phone. Open DarkProof so it can go."
+        case .waiting: return onScreen ? "\(what) is waiting on this phone. It goes out when a phone or the internet is in reach."
+                                       : "\(what) is waiting on this phone. Open DarkProof so it can go."
         case .notSent: return "\(what) wasn't sent. Open DarkProof to send it."
         }
     }
 
     /// What Siri or the Shortcuts app says once "I'm safe" ended: "Sent “I'm safe” to My group." only once a link took
-    /// it, else the alert's words (`line`). `group`: the group's name, or "your group" with "Lock DarkProof" on.
+    /// it, else the alert's words (`line`, DarkProof not on screen). `group`: the group's name, or "your group" with
+    /// "Lock DarkProof" on.
     public static func said(_ o: Outcome, _ c: CheckIn, group: String) -> String {
         line(o, c) ?? "Sent \(c == .safe ? "“I'm safe”" : "“I need help”") to \(group)."
     }

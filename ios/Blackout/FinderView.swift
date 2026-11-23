@@ -10,7 +10,7 @@ final class FinderSession: ObservableObject {
     @Published private(set) var role: BleLink.RssiRole = .none
     @Published private(set) var otherWay = false
     @Published private(set) var lastDbm: Int?
-    let node: String
+    private(set) var node: String
     private weak var engine: Engine?
     private var meter = FinderMeter()
     private var second = 0
@@ -27,7 +27,14 @@ final class FinderSession: ObservableObject {
 
     init(engine: Engine, node: String) { self.engine = engine; self.node = node }
 
-    func start() {
+    /// Starts the readings; `to`: the link to look for now, when a new "I need help" named another one (the readings so
+    /// far were of the old link, and start over).
+    func start(_ to: String? = nil) {
+        if let to, to != node {
+            stop()
+            node = to; meter = FinderMeter(); second = 0; pending = nil; lastDbm = nil
+            reading = FinderMeter.Reading(band: .notInReach, trend: nil, smoothed: nil)
+        }
         guard timer == nil else { return }
         UIApplication.shared.isIdleTimerDisabled = true // the searcher walks with the screen on
         #if DEBUG
@@ -103,7 +110,10 @@ struct FinderSheet: View {
         }
         .onAppear { if FinderWords.searching(now) { session.start() } else { over = true } }
         .onDisappear { session.stop() }
-        .onChange(of: FinderWords.searching(p)) { _, on in if !on { over = true; session.stop() } }
+        // Over when the latest check-in ends it; a new "I need help" with the note starts it again (with its link).
+        .onChange(of: FinderWords.looksFor(p)) { _, node in
+            if let node { over = false; session.start(node) } else { over = true; session.stop() }
+        }
     }
 
     @ViewBuilder private func live(_ p: Person, _ name: String) -> some View {
