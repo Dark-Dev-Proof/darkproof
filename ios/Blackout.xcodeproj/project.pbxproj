@@ -286,7 +286,7 @@
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "To unlock DarkProof when you turn on its lock.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "DarkProof connects to nearby phones over Wi-Fi to exchange messages, even with no internet.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "If you choose, DarkProof adds your position to your check-ins, which only your group can read, and to places you share, which everyone can read. It also shows how far friends and places are.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "To record a voice note for your group while you hold the mic button. Nothing is recorded at any other time.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "To record a voice note for your group, from when you press the mic button until the note is sent or cancelled. Nothing is recorded at any other time.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "To save photos from your group to your library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -325,7 +325,7 @@
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "To unlock DarkProof when you turn on its lock.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "DarkProof connects to nearby phones over Wi-Fi to exchange messages, even with no internet.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "If you choose, DarkProof adds your position to your check-ins, which only your group can read, and to places you share, which everyone can read. It also shows how far friends and places are.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "To record a voice note for your group while you hold the mic button. Nothing is recorded at any other time.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "To record a voice note for your group, from when you press the mic button until the note is sent or cancelled. Nothing is recorded at any other time.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "To save photos from your group to your library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;

@@ -258,4 +258,41 @@ class VoiceNotesTest {
         assertEquals(20, l.size); assertEquals(0f, l[0]); assertEquals(1f, l.max())
         assertEquals(20, Voice.levels(ShortArray(0)).size)
     }
+
+    // MARK: - Seek, speed and the record lock (the screens; the same cases as the iPhone's VoiceTests)
+
+    @Test fun theSpeedChipGoesRoundAndIsKeptOnlyIfKnown() {
+        assertEquals(1.5f, Voice.nextSpeed(1f)); assertEquals(2f, Voice.nextSpeed(1.5f)); assertEquals(1f, Voice.nextSpeed(2f))
+        assertEquals(1f, Voice.nextSpeed(3f)) // from an unknown speed, back to 1×
+        assertEquals(1f, Voice.speedOf(0f)); assertEquals(1f, Voice.speedOf(1.25f)); assertEquals(2f, Voice.speedOf(2f))
+        assertEquals(listOf("1×", "1.5×", "2×"), Voice.SPEEDS.map { Voice.speedLabel(it) })
+        assertEquals(listOf("Playback speed, normal", "Playback speed, 1.5 times", "Playback speed, 2 times"), Voice.SPEEDS.map { Voice.speedSpoken(it) })
+    }
+
+    @Test fun aFingerOnTheBarsSeeksAndAScreenReaderStepsByTenths() {
+        assertEquals(0f, Voice.seekAt(-5f, 100f)); assertEquals(0.25f, Voice.seekAt(25f, 100f)); assertEquals(1f, Voice.seekAt(140f, 100f))
+        assertEquals(0f, Voice.seekAt(10f, 0f))
+        assertEquals(0.1f, Voice.stepped(0f, true)); assertEquals(0f, Voice.stepped(0f, false)); assertEquals(1f, Voice.stepped(1f, true))
+        assertEquals(0.5f, Voice.stepped(0.43f, true)); assertEquals(0.3f, Voice.stepped(0.43f, false))
+        var at = 0f; repeat(12) { at = Voice.stepped(at, true) }; assertEquals(1f, at)
+        assertEquals("0 of 7 seconds", Voice.positionSpoken(0f, 350))
+        assertEquals("3 of 7 seconds", Voice.positionSpoken(0.43f, 350))
+        assertEquals("7 of 7 seconds", Voice.positionSpoken(1f, 340)) // 6.8 s shown as 7: the end says the whole length
+        assertEquals("1 of 1 second", Voice.positionSpoken(1f, 50))
+    }
+
+    @Test fun slidingUpLocksSlidingAwayCancels() {
+        val w = 52f; val h = 52f
+        assertEquals(Voice.Slide.HOLD, Voice.slide(26f, 26f, w, h))
+        assertEquals(Voice.Slide.HOLD, Voice.slide(26f, -71f, w, h))
+        assertEquals(Voice.Slide.LOCK, Voice.slide(26f, -72f, w, h))
+        assertEquals(Voice.Slide.LOCK, Voice.slide(-35f, -80f, w, h)) // a thumb drifts sideways on its way up
+        assertEquals(Voice.Slide.CANCEL, Voice.slide(-41f, -80f, w, h))
+        assertEquals(Voice.Slide.CANCEL, Voice.slide(-25f, 10f, w, h))
+        assertEquals(Voice.Slide.CANCEL, Voice.slide(w + 25f, 10f, w, h))
+        assertEquals(Voice.Slide.CANCEL, Voice.slide(26f, h + 25f, w, h))
+        assertEquals(Voice.Slide.HOLD, Voice.slide(-24f, h + 24f, w, h))
+        assertEquals(Voice.Slide.LOCK, Voice.slide(52f, -144f, 104f, 104f, dp = 2f)) // in pixels at 2 px per dp
+        assertEquals(0f, Voice.lift(10f)); assertEquals(0.5f, Voice.lift(-36f)); assertEquals(1f, Voice.lift(-200f))
+    }
 }
