@@ -46,6 +46,10 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         private const val SWEEP_MS = 5_000L
         private const val ROTATE_MS = 30_000L      // at the limit, at most one settled link gives way this often
         private const val STALE_MS = 5_000L    // at the link limit, a link with no HELLO this old makes room
+        private const val RSSI_EVERY_MS = 1_000L   // Finder: one signal read a second per link (rule F13)
+        private const val RSSI_WAIT_MS = 2_000L    // a signal read with no answer this long gives the link's slot back
+        private const val PROBE_WAIT_MS = 5_000L   // the client on the other phone's connection must be up by then
+        private const val RESCAN_MS = 10_000L      // searches restart at most this often (Android ignores an app that restarts too often)
         fun owns(peer: String) = peer.startsWith(PREFIX)
         // Status notes, in plain words (Home and Connections show them).
         private const val OFF = "Bluetooth is off"
@@ -66,6 +70,8 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         var busy = false       // a write or notification is in flight
         val createdAt = SystemClock.elapsedRealtime()
         var openedAt = 0L      // when setup finished: the other side's HELLO must come within 10 s
+        var wantRssi = false   // Finder: read the signal when the one GATT operation slot is free (rule F13)
+        var rssiAt = 0L        // when a signal read went out and holds the slot (0: none)
         val out = BleProtocol.Outbox()                // capped: oldest packet frames go first
         val reader = BleProtocol.Reader()
         val gate = BleProtocol.HelloGate()            // repeated HELLOs (spec "Restarts")
@@ -93,14 +99,118 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         if (note.isNotEmpty()) " · $note" else ""
 
     /** Battery saver: a slower Bluetooth search (MeshEngine.setBatterySaver). */
-    fun setSaver(on: Boolean) = h.post {
-        if (!running) return@post
-        val sc = manager?.adapter?.bluetoothLeScanner ?: return@post
-        try { sc.stopScan(scanCb); sc.startScan(scanFilters(), scanSettings(on), scanCb) } catch (e: RuntimeException) { set(SCAN_FAILED) }
-    }
+    fun setSaver(on: Boolean) = h.post { saver = on; rescan() }
+    private var saver: Boolean? = null // null: as the setting says
     private fun scanFilters() = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(service)).build())
-    private fun scanSettings(saver: Boolean = MeshEngine.batterySaver(ctx)) =
-        ScanSettings.Builder().setScanMode(if (saver) ScanSettings.SCAN_MODE_LOW_POWER else ScanSettings.SCAN_MODE_BALANCED).build()
+    /** The search's speed: fastest while Finder is open (rule F16), slowest with the battery saver, else balanced. */
+    private fun scanSettings() = ScanSettings.Builder().setScanMode(when {
+        rssiNode != null -> ScanSettings.SCAN_MODE_LOW_LATENCY
+        saver ?: MeshEngine.batterySaver(ctx) -> ScanSettings.SCAN_MODE_LOW_POWER
+        else -> ScanSettings.SCAN_MODE_BALANCED
+    }).build()
+
+    /**
+     * Starts the search again with [scanSettings]. Android lets an app start a search only about five times in 30 s and
+     * then quietly finds nothing for a while, so restarts are at least [RESCAN_MS] apart: a later one waits its turn and
+     * then uses the settings as they are by then.
+     */
+    private var rescannedAt = 0L
+    private var rescanQueued = false
+    private fun rescan() {
+        if (!running) return
+        val wait = rescannedAt + RESCAN_MS - SystemClock.elapsedRealtime()
+        if (wait > 0) { if (!rescanQueued) { rescanQueued = true; h.postDelayed({ rescanQueued = false; rescan() }, wait) }; return }
+        val sc = manager?.adapter?.bluetoothLeScanner ?: return
+        rescannedAt = SystemClock.elapsedRealtime()
+        try { sc.stopScan(scanCb); sc.startScan(scanFilters(), scanSettings(), scanCb) } catch (e: RuntimeException) { set(SCAN_FAILED) }
+    }
+
+    // ---- Finder: signal strength of the link to one phone (round 2c) ---------------------------
+
+    private var rssiNode: String? = null
+    private var rssiOut: ((Int) -> Unit)? = null
+    @Volatile private var role = FinderRole.NONE
+    /** Rule 5: a read-only GATT client on a connection the other phone dialed. Never discovers services, writes nothing, sends no HELLO: not a link. */
+    private var probe: BluetoothGatt? = null
+    private var probeAddress: String? = null
+    private var probeUp = false
+    private var probeFailed: String? = null // the address the client could not be opened on, for as long as Finder stays open
+
+    /**
+     * Finder: reads the signal of the link to the phone whose link id is [node] about once a second and hands each reading
+     * (dBm, raw) to [onReading] on the Bluetooth thread, until [stopRssi]. On a link this phone dialed it reads on its own
+     * GATT client, between the link's writes (rule F13); on a link the other phone dialed it opens a read-only client on
+     * the same connection (rule 5), closed again by [stopRssi]. Nothing is read, kept or sent about any other phone.
+     * The search runs at its fastest meanwhile (rule F16). Any thread.
+     */
+    fun startRssi(node: String, onReading: (Int) -> Unit) = h.post {
+        if (rssiNode == null) h.postDelayed(rssiTicker, 0)
+        val changed = rssiNode != node
+        rssiNode = node; rssiOut = onReading
+        if (changed) { closeProbe(); probeFailed = null; rescan() }
+    }
+
+    /** Finder closed: no more readings, the client on the other phone's connection closes, the search slows down again. Any thread. */
+    fun stopRssi() = h.post {
+        if (rssiNode == null) return@post
+        rssiNode = null; rssiOut = null; probeFailed = null
+        h.removeCallbacks(rssiTicker); closeProbe(); role = FinderRole.NONE
+        links.values.forEach { it.wantRssi = false }
+        rescan()
+    }
+
+    /** How the signal is being read right now (Finder's debug line). Any thread. */
+    fun rssiRole(): FinderRole = role
+
+    private val rssiTicker: Runnable = Runnable { rssiTick() }
+
+    private fun rssiTick() {
+        val node = rssiNode ?: return
+        val mine = links.values.filter { it.up && it.remote == node }
+        val central = mine.firstOrNull { it.central }
+        val peripheral = mine.firstOrNull { !it.central }
+        when {
+            central != null -> { closeProbe(); role = FinderRole.CENTRAL; central.wantRssi = true; pump(central) }
+            peripheral == null -> { closeProbe(); role = FinderRole.NONE }
+            probeFailed == peripheral.address -> role = FinderRole.FAILED
+            probe == null || probeAddress != peripheral.address -> openProbe(peripheral)
+            probeUp -> { role = FinderRole.CLIENT; if (!runCatching { probe?.readRemoteRssi() == true }.getOrDefault(false)) Log.d(TAG, "finder: client busy") }
+        }
+        h.postDelayed(rssiTicker, RSSI_EVERY_MS)
+    }
+
+    private fun reading(dbm: Int) { if (rssiNode != null) rssiOut?.invoke(dbm) }
+
+    /** Rule 5: a GATT client of this app on the connection the other phone made, only to read the signal. */
+    private fun openProbe(l: Link) {
+        closeProbe()
+        val d = l.device ?: return
+        probeAddress = l.address; probeUp = false; role = FinderRole.CLIENT
+        probe = try { d.connectGatt(ctx, false, probeCb, BluetoothDevice.TRANSPORT_LE, BluetoothDevice.PHY_LE_1M_MASK, h) } catch (e: RuntimeException) { null }
+        if (probe == null) { probeFailed = l.address; role = FinderRole.FAILED; return }
+        val g = probe
+        h.postDelayed({ if (probe === g && !probeUp) { Log.d(TAG, "finder: no client on ${l.id}'s connection"); probeFailed = l.address; role = FinderRole.FAILED; closeProbe() } }, PROBE_WAIT_MS)
+    }
+
+    /** Closes the client only (never disconnect(): the radio connection is the other phone's link and stays). */
+    private fun closeProbe() {
+        probe?.let { runCatching { it.close() } }
+        probe = null; probeUp = false
+    }
+
+    private val probeCb = object : BluetoothGattCallback() { // delivered on h (see connectGatt)
+        override fun onConnectionStateChange(g: BluetoothGatt, st: Int, ns: Int) {
+            if (g !== probe) { runCatching { g.close() }; return }
+            if (st == BluetoothGatt.GATT_SUCCESS && ns == BluetoothProfile.STATE_CONNECTED) { probeUp = true; return }
+            // It never came up on this phone: say so for as long as Finder is open. One that was up and went (the link
+            // dropped) is simply opened again if the link comes back.
+            if (!probeUp) { probeFailed = probeAddress; role = FinderRole.FAILED }
+            closeProbe()
+        }
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, st: Int) {
+            if (g === probe && st == BluetoothGatt.GATT_SUCCESS) reading(rssi)
+        }
+    }
 
     fun start() {
         h.post {
@@ -138,6 +248,7 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         svc.addCharacteristic(tx)
         s.addService(svc) // advertising starts once the service is added
         try { // throws if Bluetooth turns off in the meantime
+            rescannedAt = SystemClock.elapsedRealtime()
             a.bluetoothLeScanner?.startScan(scanFilters(), scanSettings(), scanCb)
         } catch (e: RuntimeException) { set(SCAN_FAILED) }
     }
@@ -148,6 +259,7 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         val a = manager?.adapter
         try { a?.bluetoothLeScanner?.stopScan(scanCb) } catch (_: Exception) { }
         try { a?.bluetoothLeAdvertiser?.stopAdvertising(advCb) } catch (_: Exception) { }
+        closeProbe(); probeFailed = null
         links.values.toList().forEach { drop(it) }
         server?.close(); server = null; tx = null
     }
@@ -235,6 +347,14 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
             if (st != BluetoothGatt.GATT_SUCCESS) { drop(l); return }
             l.busy = false; pump(l)
         }
+        /** Finder's signal read on a link this phone dialed: like a write's completion, it frees the link's one slot (rule F13). */
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, st: Int) {
+            val l = linkOf(g) ?: return
+            if (l.rssiAt == 0L) return // the slot was given back already: it holds a write now
+            l.rssiAt = 0L; l.busy = false
+            if (st == BluetoothGatt.GATT_SUCCESS) reading(rssi)
+            pump(l)
+        }
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, v: ByteArray) {
             linkOf(g)?.let { onChunk(it, v) }
         }
@@ -315,9 +435,22 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         if (packets > 0 && l.up) MeshEngine.router?.room(l.id, bytes, packets)
     }
 
-    /** Sends the next chunk once the previous write or notification has completed. */
+    /**
+     * Sends the next chunk once the previous write or notification has completed. Finder's signal read takes the same one
+     * slot (Android has one GATT operation in flight per connection): it goes first when it is wanted, and its answer frees
+     * the slot like a write's ([gattCb] onReadRemoteRssi), or [RSSI_WAIT_MS] later if none comes.
+     */
     private fun pump(l: Link) {
         if (l.busy || !l.open || links[l.id] !== l) return
+        if (l.wantRssi && l.central && rssiNode != null) {
+            l.wantRssi = false
+            val g = l.gatt
+            if (g != null && runCatching { g.readRemoteRssi() }.getOrDefault(false)) {
+                val at = SystemClock.elapsedRealtime(); l.busy = true; l.rssiAt = at
+                h.postDelayed({ if (l.rssiAt == at) { l.rssiAt = 0L; l.busy = false; pump(l) } }, RSSI_WAIT_MS)
+                return
+            } // the stack is busy: no reading this second, the packets go on
+        }
         val c = l.out.peek(l.chunk) ?: return
         val ok = try {
             if (l.central) { val g = l.gatt; val rx = l.rx; g != null && rx != null && writeChar(g, rx, c) }

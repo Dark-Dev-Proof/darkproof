@@ -20,6 +20,11 @@ object DebugTools {
     /** Moves the clock that decides when a key is due: --es ahead 8 (days). */
     @Volatile var ahead = 0L
 
+    /** Finder's trial switch is on by default in debug builds (FinderPrefs.trial): the real-phone script runs on them. --es finderTrial 0 turns it off. */
+    const val finderTrial = true
+    /** The Finder screen's debug line: raw dBm, how the signal is read and the link id (brief 1.10). */
+    const val finderLine = true
+
     /** The mock relay in tools/mock-relay instead of the public ones: --es relays ws://127.0.0.1:7447 (--es relays "" clears it). */
     fun relays(c: Context): List<String>? = c.getSharedPreferences("mesh", 0).getString("debugRelays", null)?.takeIf { it.isNotEmpty() }?.split(',')
 
@@ -67,7 +72,7 @@ object DebugTools {
         val now = System.currentTimeMillis()
         // Each fake person has their own member key and introduces it first, like a real phone (spec "Introductions").
         // introLater: the message first, its introduction 5 s later ("Not verified yet", then checked).
-        fun put(code: String, text: String, ts: Long = now, from: String = "Marco", @Suppress("UNUSED_PARAMETER") sender: String = "", introLater: Boolean = false) {
+        fun put(code: String, text: String, ts: Long = now, from: String = "Marco", @Suppress("UNUSED_PARAMETER") sender: String = "", introLater: Boolean = false, fifth: ByteArray? = null) {
             val cr = GroupCrypto(code); val pair = fakeKeys.getOrPut(code + "|" + from) { P256.newKeyPair() }
             val pub = P256.compress(pair.public); val me = P256.memberId(pub)
             val intro = cr.intros(); val iid = Packet.newId(intro.mailbox)
@@ -75,11 +80,13 @@ object DebugTools {
             val introPacket = Packet(iid, ts - 1, 16, intro.seal(iid, ts - 1, me, from, "", extra = byteArrayOf(2) + pub + enc) { P256.sign(pair.private, it) })
             if (!introLater) MeshEngine.router?.receive("debug", introPacket)
             val id = Packet.newId(cr.mailbox)
-            MeshEngine.router?.receive("debug", Packet(id, ts, 16, cr.seal(id, ts, me, from, text) { P256.sign(pair.private, it) }))
+            MeshEngine.router?.receive("debug", Packet(id, ts, 16, cr.seal(id, ts, me, from, text, fifth = fifth) { P256.sign(pair.private, it) }))
             if (introLater) main.postDelayed({ Thread { MeshEngine.router?.receive("debug", introPacket) }.start() }, 5_000)
         }
         when (kind) {
             "help" -> put(g.code, CheckIn.HELP.text(41, Spot(45.464, 9.189, 10), setOf(Need.INJURED, Need.WATER), 3))
+            // Marco asks for help with a finder note (a made-up link id): with --es finderFake the Finder screen reads that list.
+            "finder" -> put(g.code, CheckIn.HELP.text(15, needs = setOf(Need.TRAPPED)), fifth = FinderNote.field(Packet.newId().take(12)))
             "safe" -> put(g.code, CheckIn.SAFE.text(77, Spot(45.4655, 9.1905, 12)), from = "Lucia", sender = "debug-lucia")
             "ask" -> put(g.code, AreYouSafe().text)
             "askme" -> put(g.code, AreYouSafe(me).text)
@@ -240,6 +247,23 @@ object DebugTools {
         } }
     }
 
+    /**
+     * Finder on an emulator, which has no Bluetooth (debug only):
+     * --es finderTrial 1|0: the trial switch (FinderPrefs.trial; on by default in debug builds).
+     * --es fake finder: Marco asks for help with a finder note.
+     * --es finderFake "-92,-90,x,-84,…": the Finder screen reads these, one a second (x: no reading that second), as if
+     *   over Bluetooth, instead of real readings; "off" goes back to real ones. Set it before opening the screen.
+     * --es finderOpen Marco: opens the Finder screen for Marco.
+     */
+    private fun finderHooks(c: Context, i: Intent, named: (String) -> String?) {
+        i.getStringExtra("finderTrial")?.let { v -> FinderPrefs.setTrial(c, v == "1"); log("finder trial ${if (v == "1") "on" else "off"}") }
+        i.getStringExtra("finderFake")?.let { v -> FinderFake.readings = FinderFake.parse(v); log("finder fake readings: ${FinderFake.readings?.size ?: "off"}") }
+        i.getStringExtra("finderOpen")?.let { n -> whenStarted { main.postDelayed({ (c as? MainActivity)?.let { a ->
+            val id = named(n) ?: return@postDelayed log("finderOpen: nobody called $n")
+            runCatching { a.state.sheet = Sheet.Finder(id) }; log("finder open for $n")
+        } }, 800) } }
+    }
+
     /** --es again 1: the packet of the last --es epochSay arrives once more, as from a phone that still carries it. */
     private fun again(c: Context) {
         val p = runCatching { Packet.decode(againFile(c).readBytes()) }.getOrNull() ?: return log("again: no packet kept")
@@ -340,6 +364,7 @@ object DebugTools {
         for (cmd in listOf("member", "memberSay", "memberSayKeyed", "memberReply", "memberReact", "memberReceipt", "memberVoice", "memberLeave"))
             i.getStringExtra(cmd)?.let { v -> whenStarted { Thread { runCatching { member(c, cmd, v) }.onFailure { log("$cmd failed: $it") } }.start() } }
         voiceHooks(c, i)
+        finderHooks(c, i, ::named)
         if (i.getStringExtra("weeklyNow") != null) whenStarted { Thread { MeshEngine.weeklyCheck(); log("weekly check done") }.start() }
         // --es makeAdmin Ben, --es removeMember Marco: by name, among the people this phone has heard from.
         i.getStringExtra("makeAdmin")?.let { n -> whenStarted { named(n)?.let { id -> MeshEngine.makeAdmin(MeshEngine.currentCode, id) { log("make admin $n: $it") } } ?: log("make admin: nobody called $n") } }

@@ -452,6 +452,11 @@ data class Person(
     val needs: Set<Need> = emptySet(), val people: Int? = null,
     /** For a report: who sent it (name and device id). Null for the person's own check-ins. */
     val reportedBy: String? = null, val reporterId: String? = null,
+    /**
+     * The link id of their phone from the finder note of their latest check-in (rule F6), if that check-in is a checked
+     * `🆘` that carries one: a later `✅`, or a `🆘` without the note, clears it. Never set for a report about someone.
+     */
+    val finder: String? = null,
 ) {
     val isReport get() = reportedBy != null
 
@@ -482,7 +487,8 @@ data class Person(
                 if (m.ts >= p.lastTs) p = p.copy(lastTs = m.ts, name = m.name)
                 val c = CheckIn.of(m.text)
                 if (c != null && m.ts >= p.checkInTs) p = p.copy(checkIn = c, checkInTs = m.ts, battery = CheckIn.battery(m.text),
-                    needs = CheckIn.needs(m.text), people = CheckIn.people(m.text))
+                    needs = CheckIn.needs(m.text), people = CheckIn.people(m.text),
+                    finder = m.finder?.takeIf { c == CheckIn.HELP && m.verified && !m.public && m.group != null }) // rule F5
                 val s = CheckIn.spot(m.text)
                 if (s != null && m.ts >= p.spotTs) p = p.copy(spot = s, spotTs = m.ts)
                 by[m.sender] = p

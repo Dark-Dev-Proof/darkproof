@@ -13,6 +13,10 @@ import org.json.JSONObject
 /** The phones' debug builds have test hooks here; the desktop only logs (shown with DARKPROOF_DEBUG=1). */
 object DebugTools {
     const val ahead = 0L
+    /** Finder's trial switch (FinderPrefs.trial): off, as in the phones' release builds, unless DARKPROOF_DEBUG=1. */
+    val finderTrial = System.getenv("DARKPROOF_DEBUG") == "1"
+    /** A computer reads no signal, so its Finder screen has no debug line. */
+    const val finderLine = false
     fun relays(c: Context): List<String>? = null
     fun log(s: String) { android.util.Log.i("DarkProof", s) }
     fun noteCode(code: String?) {}
@@ -101,6 +105,10 @@ class BleLink private constructor() {
     fun setSaver(on: Boolean) {}
     fun nodes(): Set<String> = emptySet()
     fun statusLine() = "Bluetooth: not on the desktop yet"
+    /** Finder's signal readings: a computer reads none (its Finder screen says it needs a phone's Bluetooth). */
+    fun startRssi(node: String, onReading: (Int) -> Unit) {}
+    fun stopRssi() {}
+    fun rssiRole(): FinderRole = FinderRole.NONE
 }
 
 /** The phones' notifications and in-app alerts. The desktop shows none yet. */

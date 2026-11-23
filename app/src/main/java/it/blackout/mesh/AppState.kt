@@ -22,6 +22,8 @@ class AppState(a: ComponentActivity) {
     var name by mutableStateOf(prefs.getString("name", "") ?: "")
     var invite by mutableStateOf<SavedGroup?>(null)          // an invite link that was opened
     var shareLocation by mutableStateOf(prefs.getBoolean("shareLocation", false))
+    /** "Let my group find this phone" (Finder): "I need help" carries this phone's link id. Off in high-risk mode whatever it says. */
+    var findable by mutableStateOf(FinderPrefs.findable(a))
     var permissionsMissing by mutableStateOf(false) // Bluetooth: without it phones can't connect
     var locationMissing by mutableStateOf(false)    // precise location: Android needs it to find phones before Android 13
     var bluetoothOff by mutableStateOf(false)       // the phone's Bluetooth switch

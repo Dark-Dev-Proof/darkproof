@@ -232,10 +232,15 @@ fun PersonSheet(s: AppState, a: MainActivity, messages: List<Message>, id: Strin
         if (p.isReport) Txt("This isn't ${p.name}'s own check-in: ${if (p.reporterId == MeshEngine.deviceId) "you" else p.reportedBy} sent it for them.", 15, color = Theme.dim)
         // What can be done, as round buttons with their names under them. A report is about someone without a phone: only "Find".
         val spot = p.spot
+        // Finder, while it is a trial: next to the compass, only for someone whose latest check-in asks for help with a note.
+        val bluetooth = remember(p, s.tick) { findable(p, FinderPrefs.trial(a)) }
         if (spot != null || !p.isReport) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)) {
-            if (spot != null) CircleAction(R.drawable.ic_navigation, "Find", Modifier.width(96.dp)) { s.sheet = Sheet.Find(p.name, spot, p.spotTs) }
-            if (!p.isReport) CircleAction(R.drawable.ic_qr_code_2, "Check", Modifier.width(96.dp)) { s.checkEnded = null; s.sheet = Sheet.Check(p.id) }
-            if (!p.isReport) CircleAction(R.drawable.ic_notifications, "Ask if safe", Modifier.width(96.dp)) { ask = true }
+            // Four don't fit a narrow phone at their usual width: then they share the row.
+            val each = if (bluetooth && spot != null) Modifier.weight(1f) else Modifier.width(96.dp)
+            if (spot != null) CircleAction(R.drawable.ic_navigation, "Find", each) { s.sheet = Sheet.Find(p.name, spot, p.spotTs) }
+            if (bluetooth) CircleAction(R.drawable.ic_bluetooth, FinderWords.BUTTON, each) { s.sheet = Sheet.Finder(p.id) }
+            if (!p.isReport) CircleAction(R.drawable.ic_qr_code_2, "Check", each) { s.checkEnded = null; s.sheet = Sheet.Check(p.id) }
+            if (!p.isReport) CircleAction(R.drawable.ic_notifications, "Ask if safe", each) { ask = true }
         }
         Card {
             Fact("Last heard", if (p.lastTs == 0L) "Nothing yet" else ago(p.lastTs))

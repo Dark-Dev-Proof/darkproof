@@ -106,6 +106,13 @@ fun calmNow(c: Context): Boolean =
         c.getSystemService(android.os.PowerManager::class.java)?.isPowerSaveMode == true ||
         MeshEngine.batterySaver(c)
 
+/** Keeps the screen on while this is on screen (Finder: the searcher walks with the phone in hand). */
+@Composable
+fun KeepScreenOn() {
+    val view = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.runtime.DisposableEffect(view) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
+}
+
 /** A computer shows [text] (what the button already says to TalkBack) when the mouse rests on it; a phone has no mouse. */
 @Composable
 fun HoverTip(text: String, content: @Composable () -> Unit) = content()

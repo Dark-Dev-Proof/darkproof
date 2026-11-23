@@ -80,6 +80,10 @@ object Buzz {
     fun play(kind: Int) {}
 }
 
+/** The phones keep their screen on for Finder; a computer's screen is its own business. */
+@Composable
+fun KeepScreenOn() {}
+
 /** Calm mode on a computer: not read from the system yet, so things move as on a phone with animations on. */
 fun calmNow(c: Context): Boolean = false
 
