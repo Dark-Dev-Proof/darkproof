@@ -36,11 +36,33 @@ function Build-DarkProof {
     $drive = (Get-Item $work).PSDrive
     if ($drive.Free -lt 8GB) { throw "The drive of $work has less than 8 GB free. Free some space and start again." }
     $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-    function Unpack($zip, $into) {
+    # Unpacks a zip file into an emptied folder. strip: how many of the archive's own top folders are left out.
+    function Unpack($zip, $into, [int]$strip = 0) {
         if (Test-Path $into) { Remove-Item -Recurse -Force $into }
         New-Item -ItemType Directory -Force -Path $into | Out-Null
-        if ($tar) { & $tar.Source -xf $zip -C $into; if ($LASTEXITCODE -ne 0) { throw "$zip could not be unpacked" } }
-        else { Expand-Archive -Path $zip -DestinationPath $into -Force }
+        if ($tar) {
+            & $tar.Source -xf $zip -C $into "--strip-components=$strip"
+            if ($LASTEXITCODE -ne 0) { throw "$zip could not be unpacked" }
+        } else {
+            Expand-Archive -Path $zip -DestinationPath $into -Force
+            for ($i = 0; $i -lt $strip; $i++) {
+                $top = Get-ChildItem $into -Directory | Select-Object -First 1
+                Get-ChildItem $top.FullName -Force | Move-Item -Destination $into
+                Remove-Item $top.FullName
+            }
+        }
+    }
+    # Downloads a zip file. When the other side refuses, the message is one line (its own answer can be a whole web
+    # page), and a page that arrives in place of the file is noticed: a zip file begins with the letters PK.
+    function Fetch($url, $file, $what) {
+        try { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $file }
+        catch {
+            $code = ''
+            if ($_.Exception.Response) { $code = " (answer $([int]$_.Exception.Response.StatusCode))" }
+            throw "$what could not be downloaded$code from $url"
+        }
+        $stream = [System.IO.File]::OpenRead($file); $head = New-Object byte[] 2; $read = $stream.Read($head, 0, 2); $stream.Close()
+        if ($read -lt 2 -or $head[0] -ne 0x50 -or $head[1] -ne 0x4B) { throw "$what did not arrive as a zip file from $url" }
     }
     Say "DarkProof 0.4.$build for Windows, from commit $($commit.Substring(0, 7)), in $work"
 
@@ -48,7 +70,7 @@ function Build-DarkProof {
     $jdkHome = Get-ChildItem (Join-Path $work 'jdk') -Directory -Filter 'jdk-*' -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $jdkHome -or -not (Test-Path (Join-Path $jdkHome.FullName 'bin\jpackage.exe'))) {
         $jdkZip = Join-Path $work 'jdk.zip'
-        Invoke-WebRequest -UseBasicParsing -Uri 'https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse' -OutFile $jdkZip
+        Fetch 'https://api.adoptium.net/v3/binary/latest/21/ga/windows/x64/jdk/hotspot/normal/eclipse' $jdkZip 'Java 21'
         Unpack $jdkZip (Join-Path $work 'jdk')
         Remove-Item $jdkZip
         $jdkHome = Get-ChildItem (Join-Path $work 'jdk') -Directory -Filter 'jdk-*' | Select-Object -First 1
@@ -60,13 +82,13 @@ function Build-DarkProof {
     Write-Host "Java: $($jdkHome.Name)"
 
     Say 'The DarkProof source'
+    # From GitLab's interface for programs. Its website's download address answers a program such as PowerShell with a
+    # "checking your browser" page (seen 2026-11-23); this address is the one meant for programs, and gives the same files.
     $srcZip = Join-Path $work 'source.zip'
-    Invoke-WebRequest -UseBasicParsing -Uri "https://gitlab.com/darkproof-group/darkproof/-/archive/$commit/darkproof-$commit.zip" -OutFile $srcZip
-    Unpack $srcZip (Join-Path $work 'x')
+    Fetch "https://gitlab.com/api/v4/projects/darkproof-group%2Fdarkproof/repository/archive.zip?sha=$commit" $srcZip 'The DarkProof source'
     $src = Join-Path $work 's'
-    if (Test-Path $src) { Remove-Item -Recurse -Force $src }
-    Move-Item (Join-Path $work "x\darkproof-$commit") $src
-    Remove-Item -Recurse -Force (Join-Path $work 'x'); Remove-Item $srcZip
+    Unpack $srcZip $src 1 # without the archive's own top folder, whose long name would make the paths too long
+    Remove-Item $srcZip
     if (-not (Test-Path (Join-Path $src 'gradlew.bat'))) { throw 'The source was not unpacked as expected.' }
 
     Say 'Building the app and its installer (10 to 20 minutes the first time)'
