@@ -1354,11 +1354,14 @@ in how packets are sealed, signed, padded or keyed.
   "I need help" is not held back: it is meant to work from a locked phone.
   **An answer given without opening DarkProof counts as sent only once it left.** iOS may suspend DarkProof as soon
   as an alert's answer is reported done, or as soon as Siri, the Action button or the Shortcuts app has its result,
-  so the iPhone keeps the app running until a phone, a radio or a relay took the check-in, at most 20 seconds after
-  it was written (and no longer than iOS allows). Only then does Siri or Shortcuts say "Sent “I'm safe” to My group."
-  If it didn't leave by then, the alert or the result says: "“I'm safe” is waiting on this phone. Open DarkProof so it
-  can go." If it couldn't be written (another check-in was still being written, or DarkProof isn't running): "“I'm
-  safe” wasn't sent. Open DarkProof to send it."
+  so the iPhone keeps the app running until a phone, a radio or a relay took the check-in: under an alert at most 20
+  seconds after it was written; from Siri, the Action button or the Shortcuts app within 10 seconds of being asked
+  in all, with no wait for a new position (one under 2 minutes old is added, else none); and never longer than iOS
+  allows. Only then does Siri or Shortcuts say "Sent “I'm safe” to My group." If it didn't leave by then, the alert
+  or the result says: "“I'm safe” is waiting on this phone. Open DarkProof so it can go."; with DarkProof on screen
+  the toast says "“I'm safe” is waiting on this phone. It goes out when a phone or the internet is in reach." If it
+  couldn't be written (another check-in was still being written, or DarkProof isn't running): "“I'm safe” wasn't
+  sent. Open DarkProof to send it."
 - **Q9.** When the member is no longer in the current epoch because of a removal that didn't follow a valid leave
   note of theirs, their clock is dropped without an alert. A valid leave note, and the removal that follows it (L4),
   **don't end a clock**: it keeps running and alerts at its deadline as usual. Someone may erase or leave because they
@@ -1471,7 +1474,7 @@ keeps the clock or will alert (Q14).
 | A member names themselves "Anna" and sends a backdated clock | The alert reads "Anna (not checked)", or "Anna · 🐶🐱🦁🐴" | Q13 |
 | Anna erases her phone or leaves while her clock runs | The clock still alerts at its deadline | Q9 |
 | Someone with Anna's locked phone taps "I'm safe" on the reminder or under "Are you safe?", says it to Siri, or uses the Action button or the Quick Settings tile | The phone asks for its unlock, or sends nothing | Q8 |
-| Anna taps "I'm safe" on the reminder and iOS suspends DarkProof at once | The app keeps running until a link took it (at most 20 s); otherwise an alert says it waits on her phone | Q8 |
+| Anna taps "I'm safe" on the reminder and iOS suspends DarkProof at once | The app keeps running until a link took it (at most 20 s; from Siri 10 s in all); otherwise an alert says it waits on her phone | Q8 |
 | Marco's phone is on an older version, or can't check Anna's signature yet | It confirms the clock message, so Anna reads "Reached Marco's phone so far", but it keeps no clock | Q14: "Reached" says only that a receipt came back |
 | Anna's phone restarts after her "I need help" while a newer clock of hers runs | No automatic re-send: her clock keeps running | "Finder", F6 |
 | A deadline years ahead, or in the past | The field is ignored, plain text | Q2 |
