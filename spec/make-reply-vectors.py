@@ -266,7 +266,7 @@ def timer_label(seconds):
 
 def timer_notice(seconds):
     if seconds == 0: return "⏱ The timer is off. Messages disappear after 1 to 2 weeks."
-    return f"⏱ Messages here now disappear {timer_label(seconds)} after they reach each phone. Older DarkProof versions keep them 1 to 2 weeks."
+    return f"⏱ Messages here are now deleted {timer_label(seconds)} after they arrive, on phones with the latest DarkProof. Older versions keep them 1 to 2 weeks."
 
 def epoch_timer(had, maker_admin, kept, field, before):
     """The group's timer on a phone after it takes a new key. had: it held an epoch. maker_admin: the key's maker is an

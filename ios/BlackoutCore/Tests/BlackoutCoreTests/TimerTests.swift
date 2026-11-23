@@ -32,7 +32,7 @@ final class TimerTests: XCTestCase {
     func testWording() {
         XCTAssertEqual(GroupTimer.label(3_600), "1 hour"); XCTAssertEqual(GroupTimer.label(28_800), "8 hours"); XCTAssertEqual(GroupTimer.label(86_400), "1 day")
         XCTAssertEqual(GroupTimer.label(604_800), "1 week"); XCTAssertEqual(GroupTimer.label(300), "5 minutes"); XCTAssertEqual(GroupTimer.label(172_800), "2 days")
-        XCTAssertEqual(GroupTimer.notice(86_400), "⏱ Messages here now disappear 1 day after they reach each phone. Older DarkProof versions keep them 1 to 2 weeks.")
+        XCTAssertEqual(GroupTimer.notice(86_400), "⏱ Messages here are now deleted 1 day after they arrive, on phones with the latest DarkProof. Older versions keep them 1 to 2 weeks.")
         XCTAssertEqual(GroupTimer.notice(0), "⏱ The timer is off. Messages disappear after 1 to 2 weeks.")
         XCTAssertEqual(GroupTimer.chatLine(86_400), "This phone deletes them 1 day after they arrive. So do phones on the latest DarkProof.")
         XCTAssertEqual(GroupTimer.chatLine(0), "They disappear after 1 to 2 weeks."); XCTAssertEqual(GroupTimer.chatLine(nil), "They disappear after 1 to 2 weeks.")
@@ -382,7 +382,7 @@ final class TimerTests: XCTestCase {
         XCTAssertEqual(o.message.text, text)
         let old = try XCTUnwrap(oldRead(try oldPlain(c, code: code, id: id, ts: 9)))
         XCTAssertEqual(old.text, Data(text.utf8)); XCTAssertEqual(old.fourth, Data(), "the 4th field is there and empty")
-        XCTAssertEqual(text.utf8.count, 115)
+        XCTAssertEqual(text.utf8.count, 134)
         // On the Public channel the field means nothing: the text is shown like any other.
         XCTAssertNil(o.message.onPublicChannel(mine: false).notice); XCTAssertFalse(o.message.onPublicChannel(mine: false).isSilent)
         // No copy is kept of it: nothing of it is ever shown.

@@ -42,7 +42,7 @@ class TimerTest {
     @Test fun wording() {
         assertEquals("1 hour", GroupTimer.label(3_600)); assertEquals("8 hours", GroupTimer.label(28_800)); assertEquals("1 day", GroupTimer.label(86_400))
         assertEquals("1 week", GroupTimer.label(604_800)); assertEquals("5 minutes", GroupTimer.label(300)); assertEquals("2 days", GroupTimer.label(172_800))
-        assertEquals("⏱ Messages here now disappear 1 day after they reach each phone. Older DarkProof versions keep them 1 to 2 weeks.", GroupTimer.notice(86_400))
+        assertEquals("⏱ Messages here are now deleted 1 day after they arrive, on phones with the latest DarkProof. Older versions keep them 1 to 2 weeks.", GroupTimer.notice(86_400))
         assertEquals("⏱ The timer is off. Messages disappear after 1 to 2 weeks.", GroupTimer.notice(0))
         // What this device does, and what phones on the latest DarkProof do: never a fact about every phone (design review M3).
         assertEquals("This phone deletes them 1 day after they arrive. So do phones on the latest DarkProof.", GroupTimer.chatLine(86_400))
@@ -460,7 +460,7 @@ class TimerTest {
         assertEquals(text, o.message.text)
         val old = oldRead(open(GroupCrypto.deriveKey(code), c, id, 9))!!
         assertArrayEquals(text.toByteArray(), old.text); assertEquals("the 4th field is there and empty", 0, old.fourth.size)
-        assertEquals(115, text.toByteArray().size)
+        assertEquals(134, text.toByteArray().size)
         // On the Public channel the field means nothing: the text is shown like any other.
         assertNull(o.message.onPublic().notice); assertFalse(o.message.onPublic().silent)
         // No copy is kept of it: nothing of it is ever shown.

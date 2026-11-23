@@ -57,7 +57,7 @@ object GroupTimer {
     /** The text of the notice message that follows a change: what apps that don't follow the timer show. Never read back. */
     fun notice(seconds: Int): String =
         if (seconds == 0) "⏱ The timer is off. Messages disappear after 1 to 2 weeks."
-        else "⏱ Messages here now disappear ${label(seconds)} after they reach each phone. Older DarkProof versions keep them 1 to 2 weeks."
+        else "⏱ Messages here are now deleted ${label(seconds)} after they arrive, on phones with the latest DarkProof. Older versions keep them 1 to 2 weeks."
 
     // What the screens say. [device]: "phone", or "computer" on the desktop app (Here.device), where it means this device.
 

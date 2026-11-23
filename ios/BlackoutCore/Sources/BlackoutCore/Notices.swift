@@ -53,7 +53,7 @@ public enum GroupTimer {
     /// follow the timer show. Never read back.
     public static func notice(_ seconds: Int) -> String {
         seconds == 0 ? "⏱ The timer is off. Messages disappear after 1 to 2 weeks."
-                     : "⏱ Messages here now disappear \(label(seconds)) after they reach each phone. Older DarkProof versions keep them 1 to 2 weeks."
+                     : "⏱ Messages here are now deleted \(label(seconds)) after they arrive, on phones with the latest DarkProof. Older versions keep them 1 to 2 weeks."
     }
 
     // What the screens say. A screen speaks for this phone only: other phones delete only if they run the latest

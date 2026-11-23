@@ -1121,7 +1121,7 @@ epoch's (see "Current epoch"); for rivals with one number that is the winner's, 
   value the group already has makes no key.
 - **The notice.** After the new key, the admin's phone sends one ordinary group message so that people on a version
   without the timer see what changed and that their phones don't follow it. Its text is, for example,
-  `⏱ Messages here now disappear 1 day after they reach each phone. Older DarkProof versions keep them 1 to 2 weeks.`
+  `⏱ Messages here are now deleted 1 day after they arrive, on phones with the latest DarkProof. Older versions keep them 1 to 2 weeks.`
   or `⏱ The timer is off. Messages disappear after 1 to 2 weeks.`, its 4th field is empty, and its 5th field is the
   timer field (`0005 0300015180`). A phone that follows the timer shows nothing of a group message with this 5th
   field, does not alert or confirm it, keeps no copy and takes nothing from it: the new key is the only word on the
@@ -1435,7 +1435,7 @@ in how packets are sealed, signed, padded or keyed.
   under it "Phones on older DarkProof versions only show the message." Ran out: "Your clock ran out at 18:30. Phones
   that have it can alert their owners." Buttons "I'm safe, stop the clock", "Add 30 minutes", and the text button
   "Stop without checking in". Toasts: "Clock sent to your group", "30 minutes added", "“I'm safe” sent. The clock
-  stopped.", "Clock stopped" (with nothing in reach, that it waits for a phone in range).
+  stopped.", "Clock stopped" (with nothing in reach, that it waits for a phone in reach).
 - **Chat card:** "Anna started a check-in clock" / "If no check-in from Anna reaches this phone by 18:30, it tells
   you."; with alerts off for DarkProof on this phone, "If no check-in from Anna reaches this phone by 18:30, it shows
   here. Alerts are off for DarkProof."; a stop: "Anna stopped the check-in clock". The name as in Q13 ("Anna (not
@@ -2024,7 +2024,7 @@ A GATT client opened on an existing connection only to read signal strength for 
   group"); admins' phones then remove the member with the normal removal. A phone on an earlier build shows it as the
   ordinary message `👋 I left the group`.
 - `0xB3`, 2026-11-22, last: check-in clocks, a group message with the 5th field `0x04` and a deadline (see "If I go
-  quiet"); the group's phones keep the clock and tell their owners if no check-in reaches them in time. A phone on an
+  quiet"); the group's phones keep the clock and can alert their owners if no check-in reaches them in time. A phone on an
   earlier build shows it as the ordinary message `⏳ Check on me if I don't check in within 1 hour`.
 - `0xB3`, 2026-11-23: the finder note, the 5th field `0x06` and the sender's link id in "needs help" check-ins (see
   "Finder"). A phone on an earlier build ignores the field and shows the check-in as before.
