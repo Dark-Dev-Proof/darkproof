@@ -251,6 +251,8 @@ sealed class Sheet {
     data class Journey(val id: String) : Sheet()
     /** "If I go quiet": this phone's check-in clock in the group in use (spec "If I go quiet"). */
     object Quiet : Sheet()
+    /** "Finding Marco": the Bluetooth signal of person [id]'s phone, after they asked for help (round 2c, behind the trial switch). */
+    data class Finder(val id: String) : Sheet()
 
     companion object {
         /** As text, to come back after Android ended the app in the background (photos are not kept). */
@@ -260,6 +262,7 @@ sealed class Sheet {
             is Person -> "person\n${s.id}"
             is Check -> "check\n${s.id}"
             is Journey -> "journey\n${s.id}"
+            is Finder -> "finder\n${s.id}"
             is HelpDetails -> "help\n${s.group ?: ""}"
             is Find -> "find\n${s.title}\n${s.spot.lat}\n${s.spot.lon}\n${s.spot.accuracy ?: ""}\n${s.ts}"
             is SendPhoto, is ViewPhoto -> null
@@ -272,6 +275,7 @@ sealed class Sheet {
                 "person" -> p.getOrNull(1)?.let(::Person)
                 "check" -> p.getOrNull(1)?.let(::Check)
                 "journey" -> p.getOrNull(1)?.let(::Journey)
+                "finder" -> p.getOrNull(1)?.let(::Finder)
                 "help" -> HelpDetails(p.getOrNull(1)?.ifEmpty { null })
                 "find" -> runCatching { Find(p[1], Spot(p[2].toDouble(), p[3].toDouble(), p[4].toIntOrNull()), p[5].toLong()) }.getOrNull()
                 else -> null
@@ -349,6 +353,7 @@ internal fun Overlays(s: AppState, a: MainActivity, g: SavedGroup, messages: Lis
         Sheet.Timer -> TimerSheet(s, a, g, close)
         is Sheet.Journey -> JourneySheet(s, sh.id, close)
         Sheet.Quiet -> QuietSheet(s, g, close)
+        is Sheet.Finder -> FinderSheet(s, a, messages, sh.id, close)
         null -> {}
     }
     if (s.askHelp) HelpConfirm(s, a)
@@ -823,6 +828,12 @@ private fun EverydayRows(s: AppState, a: MainActivity, highRisk: () -> Unit, ope
                 else "When you check in, your group sees where you are and can find you with a compass.",
                 if (noLocation) Theme.help else Theme.dim) { a.shareLocation(it) }
             if (noLocation) Box(Modifier.padding(start = 50.dp, bottom = 8.dp)) { GhostButton("Allow location") { a.askLocation() } }
+        }
+        // Finder (decision 2): what "I need help" carries for the group's Bluetooth search. A computer has no Bluetooth links.
+        if (Here.bluetooth) ToggleRow(R.drawable.ic_bluetooth, "Let my group find this ${Here.device}", s.findable && !s.highRisk,
+            if (s.highRisk) "Off in high-risk mode." else "When you send “I need help”, your group can tell which nearby phone is yours until DarkProof restarts.") { on ->
+            if (s.highRisk) Toast.makeText(a, "Off in high-risk mode", Toast.LENGTH_LONG).show() // the switch stays as it was for later
+            else { s.findable = on; FinderPrefs.setFindable(a, on) }
         }
         if (Here.notifications) LinkRow(R.drawable.ic_notifications, "Notifications", if (s.notificationsOff) "Off" else "On") { open("notifications") }
         if (Here.lock) {

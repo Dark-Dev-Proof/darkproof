@@ -1155,10 +1155,46 @@ object MeshEngine {
         allKeys = true
         (listOf(a) + o + listOfNotNull(publicKeys)).forEach(::introIfDue)
         (listOf(a) + o).forEach { rekeyIfDue(it); finishLeaves(it) }
+        resendHelpOnce(listOf(a) + o)
         compact()
         quietPassNow() // every saved group's clocks are read: alerts, reminders and the alarm as they stand (also after a reboot)
         nostr?.resubscribe() // the relays now send every saved group's mailbox
         notifyUi()
+    }
+
+    /** Set once the help check-ins of this start were looked at ([resendHelpOnce]). */
+    @Volatile private var helpLookedAt = false
+
+    /**
+     * Finder (decision 3): after a restart this phone has a new link id, so the finder note of an "I need help" it sent
+     * before names a phone nobody can find any more. Once per start, in each saved group whose newest check-in from this
+     * phone is "I need help", under 24 hours old, it goes again ([FinderResend]) with a fresh battery level and, if location
+     * sharing is on, the last known position; at most every 10 minutes per group. Only where the note is written
+     * ([FinderPrefs.writes]) and, while Finder is a trial, only with the trial switch on: without Finder a re-send would only
+     * alert the group again. Background thread.
+     */
+    private fun resendHelpOnce(groups: List<Keys>) {
+        if (helpLookedAt || stopped) return
+        helpLookedAt = true
+        val c = app ?: return
+        if (!FinderPrefs.writes(c) || !FinderPrefs.trial(c)) return
+        val prefs = c.getSharedPreferences("mesh", 0); val now = System.currentTimeMillis()
+        for (k in groups) {
+            if (k.isPublic || k.removed || !k.joined || k.code == leaving) continue
+            val newest = synchronized(messages) { messages.filter { !it.public && it.group == k.code && it.sender == deviceId && CheckIn.of(it.text) != null }.maxByOrNull { it.ts } } ?: continue
+            if (!FinderResend.due(CheckIn.of(newest.text), newest.ts, now, prefs.getLong(FinderResend.PREF + k.id, 0L))) continue
+            prefs.edit().putLong(FinderResend.PREF + k.id, now).apply()
+            val spot = if (prefs.getBoolean("shareLocation", false)) runCatching { Locator.lastKnown(c) }.getOrNull() else null
+            DebugTools.log("finder: help check-in sent again after a restart")
+            post(false, name, FinderResend.text(newest.text, batteryPercent(c), spot), false, to = k.code)
+        }
+    }
+
+    /** Finder (rule F7): how this phone is linked to the phone whose link id is [node] right now. Any thread. */
+    fun finderReach(node: String): FinderReach = when {
+        node in (ble?.nodes() ?: emptySet()) -> FinderReach.BLUETOOTH
+        node in nearbyNodes() || node in (wifi?.links?.nodes() ?: emptySet()) -> FinderReach.OTHER
+        else -> FinderReach.NONE
     }
 
     /** The name of the saved group whose code is [code] ([Message.group]), for alerts and labels; null if unknown. */
@@ -1927,7 +1963,10 @@ object MeshEngine {
             id = Packet.newId(cr.mailbox)
             val wire = if (board) "web-${k.me}" else k.me // member ids (spec "Member ids")
             val about = if (public || board || clock != null) null else replyTo?.let { About.target(it, k.code) }?.let { About.Reply(it) }
-            val (cipher, mark) = sealOne(k, cr, public, id, ts, wire, from, text, photo, about, voice, fifth = clock?.let(QuietClock::field))
+            // Finder (decisions 1 and 2): this phone's own "I need help" carries its link id, unless the switch is off or high-risk mode is on.
+            // A check-in clock's field takes the 5th field first (sealOne puts the note only where nothing else is).
+            val note = if (clock == null && FinderNote.wanted(text, public, board, photo != null, voice != null, about != null) && app?.let(FinderPrefs::writes) == true) FinderNote.field(linkId) else null
+            val (cipher, mark) = sealOne(k, cr, public, id, ts, wire, from, text, photo, about, voice, fifth = clock?.let(QuietClock::field), note = note)
             p = cr.packet(id, ts, cipher)
             // A group message written here: high-risk mode's day starts only when a link takes it ([handedOffNow]).
             if (public) save(p, StoreCap.Kind.PUBLIC)
@@ -1951,9 +1990,12 @@ object MeshEngine {
      * cipher comes what a reply or reaction to this message names ([About.Target]), for a group message.
      */
     private fun sealOne(k: Keys, cr: GroupCrypto, public: Boolean, id: String, ts: Long, wire: String, from: String, text: String, photo: ByteArray?,
-                        about: About? = null, voice: ByteArray? = null, fifth: ByteArray? = null): Pair<ByteArray, About.Target?> {
+                        about: About? = null, voice: ByteArray? = null, fifth: ByteArray? = null, note: ByteArray? = null): Pair<ByteArray, About.Target?> {
         val e = if (public) null else k.ring.currentOrNull(); val keys = e?.messageKeys
         val i = keys?.index(k.me) ?: -1; val n = if (i >= 0) keys?.takeNext() else null; val mk = if (n != null) keys?.key(i, n) else null
+        // A finder note goes in the 5th field only where nothing else is, and never when it alone would keep the check-in off a LoRa radio (rule F4).
+        val keyed = !(e == null || keys == null || n == null || mk == null)
+        @Suppress("NAME_SHADOWING") val fifth = fifth ?: note?.takeIf { about == null && !public }?.let { FinderNote.radioFirst(it, wire, from, text, keyed) }
         if (e == null || keys == null || n == null || mk == null) {
             val c = cr.seal(id, ts, wire, from, text, if (public) null else photo, about = if (public) null else about, voice = if (public) null else voice, fifth = if (public) null else fifth) { k.sign(it) }
             // Sealed with the epoch's own key (this phone's numbers ran out): read back once for what names the message.

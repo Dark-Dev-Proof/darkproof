@@ -124,7 +124,8 @@ object History {
                 writeShort(index); writeInt(counter); writeUTF(o.message.sender); writeUTF(o.message.name); writeInt(text.size); write(text)
                 val extra = o.extra ?: ByteArray(0); writeInt(extra.size); write(extra)
                 // The 5th field (spec "Replies and reactions", "If I go quiet"), after everything an older copy holds: a copy without it reads as before.
-                (o.aboutField ?: o.fifth?.takeIf { o.message.notice is Notice.Clock })?.let { writeInt(it.size); write(it) }
+                // A help check-in's finder note is kept the same way, so it is still there after this phone restarts.
+                (o.aboutField ?: o.fifth?.takeIf { o.message.notice is Notice.Clock } ?: o.message.finder?.let(FinderNote::field))?.let { writeInt(it.size); write(it) }
             }
         }.toByteArray()
         val c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES")); c.updateAAD(id.toByteArray())
@@ -145,7 +146,8 @@ object History {
             val fifth = if (available() >= 4) runCatching { ByteArray(readInt()).also(::readFully) }.getOrNull() else null
             val about = About.read(fifth, text)
             val clock = if (about == null) QuietClock.read(fifth, ts)?.let { Notice.Clock(it) } else null // its text was kept as shown ([QuietClock.shown])
-            Saved(group, epoch, GroupCrypto.Opened(Message(id, ts, sender, name, String(text, Charsets.UTF_8), photo = photo, about = about, voice = voice, notice = clock), signature, digest, extra,
+            val finder = FinderNote.read(fifth, text)
+            Saved(group, epoch, GroupCrypto.Opened(Message(id, ts, sender, name, String(text, Charsets.UTF_8), photo = photo, about = about, voice = voice, notice = clock, finder = finder), signature, digest, extra,
                 if (about == null) null else fifth, if (clock != null) fifth else null), index, counter)
         }
     }.getOrNull()

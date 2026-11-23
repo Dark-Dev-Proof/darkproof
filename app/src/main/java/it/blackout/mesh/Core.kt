@@ -76,12 +76,17 @@ data class Message(val id: String, val ts: Long, val sender: String, val name: S
                     */
                    val voice: ByteArray? = null,
                    /** What else its 5th field says (spec "The 5th field"): a notice of the group's timer, or a leave note; null for none. */
-                   val notice: Notice? = null) {
+                   val notice: Notice? = null,
+                   /**
+                    * The sender's link id from a finder note ([FinderNote]): only on a `🆘` check-in. Counts only for a group
+                    * message whose signature checked ([verified]); [Person.all] reads it from the person's latest check-in.
+                    */
+                   val finder: String? = null) {
     /**
      * What a Public channel reader keeps of a message: no photo, no voice note, no 5th field (they are for groups only), and
      * so the text as written ([said], [GroupCrypto.Opened.said]), also under a field that a group reads as a check-in clock.
      */
-    fun onPublic(said: String = text) = copy(public = true, text = said, photo = null, about = null, voice = null, notice = null)
+    fun onPublic(said: String = text) = copy(public = true, text = said, photo = null, about = null, voice = null, notice = null, finder = null)
 
     /**
      * True for a group message that is never a chat row, an alert or a receipt: a reaction, a type `0x02` message that
@@ -242,9 +247,10 @@ class GroupCrypto private constructor(private val keyBytes: ByteArray, mailbox: 
                 val fifth = if (fourth != null && available() >= 2) runCatching { getBytes() }.getOrNull() else null
                 val about = About.read(fifth, text)
                 val notice = Notice.read(fifth, ts) // a check-in clock's deadline is checked against the signed time (rule Q2)
+                val finder = FinderNote.read(fifth, text) // a `🆘` check-in's link id; the engine trusts it only once the signature checked
                 // A clock message's free text is never read as a check-in, a help report or a question ([QuietClock.shown]).
                 val said = String(text, Charsets.UTF_8); val shown = if (notice is Notice.Clock) QuietClock.shown(said, notice.deadline, ts) else said
-                Opened(Message(id, ts, sender, name, shown, photo = photo, about = about, voice = voice, notice = notice), plain.copyOf(64),
+                Opened(Message(id, ts, sender, name, shown, photo = photo, about = about, voice = voice, notice = notice, finder = finder), plain.copyOf(64),
                     java.security.MessageDigest.getInstance("SHA-256").digest(covered(body)), extra, if (about == null) null else fifth, fifth?.takeIf { it.isNotEmpty() }, said)
             }
         }

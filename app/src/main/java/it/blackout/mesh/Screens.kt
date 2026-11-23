@@ -110,6 +110,11 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
     // What is in the list when the chat opens or switches channel simply shows; what comes after comes in moving.
     val arrivals = remember(everyone, g.code) { Arrivals(rows.map { it.key }) }
     val lastMine = remember(shown) { shown.lastOrNull { it.sender == MeshEngine.deviceId && CheckIn.of(it.text) != null } }
+    // Finder, while it is a trial: the help check-ins (sender and time) whose phone can be found by Bluetooth now (rule F6: each person's latest).
+    val trial = remember(tick) { FinderPrefs.trial(ctx) }
+    val findableAt = remember(shown, everyone, trial) {
+        if (everyone || !trial) emptySet() else Person.all(shown, MeshEngine.deviceId).filter { findable(it, true) }.mapTo(HashSet()) { "${it.id}|${it.checkInTs}" }
+    }
     // Replies and reactions are for groups only (spec "Replies and reactions"): on Everyone nothing of them is read.
     val shownTargets = remember(shown, everyone, g) { if (everyone) emptyMap() else About.targets(shown, g.code) }
     val heldTargets = remember(tick, everyone, g) { if (everyone) emptyMap() else About.targets(MeshEngine.groupRows(g.code), g.code) }
@@ -193,7 +198,8 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
                         rowExtras(r.m, s, everyone, shownTargets, heldTargets, flashed == r.m.id, open,
                             reply = { s.replying = g.code to r.m.id; scope.launch { kotlinx.coroutines.delay(300); runCatching { focusDraft.requestFocus() } } },
                             jump = { id -> rows.indexOfFirst { it is ChatRow.Msg && it.m.id == id }.takeIf { it >= 0 }?.let { i ->
-                                scope.launch { pinned = false; list.animateScrollToItem(i); flashed = id; kotlinx.coroutines.delay(1_400); if (flashed == id) flashed = null } } })) { c ->
+                                scope.launch { pinned = false; list.animateScrollToItem(i); flashed = id; kotlinx.coroutines.delay(1_400); if (flashed == id) flashed = null } } },
+                            finder = "${r.m.sender}|${r.m.ts}" in findableAt)) { c ->
                         if (c == CheckIn.SAFE) checkIn(a, s, CheckIn.SAFE, group = r.m.group) else { s.helpGroup = r.m.group; s.askHelp = true }
                     }
                 } }
@@ -249,14 +255,14 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
 /** What one message row needs for replies and reactions ([RowExtras]); read again at each update of the engine ([AppState.tick]). */
 @Composable
 private fun rowExtras(m: Message, s: AppState, everyone: Boolean, shown: Map<String, Message>, held: Map<String, Message>, flash: Boolean,
-                      open: (Sheet) -> Unit, reply: () -> Unit, jump: (String) -> Unit): RowExtras {
+                      open: (Sheet) -> Unit, reply: () -> Unit, jump: (String) -> Unit, finder: Boolean = false): RowExtras {
     val tick = s.tick; val moderated = s.moderated
     val quote = remember(m, shown, held) { if (everyone) null else quoteOf(m, shown, held, MeshEngine.deviceId) }
     val chips = remember(tick, moderated, m) { if (m.public) emptyList() else MeshEngine.chips(m) }
     val canAnswer = remember(tick, m) { !m.public && MeshEngine.canAnswer(m) }
     return RowExtras(quote, chips, canAnswer, flash,
         react = { e -> Thread { MeshEngine.react(m, e) }.start() }, reply = reply, jump = jump,
-        journey = { if (!m.public && m.sender == MeshEngine.deviceId) open(Sheet.Journey(m.id)) })
+        journey = { if (!m.public && m.sender == MeshEngine.deviceId) open(Sheet.Journey(m.id)) }, finder = finder)
 }
 
 /**
@@ -325,7 +331,9 @@ fun AskEveryone(g: SavedGroup, close: () -> Unit) {
  * [flash]: lit for a moment, after a quote of it was tapped.
  */
 private class RowExtras(val quote: QuoteLine?, val chips: List<Reactions.Chip>, val canAnswer: Boolean, val flash: Boolean,
-                        val react: (String) -> Unit, val reply: () -> Unit, val jump: (String) -> Unit, val journey: () -> Unit)
+                        val react: (String) -> Unit, val reply: () -> Unit, val jump: (String) -> Unit, val journey: () -> Unit,
+                        /** The sender's latest check-in, a help check-in whose phone can be found by Bluetooth: "Find by Bluetooth" under it (trial). */
+                        val finder: Boolean = false)
 
 /**
  * One message: a check-in, a report about someone, an "are you safe?" question (with one-tap answers when it is for
@@ -405,6 +413,9 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
                 }
                 if (!preview) {
                     CheckIn.spot(m.text)?.let { sp -> SpotLinks(if (me) null else "Find ${m.name}", sp) { open(Sheet.Find(m.name, sp, m.ts)) } }
+                    if (!me && x.finder) Row(Modifier.padding(start = 18.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Txt(FinderWords.BUTTON, 14, FontWeight.SemiBold, Theme.text, Modifier.tap(Press(down = 0.95f, shape = RoundedCornerShape(8.dp), dim = 0.35f, buzz = Buzz.Tap)) { open(Sheet.Finder(m.sender)) }.padding(vertical = 4.dp))
+                    }
                     Chips(x)
                     if (me) Status(delivery, null, x.journey)
                 }
