@@ -82,4 +82,10 @@ public enum SafeAnswer {
         case .notSent: return "\(what) wasn't sent. Open DarkProof to send it."
         }
     }
+
+    /// What Siri or the Shortcuts app says once "I'm safe" ended: "Sent “I'm safe” to My group." only once a link took
+    /// it, else the alert's words (`line`). `group`: the group's name, or "your group" with "Lock DarkProof" on.
+    public static func said(_ o: Outcome, _ c: CheckIn, group: String) -> String {
+        line(o, c) ?? "Sent \(c == .safe ? "“I'm safe”" : "“I need help”") to \(group)."
+    }
 }

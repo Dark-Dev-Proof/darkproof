@@ -274,24 +274,37 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
     /// An answer given under an alert ("Are you safe?", the check-in clock's reminder). iOS may suspend DarkProof as soon
     /// as `done` is called, and "I'm safe" from a locked phone's alert runs it in the background: the check-in would
     /// stop the clock on this phone while it still waits here, and the group's phones would alert at the deadline. So
-    /// the app holds a background task, and calls `done`, only once a phone, a radio or a relay took the check-in, or
-    /// after `SafeAnswer.waitSeconds`. If it didn't leave by then, or wasn't written, the user is told so (`notSent`, or
-    /// a toast while DarkProof is on screen, where alerts don't show). Main thread.
+    /// `done` is called only once a phone, a radio or a relay took the check-in, or after `SafeAnswer.waitSeconds`
+    /// (`CheckInWait`). If it didn't leave by then, or wasn't written, the user is told so (`notSent`, or a toast while
+    /// DarkProof is on screen, where alerts don't show). Main thread.
     private func answer(_ c: CheckIn, _ e: Engine, group: String?, done: @escaping () -> Void) {
-        var hold = UIBackgroundTaskIdentifier.invalid, over = false
-        func finish(_ o: SafeAnswer.Outcome) {
-            guard !over else { return }
-            over = true
+        CheckInWait.send(c, e, group: group) { o in
             if let line = SafeAnswer.line(o, c) {
-                if UIApplication.shared.applicationState == .active && !AppLock.shared.isLocked { Nav.shared.toast(line) } else { notSent(line) }
+                if UIApplication.shared.applicationState == .active && !AppLock.shared.isLocked { Nav.shared.toast(line) } else { self.notSent(line) }
             }
             #if DEBUG
             DebugLog.write("answer from an alert: \(o)") // for the tests' log: how it ended, never what or where
             #endif
             done()
+        }
+    }
+}
+
+/// A check-in given without opening DarkProof: an alert's answer (Notifier), or Siri, the Action button and Shortcuts
+/// (Shortcuts.swift). Writes it, then reports how it ended (`SafeAnswer.Outcome`): once a phone, a radio or a relay took
+/// it, after `SafeAnswer.waitSeconds` if none did, or at once if it wasn't written. iOS may suspend DarkProof meanwhile,
+/// so a background task holds the app until then; if iOS's own time runs out first, it ended as waiting. `then` runs
+/// once, on the main thread. Main thread.
+enum CheckInWait {
+    static func send(_ c: CheckIn, _ e: Engine, group: String?, then: @escaping (SafeAnswer.Outcome) -> Void) {
+        var hold = UIBackgroundTaskIdentifier.invalid, over = false
+        func finish(_ o: SafeAnswer.Outcome) {
+            guard !over else { return }
+            over = true
+            then(o)
             if hold != .invalid { UIApplication.shared.endBackgroundTask(hold); hold = .invalid }
         }
-        hold = UIApplication.shared.beginBackgroundTask(withName: "answer") { finish(.waiting) } // iOS's own time ran out first
+        hold = UIApplication.shared.beginBackgroundTask(withName: "check-in") { finish(.waiting) }
         let taken = e.checkIn(c, group: group) { written in
             switch written {
             case .nothing: finish(.notSent)

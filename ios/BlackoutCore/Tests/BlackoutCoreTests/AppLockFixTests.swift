@@ -73,6 +73,14 @@ final class AppLockFixTests: XCTestCase {
         XCTAssertEqual(SafeAnswer.waitSeconds, 20)
     }
 
+    /// Siri and Shortcuts: "Sent" only once a link took "I'm safe"; else the same words as the alert path.
+    func testWhatSiriSaysAfterImSafe() {
+        XCTAssertEqual(SafeAnswer.said(.left, .safe, group: "My group"), "Sent “I'm safe” to My group.")
+        XCTAssertEqual(SafeAnswer.said(.waiting, .safe, group: "My group"), "“I'm safe” is waiting on this phone. Open DarkProof so it can go.")
+        XCTAssertEqual(SafeAnswer.said(.notSent, .safe, group: "My group"), "“I'm safe” wasn't sent. Open DarkProof to send it.")
+        for o in [SafeAnswer.Outcome.waiting, .notSent] { XCTAssertEqual(SafeAnswer.said(o, .safe, group: "x"), SafeAnswer.line(o, .safe)) }
+    }
+
     /// What the user is told: nothing once it left; else that it waits, or wasn't sent. Never that the group got it.
     func testWhatAnAnswerThatDidntLeaveSays() {
         XCTAssertNil(SafeAnswer.line(.left, .safe))

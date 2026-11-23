@@ -1352,12 +1352,13 @@ in how packets are sealed, signed, padded or keyed.
   Shortcuts app; on Android "I'm safe" under an alert on every Android version (before Android 12, where an alert's
   button can't ask for the unlock itself, it sends nothing while the phone is locked) and the Quick Settings tile.
   "I need help" is not held back: it is meant to work from a locked phone.
-  **An answer under an alert counts as sent only once it left.** iOS may suspend DarkProof as soon as an alert's
-  answer is reported done, so the iPhone keeps the app running until a phone, a radio or a relay took the check-in,
-  at most 20 seconds after it was written (and no longer than iOS allows). If it didn't leave by then: "“I'm safe” is
-  waiting on this phone. Open DarkProof so it can go."
-  If it couldn't be written (another check-in was still being written): "“I'm safe” wasn't sent. Open DarkProof to
-  send it."
+  **An answer given without opening DarkProof counts as sent only once it left.** iOS may suspend DarkProof as soon
+  as an alert's answer is reported done, or as soon as Siri, the Action button or the Shortcuts app has its result,
+  so the iPhone keeps the app running until a phone, a radio or a relay took the check-in, at most 20 seconds after
+  it was written (and no longer than iOS allows). Only then does Siri or Shortcuts say "Sent “I'm safe” to My group."
+  If it didn't leave by then, the alert or the result says: "“I'm safe” is waiting on this phone. Open DarkProof so it
+  can go." If it couldn't be written (another check-in was still being written, or DarkProof isn't running): "“I'm
+  safe” wasn't sent. Open DarkProof to send it."
 - **Q9.** When the member is no longer in the current epoch because of a removal that didn't follow a valid leave
   note of theirs, their clock is dropped without an alert. A valid leave note, and the removal that follows it (L4),
   **don't end a clock**: it keeps running and alerts at its deadline as usual. Someone may erase or leave because they
