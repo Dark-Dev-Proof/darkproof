@@ -118,12 +118,13 @@ class BackgroundTest {
                 s.tap("Places"); s.png("$out/2-places.png"); s.tap("My group")
                 // Settings > Background, the page where each person chooses
                 s.tap("Settings"); assertTrue(s.says("Background") && s.says("Classic, grey")); s.tap("Background")
-                assertTrue(s.says("Background texture") && s.says("Characters") && s.says("Density") && s.says("Colour") && s.says("Source") && s.says("Strength"))
+                assertTrue(s.says("Faint characters behind the screens") && s.says("Characters") && s.says("Density") && s.says("Colour") && s.says("Source") && s.says("Strength"))
                 assertTrue(s.says("Classic") && s.says("Blocks") && s.says("DarkProof") && s.says("Binary") && s.says("Fine") && s.says("Medium") && s.says("Coarse"))
                 assertTrue(s.says("Grey") && s.says("Navy") && s.says("Green") && s.says("Clouds") && s.says("Light streak") && s.says("Both") && s.says("60%"))
                 s.settle(400); Thread.sleep(300); s.settle(200) // the preview's own picture
                 s.png("$out/3-settings-background.png")
                 s.wheel("Strength", 20); assertTrue(s.says("Slow drift") && s.has("The clouds move slowly while this window is in front"))
+                assertTrue("the iPhone's words (design review L1)", s.says("Text stays readable at every strength."))
                 s.png("$out/4-settings-background-end.png")
                 // A person's first choice: blocks, coarse, navy, clouds only
                 s.wheel("Strength", -20)
@@ -137,7 +138,7 @@ class BackgroundTest {
                 s.tap("DarkProof"); s.tap("Fine"); s.tap("Green"); s.tap("Light streak")
                 s.tap("Close"); s.texture("choice 2"); s.png("$out/7-window-choice-2.png")
                 // Off: plain black, and nothing drawn
-                s.tap("Settings"); s.tap("Background"); s.tap("Background texture"); assertTrue(s.says("Plain black") && !AsciiBackground.style.on)
+                s.tap("Settings"); s.tap("Background"); s.tap("Faint characters behind the screens"); assertTrue(s.says("Pure black") && !AsciiBackground.style.on)
                 s.tap("Close"); assertTrue(s.says("Settings")); s.png("$out/8-window-off.png")
                 // Set by the test, not through Settings: the block characters and the faint navy on their own, and full strength
                 AsciiBackground.style = BgStyle(glyphs = BgGlyphs.Blocks); s.texture("blocks"); s.png("$out/9-blocks.png")

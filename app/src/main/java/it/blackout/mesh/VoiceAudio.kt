@@ -48,6 +48,8 @@ import java.nio.ByteOrder
 object VoiceAudio {
     private const val MIME = MediaFormat.MIMETYPE_AUDIO_OPUS
     private val main = Handler(Looper.getMainLooper())
+    /** The longest one encode or decode of a note (at most 10 s of sound) may take: far more than any phone needs. */
+    private const val CODEC_LIMIT_NS = 10_000_000_000L
 
     /** True if this phone can record a voice note: Android 10 or newer, with an Opus encoder. */
     val canRecord: Boolean by lazy { Build.VERSION.SDK_INT >= 29 && runCatching { encoderName(Voice.SAMPLE_RATE) != null }.getOrDefault(false) }
@@ -74,15 +76,22 @@ object VoiceAudio {
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, rate / 50 * 2 * 4)
         }
         val codec = MediaCodec.createByCodecName(name)
-        val vbrOk = runCatching { codec.getCodecInfo().getCapabilitiesForType(MIME).encoderCapabilities.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) }.getOrDefault(false)
-        val vbrTaken = vbrOk && runCatching { codec.configure(format(true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE) }.isSuccess
-        if (!vbrTaken) codec.configure(format(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         val out = ArrayList<ByteArray>()
+        var vbrOk = false; var vbrTaken = false
+        // Everything after the codec exists is inside the try, so it is always released (Android review, finding 6).
         try {
+            vbrOk = runCatching { codec.getCodecInfo().getCapabilitiesForType(MIME).encoderCapabilities.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) }.getOrDefault(false)
+            vbrTaken = vbrOk && runCatching { codec.configure(format(true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE) }.isSuccess
+            if (!vbrTaken) {
+                if (vbrOk) runCatching { codec.reset() } // a refused configure can leave it in its error state: back to the start first
+                codec.configure(format(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
             codec.start()
             val frame = rate / 50 // 20 ms
             var fed = 0; var inputDone = false; val info = MediaCodec.BufferInfo()
+            val until = System.nanoTime() + CODEC_LIMIT_NS
             while (true) {
+                check(System.nanoTime() < until) { "the encoder didn't finish in time" } // one that never ends its stream holds no thread for ever
                 if (!inputDone) {
                     val i = codec.dequeueInputBuffer(10_000)
                     if (i >= 0) {
@@ -131,7 +140,9 @@ object VoiceAudio {
         try {
             codec.configure(fmt, null, null, 0); codec.start()
             var next = 0; var inputDone = false; val info = MediaCodec.BufferInfo()
+            val until = System.nanoTime() + CODEC_LIMIT_NS
             while (true) {
+                check(System.nanoTime() < until) { "the decoder didn't finish in time" }
                 if (!inputDone) {
                     val i = codec.dequeueInputBuffer(10_000)
                     if (i >= 0) {
@@ -174,8 +185,11 @@ object VoiceAudio {
         return d.pcm
     }
 
+    /** The bubbles' levels of many notes, so a note scrolled back into view isn't decoded again (Android review, finding 12). */
+    private val levelsKept = VoiceLevels()
+
     /** The bubble's 20 levels, or null if the note can't be decoded here. Blocks: call it off the main thread. */
-    fun levels(id: String, frames: ByteArray): FloatArray? = pcm(id, frames)?.let { Voice.levels(it) }
+    fun levels(id: String, frames: ByteArray): FloatArray? = levelsKept.get(id) { pcm(id, frames)?.let { Voice.levels(it) } }
 
     // MARK: - Playing: one note at a time
 
@@ -264,10 +278,14 @@ object VoiceAudio {
         playing = null; progress = 0f
     }
 
-    /** Stops whatever note is playing and forgets where paused ones were (the chat was left, the app went to the background, a recording started). */
+    /**
+     * Stops whatever note is playing and forgets where paused ones were (the chat was left, the app went to the background,
+     * a recording started). The decoded sound goes too: it is held only while a note is shown or played.
+     */
     fun stopPlaying() {
         halt()
         paused.clear()
+        synchronized(decoded) { decoded.clear() }
     }
 
     // MARK: - Speed: the bubble's chip, one choice for the whole app
@@ -297,9 +315,8 @@ object VoiceAudio {
     @Volatile var fakeInput: ShortArray? = null
 
     private var recorder: Thread? = null
-    @Volatile private var stopAsked = false
-    private var recorded: ShortArray = ShortArray(0)
-    @Volatile private var count = 0
+    /** The recording under way: its own sound and its own stop ([VoiceTake]). */
+    @Volatile private var take: VoiceTake? = null
     private var rate = Voice.SAMPLE_RATE
 
     /** True if the microphone may be used (or the debug build's feed stands in for it). */
@@ -325,33 +342,37 @@ object VoiceAudio {
         }
         if (fake != null) rate = Voice.SAMPLE_RATE
         val cap = rate * Voice.MAX_PACKETS * Voice.PACKET_MS / 1000 // 10 s
-        recorded = ShortArray(cap); count = 0; stopAsked = false
+        val t = VoiceTake(cap); take = t
         recorder = Thread {
             val chunk = ShortArray(rate / 50)
+            // Nothing in here may end the app (Android review, finding 5): a microphone that fails mid-way ends the
+            // recording, with what it gave so far. The thread writes only into its own take, so a read that comes back after
+            // the recording was finished or cancelled lands where nobody reads.
             try {
                 r?.startRecording()
                 var fakeAt = 0; val started = System.nanoTime()
-                while (!stopAsked && count < cap) {
-                    val n = if (r != null) r.read(chunk, 0, minOf(chunk.size, cap - count)) else {
+                while (!t.stop && !t.full) {
+                    val n = if (r != null) r.read(chunk, 0, minOf(chunk.size, t.room)) else {
                         // The debug feed comes in real time, as a microphone's would.
                         val due = ((System.nanoTime() - started) / 1_000_000_000.0 * rate).toInt()
                         if (due <= fakeAt) { Thread.sleep(5); 0 } else {
-                            val m = minOf(due - fakeAt, chunk.size, cap - count)
+                            val m = minOf(due - fakeAt, chunk.size, t.room)
                             for (k in 0 until m) chunk[k] = fake!!.getOrElse(fakeAt + k) { 0 }
                             fakeAt += m; m
                         }
                     }
                     if (n < 0) break
-                    System.arraycopy(chunk, 0, recorded, count, n); count += n
+                    t.add(chunk, n)
                 }
-            } finally { runCatching { r?.stop() }; r?.release() }
-            if (count >= cap && !stopAsked) main.post(full)
+            } catch (e: Exception) { DebugTools.log("voice: the recording stopped: $e") }
+            finally { runCatching { r?.stop() }; runCatching { r?.release() } }
+            if (t.full && !t.stop) main.post(full)
         }.also { it.start() }
         return true
     }
 
     /** How much is recorded so far, in milliseconds. */
-    fun recordedMs(): Long = count * 1000L / rate
+    fun recordedMs(): Long = (take?.count ?: 0) * 1000L / rate
 
     /** What a finished recording became. */
     sealed class Result {
@@ -364,9 +385,10 @@ object VoiceAudio {
 
     /** Stops recording and encodes what was recorded, checked with the readers' rules. Blocks: call it off the main thread. */
     fun finishRecording(): Result {
-        val t = recorder ?: return Result.TooShort
-        stopAsked = true; t.join(2_000); recorder = null
-        val pcm = recorded.copyOf(count); recorded = ShortArray(0)
+        val th = recorder ?: return Result.TooShort
+        val t = take
+        t?.stop = true; th.join(2_000); recorder = null; take = null
+        val pcm = t?.copy() ?: ShortArray(0) // what it gave until now, even from a recorder that hasn't ended yet
         if (pcm.size < rate) return Result.TooShort
         return forSending(pcm, rate)
     }
@@ -383,7 +405,7 @@ object VoiceAudio {
 
     /** Stops recording and drops what was recorded ("Slide away to cancel", the app left). */
     fun cancelRecording() {
-        stopAsked = true; recorder?.join(2_000); recorder = null; recorded = ShortArray(0); count = 0
+        take?.stop = true; recorder?.join(2_000); recorder = null; take = null
     }
 
     /** True while the microphone is open. */

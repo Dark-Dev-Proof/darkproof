@@ -96,17 +96,17 @@ class Round1ScriptTest {
                 a.state.checkEnded = null; s.await("the stronger badge") { s.says("Checked in person") }
 
                 // Piece 6: Group security, from the chat's header
-                s.tap("Security")
+                s.tap("Group security")
                 assertTrue(s.has("Group security") && s.says("All checked") && s.has("Temp · 2 people"))
                 assertTrue(s.says("People checked") && s.says("1 of 1") && s.says("Group key") && s.says("Last changed today") && s.says("Quantum-safe keys") && s.says("On, always"))
-                assertTrue(s.says("Internet through Tor") && s.says("The internet is off") && s.says("Messages disappear") && s.says("After one to two weeks"))
+                assertTrue(s.says("Connect through Tor") && s.says("The internet is off") && s.says("Messages disappear") && s.says("After 1 to 2 weeks"))
                 assertTrue(s.says("Invite") && s.says("Open. Anyone with the code can ask to join."))
                 assertFalse("no new key within the hour of this computer's last one (it just let someone in)", s.says("New key"))
                 s.png("build/screen-round1-security.png"); s.tap("Close")
                 // "They don't match" takes the mark away, and Group security then has one thing to check
                 s.tap(who); s.tap("Check"); s.tap("They don't match")
                 s.await("the note") { s.has("$who stays unchecked") }; assertNull(MeshEngine.checkedHow(code, id))
-                s.tap("Security"); assertTrue(s.says("1 thing to check") && s.says("0 of 1. $who is not.") && s.says("Check"))
+                s.tap("Group security"); assertTrue(s.says("1 thing to check") && s.says("0 of 1. $who is not.") && s.says("Check"))
                 s.tap("Close")
 
                 // Piece 2: the "+" in the group's message box. No camera here, and none offered.

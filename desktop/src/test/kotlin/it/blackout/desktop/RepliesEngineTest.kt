@@ -206,6 +206,16 @@ class RepliesEngineTest {
                 s.await("my reply") { MeshEngine.snapshotAll().any { it.group == g && it.text == "I have two bottles" } }
                 assertEquals(About.Reply(reply.mark!!), row(g, "I have two bottles").about)
                 s.await("the strip gone and the quote shown") { !s.has("Replying to Ben") && s.has("Reply to Ben: On my way. Does anyone need some?") }
+                // The keyboard (Fable review, Android finding 3): Enter on something inside a message presses that thing, here
+                // the quote, which shows the message it answers; only Enter on the message itself opens its menu.
+                s.focus("Reply to Ben: On my way. Does anyone need some?")
+                assertTrue("the quote has the focus: ${s.focused()}", s.focused().any { "Reply to Ben" in it })
+                s.press(androidx.compose.ui.input.key.Key.Enter); s.settle()
+                assertFalse("Enter on the quote doesn't open the message's menu", s.says("Copy") || s.says("How it got there"))
+                s.focus("I have two bottles"); s.press(androidx.compose.ui.input.key.Key.Enter)
+                s.await("the menu, opened from the keyboard") { s.says("Reply") && s.says("Copy") && s.says("How it got there") }
+                s.tapAt(androidx.compose.ui.geometry.Offset(6f, 6f)) // the dimmed window around the menu closes it
+                s.await("the menu closed") { !s.says("How it got there") }
                 // "How it got there" from the line under my message.
                 s.hold("Bring bottles."); s.tap("How it got there")
                 s.await("the journey") { s.has("Reached Ben") && s.has("Over the internet · about 3 hops") && s.has(Journey.SEALED) }

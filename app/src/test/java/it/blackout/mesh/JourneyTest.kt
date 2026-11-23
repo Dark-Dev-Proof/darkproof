@@ -163,7 +163,7 @@ class JourneyTest {
         // Confirmed, though this phone never noted handing it on: it left.
         assertEquals(listOf("Left your phone", "Reached Marco"), Journey.steps(1_000, false, null, listOf(readers[0]), 600_000).map { it.title })
         assertEquals("Sealed the whole way", Journey.SEALED)
-        assertEquals("Carried by other phones on the way. They can't read it, and nobody sees whose they are.", Journey.CARRIED)
+        assertEquals("Carried by other phones on the way. They can't read it, and DarkProof never notes whose they are.", Journey.CARRIED) // design review M5
     }
 
     // MARK: - What the writer's phone remembers

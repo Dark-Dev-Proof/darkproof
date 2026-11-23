@@ -61,10 +61,10 @@ class SecurityWordsTest {
     }
 
     @Test fun howLongMessagesStay() {
-        assertEquals("After one to two weeks", SecurityWords.disappear(false, "phone"))
-        assertEquals("After one to two weeks. On this phone, 1 day after they arrive.", SecurityWords.disappear(true, "phone"))
-        assertEquals("After one to two weeks. On this computer, 1 day after they arrive.", SecurityWords.disappear(true, "computer"))
-        assertEquals("Only people in Family can read these. They disappear after one to two weeks.", SecurityWords.chatNote("Family", false, "phone"))
+        assertEquals("After 1 to 2 weeks", SecurityWords.disappear(false, "phone"))
+        assertEquals("After 1 to 2 weeks. On this phone, 1 day after they arrive.", SecurityWords.disappear(true, "phone"))
+        assertEquals("After 1 to 2 weeks. On this computer, 1 day after they arrive.", SecurityWords.disappear(true, "computer"))
+        assertEquals("Only people in Family can read these. They disappear after 1 to 2 weeks.", SecurityWords.chatNote("Family", false, "phone"))
         assertEquals("Only people in Family can read these. High-risk mode: they leave this phone 1 day after they arrive.", SecurityWords.chatNote("Family", true, "phone"))
     }
 

@@ -228,3 +228,48 @@ object Voice {
     /** How near the finger is to the lock, 0 to 1, for the lock's picture. */
     fun lift(y: Float, dp: Float = 1f): Float = (-y / (LOCK_REACH * dp)).coerceIn(0f, 1f)
 }
+
+/**
+ * One recording's sound as the microphone gives it, at most [cap] samples (Android review, finding 5). Each recording has
+ * its own: the recorder's thread writes into it and the app reads a copy of it, both under its lock. A recorder still
+ * stuck in a microphone read after its recording was finished or cancelled writes into its own take, which nobody reads
+ * any more, never into a newer one, and [stop] tells it, not a newer recorder, to end. Plain Kotlin, so it is tested.
+ */
+class VoiceTake(val cap: Int) {
+    private val pcm = ShortArray(cap.coerceAtLeast(0))
+    private var n = 0
+    /** Set when the recording is finished or cancelled: its recorder ends at its next turn. */
+    @Volatile var stop = false
+    /** How many samples so far. */
+    val count: Int get() = synchronized(this) { n }
+    /** How many more fit. */
+    val room: Int get() = synchronized(this) { pcm.size - n }
+    val full: Boolean get() = room <= 0
+    /** Adds the first [len] samples of [chunk], as many as fit. How many were taken. */
+    fun add(chunk: ShortArray, len: Int): Int = synchronized(this) {
+        val k = minOf(len, chunk.size, pcm.size - n).coerceAtLeast(0)
+        System.arraycopy(chunk, 0, pcm, n, k); n += k
+        k
+    }
+    /** What was recorded so far, as a copy of its own. */
+    fun copy(): ShortArray = synchronized(this) { pcm.copyOf(n) }
+}
+
+/**
+ * The bubbles' 20 levels by message id, for the last [max] notes (Android review, finding 12): small enough to keep for
+ * many, so a note scrolled out of view and back isn't decoded again. A note that couldn't be decoded isn't kept: it is
+ * tried again the next time it shows. Levels are a picture of loudness, not the sound. Any thread.
+ */
+class VoiceLevels(private val max: Int = 200) {
+    private val kept = object : LinkedHashMap<String, FloatArray>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, FloatArray>?) = size > max
+    }
+    /** [id]'s levels: kept ones, else what [make] works out (null: it can't be decoded, and nothing is kept). */
+    fun get(id: String, make: () -> FloatArray?): FloatArray? {
+        synchronized(kept) { kept[id] }?.let { return it }
+        val made = make() ?: return null
+        synchronized(kept) { kept[id] = made }
+        return made
+    }
+    val size: Int get() = synchronized(kept) { kept.size }
+}

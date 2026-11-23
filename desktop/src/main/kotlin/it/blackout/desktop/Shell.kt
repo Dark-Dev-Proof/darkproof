@@ -185,7 +185,7 @@ private fun Panes(s: AppState, a: MainActivity, g: SavedGroup) {
                         val timer = remember(s.tick, s.everyone, g) { if (s.everyone) null else MeshEngine.timer(g.code).seconds?.takeIf { it > 0 }?.let(GroupTimer::label) }
                         PaneTitle(if (s.everyone) "Everyone" else g.name) {
                             if (timer != null) Chip(timer, R.drawable.ic_schedule) { s.sheet = Sheet.Timer }
-                            if (!s.everyone) Chip("Security", R.drawable.ic_shield) { s.sheet = Sheet.Security } // the phones' round shield in the chat's header
+                            if (!s.everyone) Chip("Group security", R.drawable.ic_shield) { s.sheet = Sheet.Security } // the phones' round shield in the chat's header, by its name everywhere else
                             if (!s.everyone) Chip("Invite", R.drawable.ic_qr_code_2) { s.sheet = Sheet.Invite }
                         }
                         ChatTab(s, g, messages, phones) { s.sheet = it }
@@ -311,7 +311,7 @@ private fun StatusCard(s: AppState, phones: Int) {
         }
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Txt("$phones", 52, FontWeight.Black, lineHeight = 56)
-            Txt(if (phones == 1) "phone\nin range" else "phones\nin range", 16, FontWeight.SemiBold, Theme.dim, Modifier.padding(bottom = 9.dp), lineHeight = 19)
+            Txt(if (phones == 1) "phone\nin reach" else "phones\nin reach", 16, FontWeight.SemiBold, Theme.dim, Modifier.padding(bottom = 9.dp), lineHeight = 19)
         }
         for (l in lines) Txt(l, 13, color = Theme.dim, maxLines = 2)
     }

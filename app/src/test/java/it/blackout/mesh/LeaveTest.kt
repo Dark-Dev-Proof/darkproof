@@ -309,7 +309,7 @@ class LeaveTest {
         val all = listOf(LeaveWords.sheetTitle(g), LeaveWords.sheetText(), LeaveWords.leaveButton(g), LeaveWords.cantTell(g), LeaveWords.chooseTitle(g), LeaveWords.CHOOSE_TEXT,
             LeaveWords.LEAVE_WITHOUT_CHOOSING, LeaveWords.WITHOUT_CHOOSING_WARNING, LeaveWords.cantHandOver(), LeaveWords.LEAVE_WITHOUT_TELLING, LeaveWords.waitingTitle(g),
             LeaveWords.WAITING_TEXT, LeaveWords.LEAVE_NOW, LeaveWords.left(g, true), LeaveWords.left(g, false), LeaveWords.left(g, null),
-            LeaveWords.TELL_FIRST, LeaveWords.tellFirstSub(), LeaveWords.TELLING_TITLE, LeaveWords.ERASE_NOW, LeaveWords.empty(),
+            LeaveWords.TELL_FIRST, LeaveWords.tellFirstSub(), LeaveWords.TELLING_TITLE, LeaveWords.ERASE_NOW, LeaveWords.empty(), LeaveWords.NOT_ALL, LeaveWords.notAllLine(),
             LeaveWords.line("Marco", true), LeaveWords.line("Marco", false), LeaveNote.TEXT)
         for (d in listOf("phone", "computer")) for (s in all + listOf(LeaveWords.sheetText(d), LeaveWords.cantTell(g, d), LeaveWords.left(g, false, d)) + erasedLines(d)) {
             val l = s.lowercase()
@@ -326,7 +326,12 @@ class LeaveTest {
         assertEquals("You left My group", LeaveWords.left(g, true)); assertEquals("You left My group", LeaveWords.left(g, null))
         assertEquals("You left My group. The note didn't leave this phone in time. It goes when a phone comes into reach.", LeaveWords.left(g, false))
         assertEquals("Asks their admins' phones to remove this phone and change the key", LeaveWords.tellFirstSub())
-        assertEquals("This phone is empty", LeaveWords.empty())
+        // Only DarkProof is empty, not the phone; when something is left the headline says so instead (design review M4).
+        assertEquals("DarkProof is empty on this phone", LeaveWords.empty())
+        assertEquals("DarkProof is empty on this computer", LeaveWords.empty("computer"))
+        assertEquals("Not everything could be erased", LeaveWords.NOT_ALL)
+        assertEquals("Delete DarkProof from this phone to remove the rest.", LeaveWords.notAllLine())
+        assertFalse("never \"empty\" beside it", "empty" in (LeaveWords.NOT_ALL + LeaveWords.notAllLine()).lowercase())
         assertEquals("Marco left. Waiting for an admin's phone to change the key.", LeaveWords.line("Marco", true))
         assertEquals("Marco left the group", LeaveWords.line("Marco", false))
     }

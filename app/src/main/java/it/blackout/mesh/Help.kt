@@ -240,7 +240,7 @@ fun PersonSheet(s: AppState, a: MainActivity, messages: List<Message>, id: Strin
             if (spot != null) CircleAction(R.drawable.ic_navigation, "Find", each) { s.sheet = Sheet.Find(p.name, spot, p.spotTs) }
             if (bluetooth) CircleAction(R.drawable.ic_bluetooth, FinderWords.BUTTON, each) { s.sheet = Sheet.Finder(p.id) }
             if (!p.isReport) CircleAction(R.drawable.ic_qr_code_2, "Check", each) { s.checkEnded = null; s.sheet = Sheet.Check(p.id) }
-            if (!p.isReport) CircleAction(R.drawable.ic_notifications, "Ask if safe", each) { ask = true }
+            if (!p.isReport) CircleAction(R.drawable.ic_message_circle_question, "Ask if safe", each) { ask = true }
         }
         Card {
             Fact("Last heard", if (p.lastTs == 0L) "Nothing yet" else ago(p.lastTs))
@@ -253,7 +253,7 @@ fun PersonSheet(s: AppState, a: MainActivity, messages: List<Message>, id: Strin
         if (!p.isReport) AdminButtons(s, a, p, close)
     }
     if (ask) Confirm("Ask ${p.name}?", "${p.name} gets “${AreYouSafe(p.name).text.removePrefix("❓ ")}” with one-tap answers. The whole group sees the question.", "Ask",
-        onYes = { ask = false; if (meshReady(a)) { Thread { MeshEngine.send(AreYouSafe(p.name).text) }.start(); Toast.makeText(a, "Asked ${p.name}", Toast.LENGTH_SHORT).show() } },
+        onYes = { ask = false; if (meshReady(a)) { Thread { MeshEngine.send(AreYouSafe(p.name).text) }.start(); Toast.makeText(a, asked(p.name), Toast.LENGTH_LONG).show() } },
         onNo = { ask = false })
 }
 

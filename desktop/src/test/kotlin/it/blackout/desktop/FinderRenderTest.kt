@@ -93,7 +93,7 @@ class FinderRenderTest {
             }
         }.use { s ->
             s.png("build/finder/8-computer.png")
-            assertTrue(s.texts().toString(), s.has("Finder needs a phone's Bluetooth") && s.has("Marco needs help"))
+            assertTrue(s.texts().toString(), s.has("Find by Bluetooth works only on a phone") && s.has("Marco needs help"))
             assertFalse("no button that can't work here", s.has("I'm with Marco"))
             assertFalse(s.has("Not in reach"))
         }

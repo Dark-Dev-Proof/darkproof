@@ -22,16 +22,17 @@ plugins {
 // name (src/main/kotlin/it/blackout/desktop/standin).
 val shared = listOf(
     "About", "App", "AppState", "AsciiBackground", "BleProtocol", "Contact", "Core", "Dials", "EncKeys", "Finder", "FinderView", "Fingerprint", "Groups", "Help", "HighRisk", "Hpke",
-    "Joins", "Journey", "LockRules", "MeshCore", "MeshEngine", "MessageKeys", "Meshtastic", "Moderation", "Nostr", "NostrLink", "Notices", "P256",
+    "Joins", "Journey", "LockRules", "MapPins", "MeshCore", "MeshEngine", "MessageKeys", "Meshtastic", "Moderation", "Nostr", "NostrLink", "Notices", "P256",
     "PersonCode", "PlusCode", "Protocol", "QuickCheckIn", "Quiet", "Ready", "Replies", "Schnorr", "ScreenRules", "Screens", "Scrypt", "Security", "Socks5",
     "Times", "Ui", "VoiceNotes", "VoiceViews", "WifiLinks", "WordFilter",
 )
 
-// The Android app's unit tests: all of them run again here, on a desktop JVM with no Android.
+// The Android app's unit tests: all of them run again here, on a desktop JVM with no Android (a new test file in
+// app/src/test goes on this list too). MapPinsTest checks the pin names of MapPins.kt; the map itself is the phone's.
 val sharedTests = listOf(
-    "AboutTest", "AppLockFixTest", "ArrivalsTest", "AuthorshipTest", "BleProtocolTest", "CheckInExtrasTest", "CoreTest", "DoorStoreFixTest",
+    "AboutTest", "AppLockFixTest", "ArrivalsTest", "AuthorshipTest", "BleProtocolTest", "CheckInExtrasTest", "CoreTest", "DeliveryFixTest", "DoorStoreFixTest",
     "FaultTest", "FinderTest", "FinderVectorsTest", "FirstCopyTest", "FormatVectorsTest", "HighRiskTest", "HpkeTest", "HybridTest", "InviteFixTest", "JourneyTest", "KeyChangesTest",
-    "KeyringTest", "LeaveTest", "LeaveVectorsTest", "LinkLimitsFixTest", "MeshCoreTest", "MessageKeysTest", "MiscFixTest", "NostrTest",
+    "KeyringTest", "LeaveTest", "LeaveVectorsTest", "LinkLimitsFixTest", "MapPinsTest", "MeshCoreTest", "MessageKeysTest", "MiscFixTest", "NostrTest", "ScreenFixTest",
     "PaddingTest", "PersonCodeTest", "PlusCodeTest", "PrivacyTest", "ProtocolTest", "QuietVectorsTest", "RekeyTest", "RelayAttackTest", "RelayIntakeTest",
     "RelayLimitsFixTest", "RelayLinksTest", "RepliesVectorsTest", "SchnorrTest", "ScryptTest", "SecurityWordsTest", "SharedVectorsTest", "StoredDataFixTest",
     "TestSigning", "TimerTest", "TimerVectorsTest", "VoiceNotesTest", "VoiceVectorsTest", "WifiLinksTest", "WordFilterTest",
