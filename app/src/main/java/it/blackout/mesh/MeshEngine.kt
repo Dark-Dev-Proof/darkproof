@@ -10,7 +10,10 @@ import android.os.SystemClock
 import java.util.UUID
 import java.util.concurrent.Executors
 
-private class Db(c: Context) : SQLiteOpenHelper(c, "mesh.db", null, 8) {
+/** The store's version ([Db]). */
+private const val STORE_VERSION = 9
+
+private class Db(c: Context) : SQLiteOpenHelper(c, "mesh.db", null, STORE_VERSION) {
     override fun onCreate(d: SQLiteDatabase) {
         d.execSQL("CREATE TABLE p(id TEXT PRIMARY KEY, ts INTEGER, ttl INTEGER, cipher BLOB)")
         onUpgrade(d, 2, 3)
@@ -24,6 +27,9 @@ private class Db(c: Context) : SQLiteOpenHelper(c, "mesh.db", null, 8) {
      * the packets high-risk mode removed (g: [GoneList]).
      * 7 → 8: each group's check-in clocks (q: [QuietBook.saved], spec "If I go quiet", rule Q10), here beside the gone list
      * rather than in the preferences: the app's own storage, out of backups.
+     * 8 → 9: those clocks sealed (q.box: [QuietSeal], decision C of the final review, 2026-11-23); q.data, where version 8
+     * kept them readable, stays empty. A row saved readable before is sealed at the next start, and its readable copy
+     * emptied ([MeshEngine.sealPlainClocks]).
      */
     override fun onUpgrade(d: SQLiteDatabase, a: Int, b: Int) {
         if (a < 2) d.execSQL("DELETE FROM p")
@@ -38,6 +44,69 @@ private class Db(c: Context) : SQLiteOpenHelper(c, "mesh.db", null, 8) {
             d.execSQL("CREATE TABLE g(key TEXT PRIMARY KEY, ts INTEGER, grp TEXT)") // a name, a header time and a group id: nothing of the packet's content
         }
         if (a < 8) d.execSQL("CREATE TABLE q(grp TEXT PRIMARY KEY, data TEXT)")
+        if (a < 9) d.execSQL("ALTER TABLE q ADD COLUMN box BLOB")
+    }
+
+    /**
+     * A store written by a newer DarkProof (this one is older, final review 2026-11-23): refused with words that say so,
+     * never opened half understood. The engine's start catches it and says it ([MeshEngine.start]) instead of ending the app.
+     */
+    override fun onDowngrade(d: SQLiteDatabase, a: Int, b: Int) { throw StoreTooNew(a, b) }
+}
+
+/** The store was written by a newer DarkProof: version [had]; this one reads [reads]. */
+class StoreTooNew(had: Int, reads: Int) : android.database.sqlite.SQLiteException(
+    "The saved messages were written by a newer version of DarkProof (store $had, this version reads $reads). Install the newer version again.", null)
+
+/**
+ * Table q's rows (decision C of the final review, 2026-11-23): a group's check-in clocks as [QuietBook.saved] writes them
+ * (member ids, times, positions, who confirmed), sealed with AES-256-GCM under the key of this phone's readable copies
+ * ([History], in the vault), and bound to the group's id, so that a row can't be moved to another group. A phone whose
+ * storage is read shows none of it without the vault's key; the alarm's receiver opens it with the app closed, since the
+ * Keystore opens the vault then too. Same key as the copies, under its own label. Pure: tested.
+ */
+object QuietSeal {
+    private const val IV = 12
+    private fun aad(group: String) = "darkproof-quiet-v1|$group".toByteArray(Charsets.UTF_8)
+
+    fun seal(key: ByteArray, group: String, lines: List<String>): ByteArray {
+        val c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(javax.crypto.Cipher.ENCRYPT_MODE, javax.crypto.spec.SecretKeySpec(key, "AES")); c.updateAAD(aad(group))
+        return c.iv + c.doFinal(lines.joinToString("\n").toByteArray(Charsets.UTF_8))
+    }
+
+    /** The lines sealed for [group], or null if [blob] doesn't open with [key] for that group. */
+    fun open(key: ByteArray, group: String, blob: ByteArray): List<String>? = runCatching {
+        if (blob.size <= IV) return null
+        val c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(javax.crypto.Cipher.DECRYPT_MODE, javax.crypto.spec.SecretKeySpec(key, "AES"), javax.crypto.spec.GCMParameterSpec(128, blob, 0, IV)); c.updateAAD(aad(group))
+        String(c.doFinal(blob, IV, blob.size - IV), Charsets.UTF_8).split('\n').filter { it.isNotEmpty() }
+    }.getOrNull()
+}
+
+/**
+ * What the backup alarm does when it rings with no engine running ([MeshEngine.quietAlarmRang]), from the clocks as table
+ * q holds them ([books], by group id) at [now]: the alerts to post, what is still to come (armed again), and the groups
+ * whose records changed. An alert whose group or clock is no longer on this phone (the group was left or the phone
+ * erased; the clock was cancelled, replaced or alerted already) is neither posted nor armed again, so the alarm doesn't
+ * carry its words any longer than that. At most one alert about a member every 10 minutes (rule Q12). Pure: tested.
+ */
+object QuietRang {
+    class Result(val post: List<QuietAlert>, val left: List<QuietAlert>, val changed: Set<String>)
+
+    fun handle(due: List<QuietAlert>, books: Map<String, QuietBook>, now: Long): Result {
+        val post = ArrayList<QuietAlert>(); val left = ArrayList<QuietAlert>(); val changed = HashSet<String>()
+        for (a in due.sortedBy { it.at }) {
+            val (grp, book) = books.entries.firstOrNull { (g, b) -> if (a.remind) QuietAlerts.remindId(g) == a.id else b.clocks.values.any { QuietAlerts.id(g, it.member) == a.id } } ?: continue
+            val cl = book.clocks.values.firstOrNull { it.mark == a.mark && !it.alerted && book.armed(it.member) } ?: continue // cancelled, replaced or posted already
+            if (a.at > now) { left += a; continue }
+            if (a.remind) { if (now < cl.deadline) { post += a; book.note(cl.member, cl.mark, alerted = true); changed += grp }; continue }
+            if (QuietClock.due(cl.deadline, cl.learned, now) == QuietClock.Due.None) continue
+            val at = book.postableAt(cl, false, now) ?: continue
+            if (at > now) { left += a.copy(at = at); continue }
+            post += a; book.didPost(cl, now); book.note(cl.member, cl.mark, alerted = true, scheduled = false); changed += grp
+        }
+        return Result(post, left, changed)
     }
 }
 
@@ -236,7 +305,7 @@ object MeshEngine {
      */
     @Synchronized fun start(c: Context, name: String, code: String) {
         if (router != null || stopped) return
-        if (code in leftCold) return // asked to start in a group that was left a moment ago, before any engine ran: the screen moves on to the next one
+        if (leftColdBlocks(c, code)) return // asked to start in a group that was left a moment ago, before any engine ran: the screen moves on to the next one
         app = c.applicationContext
         val prefs = c.getSharedPreferences("mesh", 0)
         val upgrade = prefs.contains("device") // this phone ran DarkProof before (a device id exists from then)
@@ -247,8 +316,15 @@ object MeshEngine {
             handedOff = RecentIds(HANDED_OFF_MAX, prefs.getString("handedOff", "")!!.split(',').filter { it.isNotEmpty() })
             handedOffOver.clear(); handedOffOver.putAll(parseOver(prefs.getString(OVER_PREF, "") ?: ""))
         }
-        if (db == null) db = Db(c.applicationContext).writableDatabase // open already if a group was left before the engine started ([leave])
+        // Open already if a group was left before the engine started ([leave]). A store this version can't open (one a newer
+        // DarkProof wrote, [StoreTooNew]) leaves the engine off and says why, instead of ending the app at every start.
+        if (db == null) db = try { Db(c.applicationContext).writableDatabase } catch (e: android.database.sqlite.SQLiteException) {
+            DebugTools.log("store: can't open: $e")
+            transportStatus = (e as? StoreTooNew)?.message ?: "Can't open the saved messages"; notifyUi()
+            return
+        }
         loadGone()
+        sealPlainClocks() // decision C: clocks a version before this one saved readable are sealed now, and their readable copy emptied
         if (!prefs.getBoolean("v06", false)) { // groups saved before v0.6 count as founded here (spec "Making the first epoch")
             val saved = if (upgrade) (listOfNotNull(Groups.current(c)) + Groups.others(c)).map { it.code }.toSet() else emptySet()
             Groups.setFounded(c, Groups.founded(c) + saved)
@@ -1170,8 +1246,10 @@ object MeshEngine {
      * before names a phone nobody can find any more. Once per start, in each saved group whose newest check-in from this
      * phone is "I need help", under 24 hours old, it goes again ([FinderResend]) with a fresh battery level and, if location
      * sharing is on, the last known position; at most every 10 minutes per group. Only where the note is written
-     * ([FinderPrefs.writes]: the switch on, high-risk mode off), whatever the trial switch says, as on the iPhone (spec
-     * rule F6: the trial hides only the Finder screen). It alerts the group again, as any "I need help" does. Background thread.
+     * ([FinderPrefs.writes]: the trial switch on (decision B of the final review), the switch on, high-risk mode off), and
+     * never while an own clock message newer than that help call is held there (item 3): the re-sent check-in would be
+     * dated after the clock and stop it on every phone (rule Q4). It alerts the group again, as any "I need help" does.
+     * Background thread.
      */
     private fun resendHelpOnce(groups: List<Keys>) {
         if (helpLookedAt || stopped) return
@@ -1181,8 +1259,14 @@ object MeshEngine {
         val prefs = c.getSharedPreferences("mesh", 0); val now = System.currentTimeMillis()
         for (k in groups) {
             if (k.isPublic || k.removed || !k.joined || k.code == leaving) continue
-            val newest = synchronized(messages) { messages.filter { !it.public && it.group == k.code && it.sender == deviceId && CheckIn.of(it.text) != null }.maxByOrNull { it.ts } } ?: continue
-            if (!FinderResend.due(CheckIn.of(newest.text), newest.ts, now, prefs.getLong(FinderResend.PREF + k.id, 0L))) continue
+            val (newest, clockTs) = synchronized(messages) {
+                val own = messages.filter { !it.public && it.group == k.code && it.sender == deviceId }
+                own.filter { CheckIn.of(it.text) != null }.maxByOrNull { it.ts } to own.filter { it.notice is Notice.Clock }.maxOfOrNull { it.ts }
+            }
+            if (newest == null) continue
+            // This phone's own newest clock: its message, or its record when the message is gone (the group's timer, high-risk mode).
+            val ownClock = listOfNotNull(clockTs, synchronized(k.quietBook) { k.quietBook.clock(k.me)?.ts }).maxOrNull()
+            if (!FinderResend.due(CheckIn.of(newest.text), newest.ts, now, prefs.getLong(FinderResend.PREF + k.id, 0L), ownClockAfter = ownClock != null && ownClock > newest.ts)) continue
             prefs.edit().putLong(FinderResend.PREF + k.id, now).apply()
             val spot = if (prefs.getBoolean("shareLocation", false)) runCatching { Locator.lastKnown(c) }.getOrNull() else null
             DebugTools.log("finder: help check-in sent again after a restart")
@@ -1839,9 +1923,18 @@ object MeshEngine {
         return Reactions.Entry(k.id, t.key, m.sender, m.text, m.ts, StoreCap.packetId(name))
     }
 
-    private val historyKey: ByteArray? by lazy {
-        val c = app ?: return@lazy null
-        Vault.get(c, "history") ?: ByteArray(32).also(rnd::nextBytes).also { Vault.put(c, "history", it) }
+    /**
+     * The key of this phone's readable copies ([History]) and of its stored clocks ([QuietSeal]), in the vault; made the
+     * first time. One that is saved but can't be opened right now is never replaced by a new one, which would lose every
+     * copy and clock sealed under it: null then, and asked for again next time (the alarm's receiver reaches for it too).
+     */
+    @Volatile private var historyKeyHeld: ByteArray? = null
+    private val historyLock = Any()
+    private val historyKey: ByteArray? get() = historyKeyHeld ?: synchronized(historyLock) {
+        historyKeyHeld ?: app?.let { c ->
+            Vault.get(c, "history") ?: if (c.getSharedPreferences("vault", 0).contains("history")) null
+                else ByteArray(32).also(rnd::nextBytes).also { Vault.put(c, "history", it) }
+        }?.also { historyKeyHeld = it }
     }
 
     /** Keeps a readable copy of a message opened with its own key: that key is about to be deleted. */
@@ -1963,7 +2056,8 @@ object MeshEngine {
             id = Packet.newId(cr.mailbox)
             val wire = if (board) "web-${k.me}" else k.me // member ids (spec "Member ids")
             val about = if (public || board || clock != null) null else replyTo?.let { About.target(it, k.code) }?.let { About.Reply(it) }
-            // Finder (decisions 1 and 2): this phone's own "I need help" carries its link id, unless the switch is off or high-risk mode is on.
+            // Finder (decisions 1 and 2): this phone's own "I need help" carries its link id, only while the trial switch is on
+            // (decision B of the final review), and not if "Let my group find this phone" is off or high-risk mode is on.
             // A check-in clock's field takes the 5th field first (sealOne puts the note only where nothing else is).
             val note = if (clock == null && FinderNote.wanted(text, public, board, photo != null, voice != null, about != null) && app?.let(FinderPrefs::writes) == true) FinderNote.field(linkId) else null
             val (cipher, mark) = sealOne(k, cr, public, id, ts, wire, from, text, photo, about, voice, fifth = clock?.let(QuietClock::field), note = note)
@@ -2181,6 +2275,19 @@ object MeshEngine {
     @Volatile private var leaving: String? = null
     /** Codes of groups left while no engine ran ([leave]): a start still on its way with one of them does nothing. Guarded by the engine's own lock. */
     private val leftCold = HashSet<String>()
+
+    /**
+     * True if a start with [code] must do nothing: the group was left while no engine ran ([leftCold]) and isn't saved
+     * again. Once it is saved again (joined anew with the same code, in the same run of the app), the entry goes and the
+     * start goes on (final review 2026-11-23: the group showed but never linked until the app was restarted). Under the
+     * engine's own lock.
+     */
+    @Synchronized private fun leftColdBlocks(c: Context, code: String): Boolean {
+        if (code !in leftCold) return false
+        if (Groups.find(c, code) == null) return true
+        leftCold -= code
+        return false
+    }
     /** True while a group is being forgotten ([leave]): an erase that starts meanwhile lets that end first ([awaitLeft]). */
     val isLeaving get() = leaving != null
 
@@ -2247,6 +2354,9 @@ object MeshEngine {
             }.onFailure { DebugTools.log("leave: can't read the store: $it") }
             // The leave note's packet stays, to be carried (LW3): only what this phone could read or show of it goes.
             val noteKey = note?.let { n -> drop.remove(n); synchronized(messages) { packetKey(n) }?.also(passedOn::remove) }
+            // Its clocks' alerts, by their names ([QuietAlerts]): of every member its book or its keys know, and this phone's reminder.
+            val clockAlerts = (synchronized(k.quietBook) { k.quietBook.clocks.keys + k.quietBook.checkIns.keys + k.quietBook.posted.keys } +
+                k.members + synchronized(k.known) { k.known.keys.toList() }).map { QuietAlerts.id(k.id, it) } + QuietAlerts.remindId(k.id)
             val wasActive = synchronized(messages) {
                 if (note != null && index.containsKey(note)) forgetStored(listOf(note), packets = false)
                 messages.filter { it.group == k.code }.mapTo(drop) { it.id }
@@ -2259,7 +2369,7 @@ object MeshEngine {
                 forgetGone(names); runCatching { db?.delete("g", "grp = ?", arrayOf(k.id)) } // also the names saved before the engine last started
                 synchronized(k.quietBook) { k.quietBook.clocks.clear(); k.quietBook.checkIns.clear(); k.quietBook.posted.clear() } // its check-in clocks (rule Q10)
                 runCatching { db?.delete("q", "grp = ?", arrayOf(k.id)) }
-                Notifier.forgetAll(c) // its alerts from before the app last started, too
+                Notifier.forgetGroup(c, clockAlerts) // its alerts from before the app last started, too; other groups' clock alerts stay
                 runCatching { db?.delete("k", "grp = ?", arrayOf(k.id)) }
                 unchecked.forgetChannel(k)
                 synchronized(keyCache) { keyCache.values.removeAll { it === k } }
@@ -2299,6 +2409,9 @@ object MeshEngine {
             DebugTools.log("left a group: ${drop.size} packet(s) removed")
             if (router != null && wasActive && next != null) savedGroupsChanged(next.code) else { nostr?.resubscribe(); notifyUi() } // its mailboxes are no longer asked for
             if (router != null) quietPassNow() // the alarm no longer holds anything of the group
+            // With no engine running nothing can work out what the other groups still have to come: the alarm goes now, with
+            // the group's words and code in it (final review 2026-11-23, item 5), and the next start arms the rest again.
+            else quietOut?.arm(emptyList())
             // Nothing is said if an erase began meanwhile ([Wipe]): the group's name isn't shown again on its way out.
             main.post { if (!stopped) done(Groups.current(c)) }
         }
@@ -2313,6 +2426,7 @@ object MeshEngine {
     fun halt(closeStore: Boolean) {
         stopped = true
         main.removeCallbacksAndMessages(null); pendingAcks.clear()
+        runCatching { quietOut?.arm(emptyList()) } // the clocks' backup alarm outlives the process: it goes now, with its words (item 5)
         listener = null; onIncoming = null; sender = null
         router = null
         runCatching { nostr?.stop() }; nostr = null
@@ -2365,10 +2479,46 @@ object MeshEngine {
     /** [k]'s clocks as the store's table q has them, at the start. */
     private fun loadQuiet(k: Keys) {
         if (k.isPublic) return
-        val data = try { db?.rawQuery("SELECT data FROM q WHERE grp = ?", arrayOf(k.id))?.use { q -> if (q.moveToNext()) q.getString(0) else null } }
+        val lines = try { db?.rawQuery("SELECT data, box FROM q WHERE grp = ?", arrayOf(k.id))?.use { q -> if (q.moveToNext()) quietRow(k.id, q.getString(0), q.getBlob(1)) else null } }
             catch (e: android.database.sqlite.SQLiteException) { DebugTools.log("store: can't read the clocks: $e"); null } ?: return
-        val b = QuietBook.parse(data.split('\n'))
+        val b = QuietBook.parse(lines)
         synchronized(k.quietBook) { k.quietBook.clocks.putAll(b.clocks); k.quietBook.checkIns.putAll(b.checkIns); k.quietBook.posted.putAll(b.posted) }
+    }
+
+    /**
+     * The lines of a row of table q for [group]: its sealed column opened ([box]), or, for a row a version before 9 saved
+     * and not yet sealed ([sealPlainClocks]), its readable one ([data]). Null if neither reads (the vault's key can't be
+     * had right now: the row stays as it is).
+     */
+    private fun quietRow(group: String, data: String?, box: ByteArray?): List<String>? = when {
+        box != null -> historyKey?.let { QuietSeal.open(it, group, box) }.also { if (it == null) DebugTools.log("store: a group's clocks don't open") }
+        data != null -> data.split('\n').filter { it.isNotEmpty() }
+        else -> null
+    }
+
+    /**
+     * Decision C: every row of table q still readable (saved by a version before 9) is sealed, and its readable copy goes
+     * from the row; SQLite's secure delete overwrites what the row held before, as far as the file goes. Rows are left as
+     * they are while the vault's key can't be had. At every start of the engine and when the alarm rings without it. Any thread.
+     */
+    internal fun sealPlainClocks() {
+        val d = db ?: return
+        val plain = ArrayList<Pair<String, String>>()
+        try { d.rawQuery("SELECT grp, data FROM q WHERE box IS NULL AND data IS NOT NULL", null).use { q -> while (q.moveToNext()) plain += q.getString(0) to q.getString(1) } }
+        catch (e: android.database.sqlite.SQLiteException) { DebugTools.log("store: can't read the clocks: $e"); return }
+        if (plain.isEmpty() || historyKey == null) return
+        runCatching { d.rawQuery("PRAGMA secure_delete = ON", null).use { it.moveToNext() } }
+        for ((g, data) in plain) saveQuiet(g, data.split('\n').filter { it.isNotEmpty() })
+        runCatching { d.rawQuery("PRAGMA secure_delete = OFF", null).use { it.moveToNext() } }
+        DebugTools.log("store: ${plain.size} group(s) of clocks sealed")
+    }
+
+    /** Every group's clocks as table q holds them, by group id; null if the table can't be read. */
+    private fun quietBooks(d: SQLiteDatabase): Map<String, QuietBook>? {
+        val books = HashMap<String, QuietBook>()
+        try { d.rawQuery("SELECT grp, data, box FROM q", null).use { q -> while (q.moveToNext()) { val g = q.getString(0); quietRow(g, q.getString(1), q.getBlob(2))?.let { books[g] = QuietBook.parse(it) } } } }
+        catch (e: android.database.sqlite.SQLiteException) { DebugTools.log("quiet: can't read the clocks: $e"); return null }
+        return books
     }
 
     /** A copy of [k]'s clocks. Any thread. */
@@ -2381,10 +2531,16 @@ object MeshEngine {
         true
     }
 
+    /**
+     * Saves [group]'s clocks in table q, sealed ([QuietSeal], decision C); the readable column is left empty (the row is
+     * replaced whole). Without the vault's key nothing is written: the clocks are kept in memory only until it can be had,
+     * never written readable.
+     */
     private fun saveQuiet(group: String, saved: List<String>) {
         try {
-            if (saved.isEmpty()) db?.delete("q", "grp = ?", arrayOf(group))
-            else db?.insertWithOnConflict("q", null, ContentValues().apply { put("grp", group); put("data", saved.joinToString("\n")) }, SQLiteDatabase.CONFLICT_REPLACE)
+            if (saved.isEmpty()) { db?.delete("q", "grp = ?", arrayOf(group)); return }
+            val key = historyKey ?: run { DebugTools.log("store: no key for the clocks, not saved"); return }
+            db?.insertWithOnConflict("q", null, ContentValues().apply { put("grp", group); put("box", QuietSeal.seal(key, group, saved)) }, SQLiteDatabase.CONFLICT_REPLACE)
         } catch (e: android.database.sqlite.SQLiteException) { DebugTools.log("store: can't save the clocks: $e") }
     }
 
@@ -2509,33 +2665,28 @@ object MeshEngine {
      * The backup alarm rang with [due] (see [QuietOut.arm]). With the engine running, a pass decides everything. Without it
      * (Android ended the app), what is due is posted unless its record was cancelled, replaced or alerted meanwhile, read
      * from the store itself, with the same limit of one alert about a member every 10 minutes; what is still to come is
-     * returned, to be armed again. Background thread.
+     * returned, to be armed again ([QuietRang]). All of it under the engine's own lock, which [start] takes too: a start
+     * can't read table q between this read and this save, so the engine never posts the same alert a second time
+     * (final review 2026-11-23). Background thread.
      */
     fun quietAlarmRang(c: Context, due: List<QuietAlert>, out: QuietOut): List<QuietAlert> {
         if (stopped) return emptyList()
         if (router != null) { quietPass(); return emptyList() } // the pass arms the alarm again
-        val d = synchronized(this) {
+        synchronized(this) {
+            if (stopped) return emptyList()
+            if (router != null) { quietPass(); return emptyList() } // a start came first
+            val now = quietNow()
             if (app == null) app = c.applicationContext
             if (db == null) runCatching { db = Db(c.applicationContext).writableDatabase }.onFailure { DebugTools.log("quiet: can't open the store: $it") }
-            db
-        } ?: return due
-        val books = HashMap<String, QuietBook>()
-        try { d.rawQuery("SELECT grp, data FROM q", null).use { q -> while (q.moveToNext()) books[q.getString(0)] = QuietBook.parse(q.getString(1).split('\n')) } }
-        catch (e: android.database.sqlite.SQLiteException) { DebugTools.log("quiet: can't read the clocks: $e"); return due }
-        val now = quietNow(); val left = ArrayList<QuietAlert>(); val changed = HashSet<String>()
-        for (a in due.sortedBy { it.at }) {
-            if (a.at > now) { left += a; continue }
-            val (grp, book) = books.entries.firstOrNull { (g, b) -> if (a.remind) QuietAlerts.remindId(g) == a.id else b.clocks.values.any { QuietAlerts.id(g, it.member) == a.id } } ?: continue
-            val cl = book.clocks.values.firstOrNull { it.mark == a.mark && !it.alerted && book.armed(it.member) } ?: continue // cancelled, replaced or posted already
-            if (a.remind) { if (now < cl.deadline) { out.post(a); book.note(cl.member, cl.mark, alerted = true); changed += grp }; continue }
-            if (QuietClock.due(cl.deadline, cl.learned, now) == QuietClock.Due.None) continue
-            val at = book.postableAt(cl, false, now) ?: continue
-            if (at > now) { left += a.copy(at = at); continue }
-            out.post(a); book.didPost(cl, now); book.note(cl.member, cl.mark, alerted = true, scheduled = false); changed += grp
+            val d = db ?: return due.filter { it.at > now } // what is due now can't be checked: it isn't armed again to ring at once, again and again
+            sealPlainClocks()
+            val books = quietBooks(d) ?: return due.filter { it.at > now }
+            val r = QuietRang.handle(due, books, now)
+            r.post.forEach(out::post)
+            for (g in r.changed) saveQuiet(g, books.getValue(g).saved)
+            DebugTools.log("quiet: the alarm rang, ${r.post.size} posted, ${r.left.size} to come, ${due.size - r.post.size - r.left.size} dropped")
+            return r.left
         }
-        for (g in changed) saveQuiet(g, books.getValue(g).saved)
-        DebugTools.log("quiet: the alarm rang, ${due.size - left.size} handled, ${left.size} to come")
-        return left
     }
 
     /** "18:30", in the phone's own format. */

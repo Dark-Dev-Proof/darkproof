@@ -101,10 +101,24 @@ class FinderTest {
     }
 
     @Test fun theSwitchAndHighRiskMode() {
-        assertTrue(FinderPrefs.writes(findable = true, highRisk = false, bluetooth = true))
-        assertFalse("off in high-risk mode whatever the switch says", FinderPrefs.writes(findable = true, highRisk = true, bluetooth = true))
-        assertFalse(FinderPrefs.writes(findable = false, highRisk = false, bluetooth = true))
-        assertFalse("a computer has no Bluetooth links", FinderPrefs.writes(findable = true, highRisk = false, bluetooth = false))
+        assertTrue(FinderPrefs.writes(findable = true, highRisk = false, trial = true, bluetooth = true))
+        assertFalse("off in high-risk mode whatever the switch says", FinderPrefs.writes(findable = true, highRisk = true, trial = true, bluetooth = true))
+        assertFalse(FinderPrefs.writes(findable = false, highRisk = false, trial = true, bluetooth = true))
+        assertFalse("a computer has no Bluetooth links", FinderPrefs.writes(findable = true, highRisk = false, trial = true, bluetooth = false))
+    }
+
+    /**
+     * Decision B of the final review (2026-11-23): while the trial switch is off (the release default), "I need help"
+     * carries no link id (and isn't sent again after a restart, which asks the same), and Settings doesn't offer the switch.
+     */
+    @Test fun nothingOfTheNoteWhileTheTrialIsOff() {
+        assertFalse("no note while the trial is off", FinderPrefs.writes(findable = true, highRisk = false, trial = false, bluetooth = true))
+        assertFalse(FinderPrefs.writes(findable = true, highRisk = true, trial = false, bluetooth = true))
+        assertTrue("the Settings row on a phone with the trial on", FinderPrefs.offered(trial = true, bluetooth = true))
+        assertFalse("hidden while the trial is off", FinderPrefs.offered(trial = false, bluetooth = true))
+        assertFalse("never on a computer", FinderPrefs.offered(trial = true, bluetooth = false))
+        // Reading a note doesn't depend on it.
+        assertEquals(link, FinderNote.read(note, utf8("🆘 I need help")))
     }
 
     // MARK: - Radio first (F3, vectors finder-fit)
@@ -181,9 +195,34 @@ class FinderTest {
         assertFalse("at most every 10 minutes", FinderResend.due(CheckIn.HELP, now - h, now, now - 9 * min))
         assertTrue(FinderResend.due(CheckIn.HELP, now - h, now, now - 10 * min))
         assertTrue("a clock set back doesn't hold it off", FinderResend.due(CheckIn.HELP, now - h, now, now + h))
+        assertFalse("never while an own clock message newer than the call is held", FinderResend.due(CheckIn.HELP, now - h, now, 0, ownClockAfter = true))
+        assertTrue(FinderResend.due(CheckIn.HELP, now - h, now, 0, ownClockAfter = false))
         val old = "🆘 I need help: injured, water · 👥 3 · 🔋 23% · 📍 45.46420,9.19000 ±12m"
         assertEquals("🆘 I need help: injured, water · 👥 3 · 🔋 40%", FinderResend.text(old, 40, null))
         assertEquals("🆘 I need help", FinderResend.text("🆘 I need help · 🔋 9%", null, null))
+    }
+
+    /**
+     * Final review 2026-11-23, item 3: Anna asks for help at 10:00, starts an 8-hour check-in clock at 10:30, and her app
+     * starts again at 11:00. Her newest check-in is still the help call, under a day old, but her own clock is newer: no
+     * re-send, since a check-in dated 11:00 would stop that clock on every phone (rule Q4).
+     */
+    @Test fun aResendNeverStopsTheSendersNewerClock() {
+        val ten = 1_800_000_000_000L; val min = 60_000L; val anna = "1111111111111111"
+        val book = QuietBook()
+        assertTrue(book.checkIn(anna, ten, ten, highRisk = false))                                        // 🆘 at 10:00
+        val at = ten + 30 * min
+        assertTrue(book.take(anna, "00000000000000c1", "0011223344556677", at, at + 8 * 60 * min, null, at, highRisk = false)) // ⏳ at 10:30
+        assertTrue(book.armed(anna))
+        val restart = ten + 60 * min
+        val clockAfter = book.clock(anna)!!.ts > ten
+        assertTrue(clockAfter)
+        assertFalse("no re-send while her newer clock is held", FinderResend.due(CheckIn.HELP, ten, restart, 0, ownClockAfter = clockAfter))
+        // Without the clock it would go, as before.
+        assertTrue(FinderResend.due(CheckIn.HELP, ten, restart, 0, ownClockAfter = false))
+        // What the re-send would have done: a check-in dated 11:00 stops her clock.
+        book.checkIn(anna, restart, restart, highRisk = false)
+        assertFalse(book.armed(anna))
     }
 
     // MARK: - The band logic (vectors finder-bands)

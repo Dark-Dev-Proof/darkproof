@@ -200,8 +200,9 @@ object FinderMath {
 
 /**
  * Re-sending "I need help" after a restart (decision 3): the old note names a link id that is gone, so once per start,
- * if this phone's newest own check-in in a group is "I need help", under 24 hours old, and the last re-send there was
- * 10 minutes ago or more, it goes again with a fresh battery level and the new link id.
+ * if this phone's newest own check-in in a group is "I need help", under 24 hours old, no own clock message newer than
+ * it is held there, and the last re-send there was 10 minutes ago or more, it goes again with a fresh battery level and
+ * the new link id. Only while the note is written ([FinderPrefs.writes], the trial switch among it).
  */
 object FinderResend {
     const val MAX_AGE_MS = 24 * 3_600_000L
@@ -209,9 +210,14 @@ object FinderResend {
     /** Where the last re-send's time is kept per group: this prefix and the group's id, in the "mesh" settings. */
     const val PREF = "finderResend."
 
-    /** [newest]: this phone's newest own check-in in the group and its time; [lastResend]: 0 for never. */
-    fun due(newest: CheckIn?, newestTs: Long, now: Long, lastResend: Long): Boolean {
-        if (newest != CheckIn.HELP) return false
+    /**
+     * [newest]: this phone's newest own check-in in the group and its time; [lastResend]: 0 for never. [ownClockAfter]: an
+     * own clock message dated after that check-in is held in the group (its message, or the clock's record): no re-send
+     * then, since a check-in dated after a clock message stops that clock on every phone (rule Q4), and a re-send nobody
+     * chose must never stop the sender's own newer clock (final review 2026-11-23, item 3).
+     */
+    fun due(newest: CheckIn?, newestTs: Long, now: Long, lastResend: Long, ownClockAfter: Boolean = false): Boolean {
+        if (newest != CheckIn.HELP || ownClockAfter) return false
         val age = now - newestTs
         if (age < 0 || age >= MAX_AGE_MS) return false
         return lastResend > now || now - lastResend >= EVERY_MS // a clock set back must not hold it off for long
@@ -235,9 +241,16 @@ object FinderPrefs {
     fun trial(c: Context) = prefs(c).getBoolean(TRIAL, DebugTools.finderTrial)
     fun setTrial(c: Context, on: Boolean) = prefs(c).edit().putBoolean(TRIAL, on).apply()
 
-    /** Whether this device adds the note now: a phone (a computer has no Bluetooth links), the switch on, high-risk mode off. */
-    fun writes(findable: Boolean, highRisk: Boolean, bluetooth: Boolean = Here.bluetooth) = bluetooth && findable && !highRisk
-    fun writes(c: Context) = writes(findable(c), HighRisk.on(c))
+    /**
+     * Whether this device adds the note now: a phone (a computer has no Bluetooth links), the trial switch on (decision B
+     * of the final review, 2026-11-23: while the Finder screen is hidden, "I need help" carries no link id and is not sent
+     * again after a restart), "Let my group find this phone" on, high-risk mode off. Reading a note doesn't depend on it.
+     */
+    fun writes(findable: Boolean, highRisk: Boolean, trial: Boolean, bluetooth: Boolean = Here.bluetooth) = bluetooth && trial && findable && !highRisk
+    fun writes(c: Context) = writes(findable(c), HighRisk.on(c), trial(c))
+
+    /** Whether Settings shows "Let my group find this phone": on a phone, and only while the trial is on (decision B). */
+    fun offered(trial: Boolean, bluetooth: Boolean = Here.bluetooth) = bluetooth && trial
 }
 
 /** Debug builds only: readings fed by hand instead of Bluetooth (the emulator has none). Set by DebugTools; never in a release build. */

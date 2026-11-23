@@ -47,7 +47,7 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         private const val ROTATE_MS = 30_000L      // at the limit, at most one settled link gives way this often
         private const val STALE_MS = 5_000L    // at the link limit, a link with no HELLO this old makes room
         private const val RSSI_EVERY_MS = 1_000L   // Finder: one signal read a second per link (rule F13)
-        private const val RSSI_WAIT_MS = 2_000L    // a signal read with no answer this long gives the link's slot back
+        private const val RSSI_WAIT_MS = BleProtocol.RssiSlot.WAIT_MS // a signal read with no answer this long gives the link's slot back
         private const val PROBE_WAIT_MS = 5_000L   // the client on the other phone's connection must be up by then
         private const val RESCAN_MS = 10_000L      // searches restart at most this often (Android ignores an app that restarts too often)
         fun owns(peer: String) = peer.startsWith(PREFIX)
@@ -71,7 +71,7 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         val createdAt = SystemClock.elapsedRealtime()
         var openedAt = 0L      // when setup finished: the other side's HELLO must come within 10 s
         var wantRssi = false   // Finder: read the signal when the one GATT operation slot is free (rule F13)
-        var rssiAt = 0L        // when a signal read went out and holds the slot (0: none)
+        val rssi = BleProtocol.RssiSlot() // Finder's signal read that holds the slot, and a late answer still to come
         val out = BleProtocol.Outbox()                // capped: oldest packet frames go first
         val reader = BleProtocol.Reader()
         val gate = BleProtocol.HelloGate()            // repeated HELLOs (spec "Restarts")
@@ -350,8 +350,8 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         /** Finder's signal read on a link this phone dialed: like a write's completion, it frees the link's one slot (rule F13). */
         override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, st: Int) {
             val l = linkOf(g) ?: return
-            if (l.rssiAt == 0L) return // the slot was given back already: it holds a write now
-            l.rssiAt = 0L; l.busy = false
+            if (!l.rssi.answered()) return // a late answer: the slot was given back already, a write or a newer read holds it now
+            l.busy = false
             if (st == BluetoothGatt.GATT_SUCCESS) reading(rssi)
             pump(l)
         }
@@ -445,9 +445,10 @@ class BleLink(private val ctx: Context, private val nodeId: String) {
         if (l.wantRssi && l.central && rssiNode != null) {
             l.wantRssi = false
             val g = l.gatt
-            if (g != null && runCatching { g.readRemoteRssi() }.getOrDefault(false)) {
-                val at = SystemClock.elapsedRealtime(); l.busy = true; l.rssiAt = at
-                h.postDelayed({ if (l.rssiAt == at) { l.rssiAt = 0L; l.busy = false; pump(l) } }, RSSI_WAIT_MS)
+            // Not while the answer of a read that timed out may still come: it couldn't be told from this one's ([BleProtocol.RssiSlot]).
+            if (g != null && l.rssi.mayRead(SystemClock.elapsedRealtime()) && runCatching { g.readRemoteRssi() }.getOrDefault(false)) {
+                val at = SystemClock.elapsedRealtime(); l.busy = true; l.rssi.sent(at)
+                h.postDelayed({ if (l.rssi.timedOut(at, SystemClock.elapsedRealtime())) { l.busy = false; pump(l) } }, RSSI_WAIT_MS)
                 return
             } // the stack is busy: no reading this second, the packets go on
         }

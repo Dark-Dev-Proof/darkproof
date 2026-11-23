@@ -24,7 +24,8 @@ import java.security.KeyStore
  * - every database (messages and packets, the members' keys, the offline map's);
  * - every other file in the app's own folders, on the phone and on shared storage: AI models and downloads under way,
  *   the AI conversation, offline maps, Tor's state, caches and temporary files;
- * - its notifications, shown or waiting, and jobs; and a group code or message of its own still on the clipboard.
+ * - its notifications, shown or waiting, jobs, and the check-in clocks' alarm; and a group code or message of its own
+ *   still on the clipboard.
  *
  * It happens twice. Once at once, with the app still running, in this order ([start]): the mark is saved; the keys in
  * the Android Keystore are deleted, so that from this moment the phone holds only what nothing can open; the engine,
@@ -139,6 +140,8 @@ object Wipe {
     fun everything(c: Context): List<String> {
         runCatching { c.getSystemService(NotificationManager::class.java).cancelAll() }
         runCatching { c.getSystemService(JobScheduler::class.java)?.cancelAll() }
+        // The check-in clocks' backup alarm: it outlives the process, and carries a member's name and the group's code.
+        runCatching { QuietAlarms.cancel(c) }
         // Downloads under way belong to Android's downloader, which would carry on by itself: they are taken back, with their files.
         runCatching {
             val dm = c.getSystemService(DownloadManager::class.java)

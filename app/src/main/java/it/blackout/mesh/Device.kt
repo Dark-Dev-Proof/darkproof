@@ -490,9 +490,16 @@ object Notifier {
         // Its text must not outlive the message: a week at most, and in a group with a timer, until the message is due.
         n.setTimeoutAfter(AlertLife.timeout(m.ts, System.currentTimeMillis(), MeshEngine.timer(m.group).seconds?.let { it * 1_000L }))
         if (a.ask && !risk) {
-            if (!hide) n.addAction(android.app.Notification.Action.Builder(null, "I'm safe", PendingIntent.getBroadcast(c, id,
+            // "I'm safe" sends only after the phone's unlock (rule Q8). From Android 12 the button asks for it and then sends;
+            // before, a button can't ask: it opens the group's chat, with the answers under the question, which a locked
+            // phone shows only after its unlock (as the clock's reminder does, QuietAlarms).
+            val sends = LockedSafe.buttonSends(Build.VERSION.SDK_INT)
+            val safe = if (sends) PendingIntent.getBroadcast(c, id,
                 Intent(c, AnswerReceiver::class.java).putExtra(Actions.EXTRA_GROUP, m.group).putExtra(AnswerReceiver.NOTIFICATION, id),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).apply { if (Build.VERSION.SDK_INT >= 31) setAuthenticationRequired(true) }.build()) // it sends: only after the phone's unlock
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            else PendingIntent.getActivity(c, id + 2, Actions.intent(c, Actions.CHAT, m.group).putExtra(AnswerReceiver.NOTIFICATION, id),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            if (!hide) n.addAction(android.app.Notification.Action.Builder(null, "I'm safe", safe).apply { if (Build.VERSION.SDK_INT >= 31) setAuthenticationRequired(true) }.build())
             n.addAction(android.app.Notification.Action.Builder(null, "I need help", PendingIntent.getActivity(c, id + 1,
                 Actions.intent(c, Actions.HELP, m.group).putExtra(AnswerReceiver.NOTIFICATION, id),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build())
@@ -510,12 +517,34 @@ object Notifier {
     }
 
     /**
-     * A group was left: its alerts go. Alerts are known by their message only while the app that posted them still runs
-     * ([posted]), so every message alert goes, the other groups' too; their messages are still in the app, counted as new.
+     * A group was left: its alerts go. Message alerts are known by their message only while the app that posted them still
+     * runs ([posted]), so every message alert goes, the other groups' too; their messages are still in the app, counted as
+     * new. Clock alerts go only for that group ([quietIds]: their [QuietAlerts] names): another group's "hasn't checked in"
+     * alert stays, since it isn't posted a second time (final review 2026-11-23).
      */
-    fun forgetAll(c: Context) {
+    fun forgetGroup(c: Context, quietIds: Collection<String>) {
         synchronized(posted) { posted.clear() }
-        c.getSystemService(NotificationManager::class.java)?.cancelAll() // the "DarkProof is on" notice belongs to the running service and stays
+        val nm = c.getSystemService(NotificationManager::class.java) ?: return
+        cancelMessages(nm)
+        quietIds.forEach { runCatching { nm.cancel(QuietAlarms.TAG, it.hashCode()) } }
+    }
+
+    /**
+     * "Lock DarkProof" (or high-risk mode, which turns it on) was turned on: message alerts already showing go, since they
+     * show names and text; clock alerts still showing stay, worded again without a name ([QuietAlarms.hideShowing]), since
+     * they aren't posted a second time (final review 2026-11-23).
+     */
+    fun hideShowing(c: Context) {
+        synchronized(posted) { posted.clear() }
+        val nm = c.getSystemService(NotificationManager::class.java) ?: return
+        cancelMessages(nm)
+        QuietAlarms.hideShowing(c)
+    }
+
+    /** Every message alert showing (they have no tag; clock alerts have [QuietAlarms.TAG]). The running service's "DarkProof is on" notice stays. */
+    private fun cancelMessages(nm: NotificationManager) {
+        val showing = runCatching { nm.activeNotifications }.getOrNull() ?: run { nm.cancelAll(); return } // can't be listed: everything, as before
+        for (s in showing) if (s.tag == null && s.notification.flags and android.app.Notification.FLAG_FOREGROUND_SERVICE == 0) runCatching { nm.cancel(s.id) }
     }
 
     /** Opens DarkProof on [group]'s chat. */

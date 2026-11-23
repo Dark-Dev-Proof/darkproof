@@ -62,4 +62,74 @@ class StoredDataFixTest {
         assertEquals(60_000L, AlertLife.timeout(now - 9 * day, now)) // arrived after its week: a minute
         assertEquals(AlertLife.WEEK_MS, AlertLife.timeout(now + 600_000, now)) // dated ahead: a week at most
     }
+
+    // Stored check-in clocks (decision C of the final review, 2026-11-23): table q's rows are sealed.
+
+    private val hour = 3_600_000L
+
+    /** Ben's 1-hour clock with where he was, taken at [now], as table q keeps it. */
+    private fun bensClock(now: Long) = QuietBook().apply {
+        take(ben, "e608000000000101", "00000000000000aa", now, now + hour, Spot(45.46420, 9.19000, 12), now, highRisk = false)
+    }
+
+    @Test fun storedClocksAreSealedAndOpenAgain() {
+        val lines = bensClock(1_794_000_000_000L).saved
+        assertTrue("a position to hide", lines.single().contains("45.46420"))
+        val blob = QuietSeal.seal(key, group, lines)
+        val text = String(blob, Charsets.ISO_8859_1)
+        assertFalse("no position in what is stored", text.contains("45.46420") || text.contains("9.19000"))
+        assertFalse("no member id in what is stored", text.contains(ben))
+        assertEquals(lines, QuietSeal.open(key, group, blob))
+        assertEquals(bensClock(1_794_000_000_000L), QuietBook.parse(QuietSeal.open(key, group, blob)!!))
+        assertFalse("a fresh IV each time", blob.contentEquals(QuietSeal.seal(key, group, lines)))
+    }
+
+    @Test fun aSealedRowOpensOnlyForItsGroupAndItsKey() {
+        val blob = QuietSeal.seal(key, group, bensClock(1_794_000_000_000L).saved)
+        assertEquals(null, QuietSeal.open(ByteArray(32) { 4 }, group, blob))
+        assertEquals("a row moved to another group doesn't open", null, QuietSeal.open(key, "ffeeddccbbaa99887766554433221100", blob))
+        assertEquals(null, QuietSeal.open(key, group, blob.copyOf(blob.size - 1)))
+        assertEquals(null, QuietSeal.open(key, group, ByteArray(5)))
+        val flipped = blob.copyOf().also { it[it.size - 3] = (it[it.size - 3].toInt() xor 1).toByte() }
+        assertEquals(null, QuietSeal.open(key, group, flipped))
+        assertEquals(emptyList<String>(), QuietSeal.open(key, group, QuietSeal.seal(key, group, emptyList())))
+    }
+
+    // The backup alarm with no engine running (QuietRang): only what its group's records still hold.
+
+    private val t0 = 1_794_000_000_000L
+    private fun alertFor(g: String, member: String, mark: String, at: Long) =
+        QuietAlert(QuietAlerts.id(g, member), mark, at, "Ben's check-in clock ran out", "body", "Ben", "banner", "CODE", remind = false, safe = false)
+
+    @Test fun theAlarmPostsWhatIsDueAndArmsWhatIsToCome() {
+        val book = bensClock(t0)
+        val due = alertFor(group, ben, "00000000000000aa", t0 + hour)
+        // Before its time: armed again as it is.
+        val early = QuietRang.handle(listOf(due), mapOf(group to book), t0 + hour - 60_000)
+        assertEquals(listOf(due), early.left); assertTrue(early.post.isEmpty()); assertTrue(early.changed.isEmpty())
+        // At its time: posted, and the record says so.
+        val r = QuietRang.handle(listOf(due), mapOf(group to book), t0 + hour + 1_000)
+        assertEquals(listOf(due), r.post); assertTrue(r.left.isEmpty()); assertEquals(setOf(group), r.changed)
+        assertTrue(book.clock(ben)!!.alerted)
+        // Rung again: posted already, nothing more.
+        val again = QuietRang.handle(listOf(due), mapOf(group to book), t0 + hour + 2_000)
+        assertTrue(again.post.isEmpty() && again.left.isEmpty())
+    }
+
+    @Test fun theAlarmDropsWhatNoGroupOrClockHoldsAnyMore() {
+        val coming = alertFor(group, ben, "00000000000000aa", t0 + hour)
+        // The group was left (or the phone erased): its row is gone, so nothing of it is posted or armed again, coming or due.
+        assertTrue(QuietRang.handle(listOf(coming), emptyMap(), t0 + 60_000).let { it.post.isEmpty() && it.left.isEmpty() })
+        assertTrue(QuietRang.handle(listOf(coming), emptyMap(), t0 + hour + 1_000).let { it.post.isEmpty() && it.left.isEmpty() })
+        // Ben checked in: his clock no longer runs, and what was to come for it goes.
+        val book = bensClock(t0).apply { checkIn(ben, t0 + 60_000, t0 + 60_000, highRisk = false) }
+        assertTrue(QuietRang.handle(listOf(coming), mapOf(group to book), t0 + 120_000).let { it.post.isEmpty() && it.left.isEmpty() })
+        // A newer clock replaced the one the alarm was set for.
+        val replaced = bensClock(t0).apply { take(ben, "e608000000000102", "00000000000000bb", t0 + 1_000, t0 + 2 * hour, null, t0 + 1_000, highRisk = false) }
+        assertTrue(QuietRang.handle(listOf(coming), mapOf(group to replaced), t0 + 120_000).let { it.post.isEmpty() && it.left.isEmpty() })
+        // Another group's alert in the same alarm is kept.
+        val other = "ffeeddccbbaa99887766554433221100"
+        val theirs = alertFor(other, ben, "00000000000000aa", t0 + hour)
+        assertEquals(listOf(theirs), QuietRang.handle(listOf(coming, theirs), mapOf(other to bensClock(t0)), t0 + 60_000).left)
+    }
 }
