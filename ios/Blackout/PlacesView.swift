@@ -64,9 +64,10 @@ struct PlacesView: View {
                     PillSwitch(left: "List", right: "Map", isRight: $nav.placesMap)
                 }
                 .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 12)
+                .backdropHeader()
                 if nav.placesMap { map(shown, me: me, now: t.date) } else { list(shown, me: me, now: t.date) }
             }
-            .background(Theme.bg.ignoresSafeArea())
+            .tabBackdrop()
         }
         .onAppear { loc.requestPermission(); loc.fix { _ in } }
         .sheet(isPresented: $adding) { AddPlaceSheet(engine: engine) }

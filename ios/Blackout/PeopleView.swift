@@ -113,6 +113,7 @@ struct PeopleView: View {
                         Spacer()
                         Button { nav.sheet = .settings } label: { RoundIcon(symbol: "gearshape.fill") }.accessibilityLabel("Settings")
                     }
+                    .backdropHeader(above: 8)
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 12) {
                             BigCheckIn(checkIn: .safe, sending: engine.checkInSending == .safe) {
@@ -144,7 +145,7 @@ struct PeopleView: View {
                 }
                 .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 24)
             }
-            .background(Theme.bg.ignoresSafeArea())
+            .tabBackdrop()
         }
     }
 }

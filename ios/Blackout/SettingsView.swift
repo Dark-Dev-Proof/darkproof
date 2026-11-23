@@ -216,6 +216,8 @@ struct SettingsSheet: View {
                 ActionRow(icon: "shield.fill", title: "High-risk mode", value: risk.isOn ? "On" : "Off", on: risk.isOn) { askingRisk = true }
                 LinkRow(icon: "questionmark.circle.fill", title: "Help and privacy") { HelpPrivacyPage() }
             }
+            Kicker("Background").padding(.top, 8).padding(.leading, 4).id("background")
+            BackgroundRows() // Backdrop.swift
             Kicker("Advanced").padding(.top, 8).padding(.leading, 4)
             AdvancedRows(engine: engine)
             Kicker("This phone").padding(.top, 8).padding(.leading, 4)
