@@ -3,8 +3,10 @@ package it.blackout.mesh
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
@@ -78,6 +80,11 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.graphics.vector.Path as VectorPath
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -362,19 +369,75 @@ private val Ink = Color(0xFF111111)
     }
 }
 
-/** A round icon button with its name under it: the chat's "+" tray, what can be done with a person. Color only for safe and help. */
-@Composable fun CircleAction(@DrawableRes icon: Int, label: String, modifier: Modifier = Modifier, tint: Color = Theme.text, onClick: () -> Unit) {
+/**
+ * A round icon button with its name under it: the chat's "+" tray, what can be done with a person. Color only for safe and help.
+ * [moment]: this is "I'm safe", which plays its sent moment ([SafeMoment]) and buzzes when sent, not at the touch.
+ */
+@Composable fun CircleAction(@DrawableRes icon: Int, label: String, modifier: Modifier = Modifier, tint: Color = Theme.text, moment: SafeMoment? = null, onClick: () -> Unit) {
     val source = remember { MutableInteractionSource() }
     Column(modifier.tapArea(source, onClick = onClick).padding(vertical = 6.dp, horizontal = 2.dp), horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(7.dp)) {
         Box(Modifier.size(56.dp)
             .then(if (tint == Theme.text) Modifier else Modifier.glow(tint, 0.3f, 0.dp, 6.dp))
-            .pressed(source, Press(down = 0.88f, bouncy = true, lift = 0.06f))
+            .then(if (moment != null) Modifier.safeRing(moment, CircleShape, 0.55f) else Modifier)
+            .pressed(source, Press(down = 0.88f, bouncy = true, lift = 0.06f, buzz = if (moment != null) Buzz.None else Buzz.Key))
             .background(Theme.tile, CircleShape).litEdge(CircleShape), contentAlignment = Alignment.Center) {
-            Ic(icon, tint, if (icon == R.drawable.ic_sos) 30.dp else 24.dp)
+            if (moment != null) SafeShield(tint, 24.dp, moment) else Ic(icon, tint, if (icon == R.drawable.ic_sos) 30.dp else 24.dp)
         }
         Txt(label, 13, FontWeight.SemiBold, Theme.dim, maxLines = 2, lineHeight = 16, align = TextAlign.Center)
     }
+}
+
+// MARK: - The "I'm safe" sent moment
+
+/**
+ * The "I'm safe" sent moment, the same as the iPhone's (Home's tile, People's tile, the chat's "+" tray): each time the
+ * count of "I'm safe" sent from there goes up, the check mark in the shield draws itself (400 ms) and one green ring
+ * grows once from the button and fades (550 ms). Once: nothing loops. The one buzz (Buzz.Confirm) comes from
+ * [sendSafe], as it is sent. In calm mode ([Motion.calm]) nothing moves: the check is simply there, as before.
+ */
+@Stable
+class SafeMoment internal constructor(internal var seen: Int) {
+    internal val check = Animatable(1f) // how much of the check mark is drawn
+    internal val ring = Animatable(1f)  // how far the ring has grown; 1: gone
+    companion object { const val MS = 550L } // how long it lasts: the tray stays open for it
+}
+
+/** The moment for a button whose "I'm safe" sent so far is [sent]. A screen opened again doesn't play it again. */
+@Composable fun rememberSafeMoment(sent: Int): SafeMoment {
+    val m = remember { SafeMoment(sent) }
+    LaunchedEffect(sent) {
+        if (sent == m.seen) return@LaunchedEffect
+        m.seen = sent
+        if (Motion.calm) return@LaunchedEffect
+        m.check.snapTo(0f); m.ring.snapTo(0f)
+        launch { m.check.animateTo(1f, tween(400, easing = FastOutSlowInEasing)) }
+        m.ring.animateTo(1f, tween(SafeMoment.MS.toInt(), easing = LinearOutSlowInEasing))
+    }
+    return m
+}
+
+// Lucide "shield-check" (ISC licence), the same paths as ic_verified_user: the shield, and its check mark on its own so it can be drawn part way.
+private val ShieldOutline = addPathNodes("M20 13c0 5 -3.5 7.5 -7.66 8.95a1 1 0 0 1 -0.67 -0.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1 -1c2 0 4.5 -1.2 6.24 -2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z")
+private val ShieldCheck = addPathNodes("m9 12 2 2 4 -4")
+
+/** The shield of ic_verified_user, its check mark drawn as far as [moment] has got. Says nothing: the button's label does. */
+@Composable fun SafeShield(tint: Color, size: Dp, moment: SafeMoment) {
+    val painter = rememberVectorPainter(24.dp, 24.dp, 24f, 24f, autoMirror = false) { _, _ ->
+        val ink = SolidColor(tint)
+        VectorPath(ShieldOutline, stroke = ink, strokeLineWidth = 2f, strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round)
+        VectorPath(ShieldCheck, stroke = ink, strokeLineWidth = 2f, strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round,
+            trimPathEnd = moment.check.value)
+    }
+    Image(painter, null, Modifier.size(size))
+}
+
+/** The moment's one ring: [shape], the button's own outline, grown by [grow] (0.5: half as big again) and fading as it goes. Drawn only, behind. */
+fun Modifier.safeRing(moment: SafeMoment, shape: Shape, grow: Float) = drawBehind {
+    val r = moment.ring.value
+    if (r >= 1f) return@drawBehind
+    val k = 1f + grow * r
+    scale(k) { drawOutline(shape.createOutline(size, layoutDirection, this), Theme.safe, alpha = 0.9f * (1f - r), style = Stroke(2.dp.toPx() / k)) }
 }
 
 /**

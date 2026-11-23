@@ -508,6 +508,12 @@ fun checkIn(a: MainActivity, s: AppState, c: CheckIn, needs: Set<Need> = emptySe
     return true
 }
 
+/**
+ * "I'm safe" from Home's tile, People's tile or the chat's "+" tray: sent as [checkIn] sends it, then one Buzz.Confirm
+ * (also in calm mode), the buzz of the sent moment ([SafeMoment]). True if it went out or waits to.
+ */
+fun sendSafe(a: MainActivity, s: AppState): Boolean = checkIn(a, s, CheckIn.SAFE).also { if (it) Buzz.play(Buzz.Confirm) }
+
 @Composable
 private fun HomeTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<Message>, all: List<Message>, open: (Sheet) -> Unit) {
     var details by rememberSaveable { mutableStateOf(false) }
@@ -571,7 +577,8 @@ private fun HomeTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<
         }
         SecurityRow(s, a, g) { open(Sheet.Security) }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            ActionTile("I'm safe", R.drawable.ic_verified_user, Theme.safe, true, Modifier.weight(1f)) { checkIn(a, s, CheckIn.SAFE) }
+            var safeSent by remember { mutableIntStateOf(0) }
+            ActionTile("I'm safe", R.drawable.ic_verified_user, Theme.safe, true, Modifier.weight(1f), rememberSafeMoment(safeSent)) { if (sendSafe(a, s)) safeSent++ }
             ActionTile("Need help", R.drawable.ic_sos, Theme.help, true, Modifier.weight(1f)) { s.helpGroup = null; s.askHelp = true }
             ActionTile("Invite", R.drawable.ic_qr_code_2, Theme.text, false, Modifier.weight(1f)) { open(Sheet.Invite) }
             ActionTile("Connect", R.drawable.ic_settings_input_antenna, Theme.text, false, Modifier.weight(1f)) { open(Sheet.Radio) }
@@ -637,14 +644,16 @@ private fun PhoneProblems(s: AppState, a: MainActivity) {
     Ic(icon, Theme.dim, 24.dp); Txt(text, 15, color = Theme.dim)
 }
 
+/** [moment]: this is "I'm safe", which plays its sent moment ([SafeMoment]) and buzzes when sent, not at the touch. */
 @Composable
-private fun ActionTile(label: String, @DrawableRes icon: Int, color: Color, signature: Boolean, modifier: Modifier, tap: () -> Unit) {
+private fun ActionTile(label: String, @DrawableRes icon: Int, color: Color, signature: Boolean, modifier: Modifier, moment: SafeMoment? = null, tap: () -> Unit) {
     val shape = remember(signature) { if (signature) vaultShape(18.dp, 26.dp, 6.dp) else RoundedCornerShape(26.dp) }
-    val press = remember(shape) { Press(down = 0.96f, shape = shape, dim = 0.1f, lift = 0.05f) }
+    val press = remember(shape) { Press(down = 0.96f, shape = shape, dim = 0.1f, lift = 0.05f, buzz = if (moment != null) Buzz.None else Buzz.Key) }
     Column(modifier.tap(press, onClick = tap).background(Theme.card, shape).padding(vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Box(Modifier.size(52.dp).background(if (color == Theme.text) Theme.tile else color.copy(alpha = 0.16f), CircleShape).litEdge(CircleShape), contentAlignment = Alignment.Center) {
-            Ic(icon, color, 28.dp)
+        Box(Modifier.size(52.dp).then(if (moment != null) Modifier.safeRing(moment, CircleShape, 0.7f) else Modifier)
+            .background(if (color == Theme.text) Theme.tile else color.copy(alpha = 0.16f), CircleShape).litEdge(CircleShape), contentAlignment = Alignment.Center) {
+            if (moment != null) SafeShield(color, 28.dp, moment) else Ic(icon, color, 28.dp)
         }
         Txt(label, 14, FontWeight.SemiBold, maxLines = 1)
     }

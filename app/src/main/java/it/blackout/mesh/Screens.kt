@@ -144,10 +144,21 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
     val choosePhoto = { above?.invoke() ?: pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
     var tray by rememberSaveable { mutableStateOf(false) }
     var askAll by remember { mutableStateOf(false) }
+    // "I'm safe" from the tray goes out at once; the tray stays for its sent moment, then closes (at once in calm mode).
+    var safeSent by remember { mutableIntStateOf(0) }
+    var trayLeaving by remember { mutableStateOf(false) }
     if (tray && !everyone) AddTray(
         photo = { tray = false; choosePhoto() },
         voice = if (VoiceAudio.canRecord) ({ tray = false; Toast.makeText(ctx, "Hold the mic to record, 10 seconds at most", Toast.LENGTH_LONG).show() }) else null,
-        safe = { tray = false; checkIn(a, s, CheckIn.SAFE) },
+        safeSent = safeSent,
+        safe = {
+            if (!trayLeaving) {
+                val sent = sendSafe(a, s)
+                if (sent) safeSent++
+                if (!sent || Motion.calm) tray = false
+                else { trayLeaving = true; scope.launch { kotlinx.coroutines.delay(SafeMoment.MS); tray = false; trayLeaving = false } }
+            }
+        },
         help = { tray = false; s.helpGroup = null; s.askHelp = true },
         ask = { tray = false; askAll = true },
         timer = { tray = false; open(Sheet.Timer) }) { tray = false }
@@ -280,13 +291,14 @@ fun photoChosen(ctx: android.content.Context, uri: Uri?, open: (Sheet) -> Unit) 
  * no "Camera" while the app has no way to take a picture itself.
  */
 @Composable
-private fun AddTray(photo: () -> Unit, voice: (() -> Unit)?, safe: () -> Unit, help: () -> Unit, ask: () -> Unit, timer: () -> Unit, close: () -> Unit) = SmallSheet(close) {
+private fun AddTray(photo: () -> Unit, voice: (() -> Unit)?, safeSent: Int, safe: () -> Unit, help: () -> Unit, ask: () -> Unit, timer: () -> Unit, close: () -> Unit) = SmallSheet(close) {
     // Room above and below: the sheet scrolls, which cuts off what is drawn outside it, and the green and red buttons glow.
+    val moment = rememberSafeMoment(safeSent)
     val items: List<@Composable (Modifier) -> Unit> = listOfNotNull(
         { m -> CircleAction(R.drawable.ic_image, "Photo", m, onClick = photo) },
         voice?.let { v -> { m: Modifier -> CircleAction(R.drawable.ic_mic, "Voice note", m, onClick = v) } },
-        { m -> CircleAction(R.drawable.ic_verified_user, "I'm safe", m, Theme.safe, safe) },
-        { m -> CircleAction(R.drawable.ic_sos, "I need help", m, Theme.help, help) },
+        { m -> CircleAction(R.drawable.ic_verified_user, "I'm safe", m, Theme.safe, moment, onClick = safe) },
+        { m -> CircleAction(R.drawable.ic_sos, "I need help", m, Theme.help, onClick = help) },
         { m -> CircleAction(R.drawable.ic_notifications, "Ask if safe", m, onClick = ask) },
         { m -> CircleAction(R.drawable.ic_schedule, "Timer", m, onClick = timer) },
     )
@@ -741,8 +753,9 @@ fun PeopleTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<Messag
             if (!Here.wide) RoundIcon(R.drawable.ic_settings, desc = "Settings") { open(Sheet.Settings) } // a wide window has Settings at its side
         }
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            BigCheckIn("I'm safe", R.drawable.ic_verified_user, Theme.safe, Color.Black, Modifier.weight(1f)) {
-                checkIn(a, s, CheckIn.SAFE)
+            var safeSent by remember { mutableIntStateOf(0) }
+            BigCheckIn("I'm safe", R.drawable.ic_verified_user, Theme.safe, Color.Black, Modifier.weight(1f), rememberSafeMoment(safeSent)) {
+                if (sendSafe(a, s)) safeSent++
             }
             BigCheckIn("I need help", R.drawable.ic_sos, Theme.help, Color.White, Modifier.weight(1f)) { s.helpGroup = null; s.askHelp = true }
         }
@@ -775,14 +788,18 @@ fun peopleOf(c: android.content.Context, messages: List<Message>, code: String?)
         .map { (id, name) -> Person(id, name.ifEmpty { "Someone" }, 0L) }.sortedBy { it.name.lowercase() } // 0: nothing heard from them yet
 }
 
-/** The big check-in tiles, in the logo's shape. */
+/**
+ * The big check-in tiles, in the logo's shape. [moment]: this is "I'm safe", which plays its sent moment ([SafeMoment]),
+ * the ring growing from the tile's own outline, and buzzes when sent, not at the touch.
+ */
 @Composable
-private fun BigCheckIn(label: String, @DrawableRes icon: Int, bg: Color, fg: Color, modifier: Modifier, tap: () -> Unit) {
+private fun BigCheckIn(label: String, @DrawableRes icon: Int, bg: Color, fg: Color, modifier: Modifier, moment: SafeMoment? = null, tap: () -> Unit) {
     val shape = remember { vaultShape(34.dp, 40.dp, 8.dp) }
-    val press = remember(shape) { Press(down = 0.95f, shape = shape, dim = 0.18f) }
-    Column(modifier.height(176.dp).tap(press, onClick = tap).background(bg, shape).padding(20.dp),
+    val press = remember(shape) { Press(down = 0.95f, shape = shape, dim = 0.18f, buzz = if (moment != null) Buzz.None else Buzz.Key) }
+    Column(modifier.height(176.dp).then(if (moment != null) Modifier.safeRing(moment, shape, 0.08f) else Modifier)
+        .tap(press, onClick = tap).background(bg, shape).padding(20.dp),
         verticalArrangement = Arrangement.Bottom) {
-        Ic(icon, fg, if (icon == R.drawable.ic_sos) 56.dp else 40.dp)
+        if (moment != null) SafeShield(fg, 40.dp, moment) else Ic(icon, fg, if (icon == R.drawable.ic_sos) 56.dp else 40.dp)
         Spacer(Modifier.height(10.dp))
         Txt(label, 22, FontWeight.Black, fg, maxLines = 1)
     }
