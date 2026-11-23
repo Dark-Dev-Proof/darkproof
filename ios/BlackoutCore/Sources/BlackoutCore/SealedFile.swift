@@ -33,3 +33,43 @@ public enum SealedFile {
         return (nil, false)
     }
 }
+
+/// The key that seals this phone's copies of messages and its own files (`SealedFile`), as the Keychain gives it. One that
+/// is saved but can't be read right now is never replaced by a new one: everything sealed under it would no longer open,
+/// read as empty and be written over (re-check N5, 2026-11-23; Android has the same guard). No key then, and it is asked
+/// for again later.
+public enum OwnKey {
+    /// What the Keychain said: the saved bytes, nothing saved under that name, or anything else (it is there but can't
+    /// be read now, e.g. before the phone's first unlock, or the Keychain failed).
+    public enum Read: Equatable, Sendable { case found(Data), missing, unreadable }
+    /// Use the saved key, make (and save) a new one, or go without a key for now.
+    public enum Use: Equatable, Sendable { case use(Data), make, none }
+
+    public static func use(_ r: Read) -> Use {
+        switch r {
+        case .found(let k): return k.count == 32 ? .use(k) : .make // one of another length never sealed anything (`SealedFile.seal`)
+        case .missing: return .make
+        case .unreadable: return .none
+        }
+    }
+}
+
+/// Own files that were read while their key couldn't be (`OwnKey.Use.none`): they read as empty, so writing them then
+/// would put an empty or partial book over what they hold. Such a file is left as it is (neither written nor removed for
+/// being empty) until it is read again with the key; a file removed on purpose (its group was left) goes all the same.
+public struct UnreadFiles: Equatable, Sendable {
+    public private(set) var names: Set<String> = []
+    public init() {}
+
+    /// `name` was read. `lost`: its sealed file is there but the key couldn't be read, so it read as nothing.
+    public mutating func read(_ name: String, lost: Bool) {
+        if lost { names.insert(name) } else { names.remove(name) }
+    }
+
+    /// The file was removed on purpose: nothing of it is held back any more.
+    public mutating func removed(_ name: String) { names.remove(name) }
+
+    /// Whether `name` may be written, or removed for being empty, now: only with the key, and not while it holds what
+    /// couldn't be read.
+    public func mayWrite(_ name: String, keyKnown: Bool) -> Bool { keyKnown && !names.contains(name) }
+}

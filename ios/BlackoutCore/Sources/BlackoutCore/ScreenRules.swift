@@ -31,6 +31,11 @@ public enum FinderWords {
     /// Rule F6 on the screen: the search goes on only while the person's latest check-in is their own "I need help"
     /// with the note (not a report about them). Anything else ends it.
     public static func searching(_ p: Person) -> Bool { !p.isReport && p.checkIn == .help && p.finder != nil }
+
+    /// The link the open screen looks for: the latest "I need help"'s note while `searching`, else nil (the search is
+    /// over). A new "I need help" after the screen showed the search as over starts it again, with the link its note
+    /// names, as on Android (screens re-check, finding 3).
+    public static func looksFor(_ p: Person) -> String? { searching(p) ? p.finder : nil }
 }
 
 // MARK: - Swipe to reply

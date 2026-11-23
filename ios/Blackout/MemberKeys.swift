@@ -62,21 +62,30 @@ enum MemberKeys {
 enum Vault {
     private static let service = "darkproof-vault"
 
-    static func put(_ name: String, _ data: Data?) {
+    /// Saves `data` under `name` (nil deletes it). True if it was saved (or deleted).
+    @discardableResult static func put(_ name: String, _ data: Data?) -> Bool {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: name]
         SecItemDelete(q as CFDictionary)
-        guard let data else { return }
+        guard let data else { return true }
         var add = q
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(add as CFDictionary, nil)
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 
     static func get(_ name: String) -> Data? {
+        if case .found(let d) = lookup(name) { return d }
+        return nil
+    }
+
+    /// What is saved under `name`, telling "nothing saved" apart from "there, but can't be read now" (`OwnKey`).
+    static func lookup(_ name: String) -> OwnKey.Read {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecAttrAccount as String: name, kSecReturnData as String: true]
         var out: CFTypeRef?
-        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess ? out as? Data : nil
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        if status == errSecSuccess, let d = out as? Data { return .found(d) }
+        return status == errSecItemNotFound ? .missing : .unreadable
     }
 
     /// The Keychain outlives the app and UserDefaults doesn't: on the first start after an install, nothing of an earlier

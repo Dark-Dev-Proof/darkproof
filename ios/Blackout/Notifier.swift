@@ -13,10 +13,19 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
     /// The sender's own reminder before their check-in clock runs out (spec "If I go quiet", rule Q8): "I'm safe" only.
     static let remindCategory = "remind"
     @Published private(set) var status: UNAuthorizationStatus = .notDetermined
+    /// iOS has answered at least once: until then `status` is only its starting value, and a clock card doesn't say
+    /// "Alerts are off for DarkProof" on the strength of it (screens re-check, finding 6).
+    @Published private(set) var statusKnown = false
 
     private var pending: [(m: Message, group: String)] = [] // main thread; group = its saved group's name
     private var task = UIBackgroundTaskIdentifier.invalid
     private let center = UNUserNotificationCenter.current()
+
+    /// Asks iOS for the alerts' status at once, before any screen reads it.
+    private override init() {
+        super.init()
+        refresh()
+    }
 
     /// The answers under "Are you safe?" and under the check-in clock's reminder. With "Lock DarkProof" on there is no
     /// "I'm safe": the phone's own unlock isn't DarkProof's, and whoever holds an unlocked phone mustn't say it for you
@@ -78,7 +87,7 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
     #endif
 
     func refresh() {
-        center.getNotificationSettings { s in DispatchQueue.main.async { self.status = s.authorizationStatus } }
+        center.getNotificationSettings { s in DispatchQueue.main.async { self.status = s.authorizationStatus; self.statusKnown = true } }
     }
 
     /// "Erase everything": alerts that were waiting to be posted together are dropped, not posted.
@@ -276,11 +285,12 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
     /// stop the clock on this phone while it still waits here, and the group's phones would alert at the deadline. So
     /// `done` is called only once a phone, a radio or a relay took the check-in, or after `SafeAnswer.waitSeconds`
     /// (`CheckInWait`). If it didn't leave by then, or wasn't written, the user is told so (`notSent`, or a toast while
-    /// DarkProof is on screen, where alerts don't show). Main thread.
+    /// DarkProof is on screen, where alerts don't show and "Open DarkProof" isn't said). Main thread.
     private func answer(_ c: CheckIn, _ e: Engine, group: String?, done: @escaping () -> Void) {
         CheckInWait.send(c, e, group: group) { o in
-            if let line = SafeAnswer.line(o, c) {
-                if UIApplication.shared.applicationState == .active && !AppLock.shared.isLocked { Nav.shared.toast(line) } else { self.notSent(line) }
+            let onScreen = UIApplication.shared.applicationState == .active && !AppLock.shared.isLocked
+            if let line = SafeAnswer.line(o, c, onScreen: onScreen) {
+                if onScreen { Nav.shared.toast(line) } else { self.notSent(line) }
             }
             #if DEBUG
             DebugLog.write("answer from an alert: \(o)") // for the tests' log: how it ended, never what or where
@@ -291,12 +301,15 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
 }
 
 /// A check-in given without opening DarkProof: an alert's answer (Notifier), or Siri, the Action button and Shortcuts
-/// (Shortcuts.swift). Writes it, then reports how it ended (`SafeAnswer.Outcome`): once a phone, a radio or a relay took
-/// it, after `SafeAnswer.waitSeconds` if none did, or at once if it wasn't written. iOS may suspend DarkProof meanwhile,
-/// so a background task holds the app until then; if iOS's own time runs out first, it ended as waiting. `then` runs
-/// once, on the main thread. Main thread.
+/// (Shortcuts.swift, `from: .siri`). Writes it, then reports how it ended (`SafeAnswer.Outcome`): once a phone, a radio
+/// or a relay took it, once its time is up if none did (`SafeAnswer.waitAfterWritten`: 20 s after an alert's answer was
+/// written; through Siri, the whole answer within `SafeAnswer.siriSeconds`, with no wait for a new position), or at once
+/// if it wasn't written. iOS may suspend DarkProof meanwhile, so a background task holds the app until then; if iOS's
+/// own time runs out first, it ended as waiting. `asked`: when the person asked (Siri counts its seconds from then).
+/// `then` runs once, on the main thread. Main thread.
 enum CheckInWait {
-    static func send(_ c: CheckIn, _ e: Engine, group: String?, then: @escaping (SafeAnswer.Outcome) -> Void) {
+    static func send(_ c: CheckIn, _ e: Engine, group: String?, from: SafeAnswer.From = .alert, asked: Date = Date(),
+                     then: @escaping (SafeAnswer.Outcome) -> Void) {
         var hold = UIBackgroundTaskIdentifier.invalid, over = false
         func finish(_ o: SafeAnswer.Outcome) {
             guard !over else { return }
@@ -305,16 +318,18 @@ enum CheckInWait {
             if hold != .invalid { UIApplication.shared.endBackgroundTask(hold); hold = .invalid }
         }
         hold = UIApplication.shared.beginBackgroundTask(withName: "check-in") { finish(.waiting) }
-        let taken = e.checkIn(c, group: group) { written in
+        let taken = e.checkIn(c, group: group, freshFix: SafeAnswer.waitsForFix(from)) { written in
             switch written {
             case .nothing: finish(.notSent)
             case .held: finish(.waiting) // kept until an admin lets this phone in
             case .packet(let id):
-                let start = Date()
+                let start = Date(), limit = SafeAnswer.waitAfterWritten(from, askedAgo: start.timeIntervalSince(asked))
                 func check() {
                     guard !over else { return }
-                    if let o = SafeAnswer.outcome(handedOff: e.handedOff.contains(id), elapsed: Date().timeIntervalSince(start)) { return finish(o) }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { check() }
+                    let elapsed = Date().timeIntervalSince(start)
+                    if let o = SafeAnswer.outcome(handedOff: e.handedOff.contains(id), elapsed: elapsed, limit: limit) { return finish(o) }
+                    // Twice a second, and once more right at the end, so it ends on time.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + min(0.5, max(0.05, limit - elapsed))) { check() }
                 }
                 check()
             }

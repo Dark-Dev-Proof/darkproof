@@ -63,6 +63,7 @@ final class HighRisk: ObservableObject {
 /// to switch it off.
 struct HighRiskSheet: View {
     @ObservedObject private var risk = HighRisk.shared
+    @AppStorage(FinderNote.trialKey) private var finderTrial = false // "Says less." names Find by Bluetooth only while it can be seen
     @Environment(\.dismiss) private var dismiss
     @State private var why: String?   // why the mode didn't change
     @State private var working = false // the phone's unlock is on screen
@@ -85,7 +86,7 @@ struct HighRiskSheet: View {
                 point("lock.fill", "Locks every time.", "Face ID, Touch ID or your passcode whenever you open DarkProof.")
                 point("eye.slash.fill", "Shows less.", "No names or message text in alerts or the app switcher.")
                 point("timer", "Keeps less.", "Messages in your groups leave this phone 1 day after they arrive.")
-                point("antenna.radiowaves.left.and.right.slash", "Says less.", "No Finder, and receipts don't say how a message arrived.")
+                point("antenna.radiowaves.left.and.right.slash", "Says less.", HighRiskSetting.saysLess(finderTrial: finderTrial))
             }
             reason
             VStack(spacing: 4) {

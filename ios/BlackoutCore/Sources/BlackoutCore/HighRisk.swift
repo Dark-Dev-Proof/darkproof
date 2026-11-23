@@ -222,6 +222,12 @@ public enum LeftGroup {
 public enum HighRiskSetting {
     public static let key = "highRisk"
     public static func isOn(_ d: UserDefaults = .standard) -> Bool { d.bool(forKey: key) }
+
+    /// The line under "Says less." on the sheet that switches it on. Find by Bluetooth is named only while its trial is
+    /// on (`FinderNote.trialKey`): otherwise nobody has seen it (screens re-check, finding 7). Same words as Android.
+    public static func saysLess(finderTrial: Bool) -> String {
+        finderTrial ? "No Find by Bluetooth, and receipts don't say how a message arrived." : "Receipts don't say how a message arrived."
+    }
 }
 
 /// "Erase everything" (Settings): emptying the folders the app writes in, and looking at what is left afterwards. Plain

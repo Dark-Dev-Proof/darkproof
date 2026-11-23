@@ -155,7 +155,13 @@ final class PacketStore {
 /// The first unlock is also the earliest an engine starts (the group's code is in the Keychain), so an engine never reads
 /// one as empty while it is there. An older version kept these files plain (`plain`): such a file is read once, sealed,
 /// and the plain copy deleted.
+/// If the Keychain can't give the key right now (`Engine.historyKey` is nil), nothing is sealed, written or removed for
+/// being empty, and a sealed file read meanwhile stays as it is until it is read again with the key (`UnreadFiles`): it
+/// read as empty, and writing it would lose the clocks and the gone list it holds (re-check N5).
 private enum OwnFile {
+    private static let lock = NSLock()
+    private static var unread = UnreadFiles() // lock
+
     static func url(_ name: String) -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(name)
     }
@@ -163,23 +169,42 @@ private enum OwnFile {
     /// The file's contents, or nil if there is none (or it doesn't open). `label`: what it is, which its seal is bound to.
     static func read(_ name: String, plain: String, label: String) -> Data? {
         let (u, p) = (url(name), url(plain))
-        let r = SealedFile.load(sealed: try? Data(contentsOf: u), plain: try? Data(contentsOf: p), key: Engine.historyKey, label: label)
+        let sealed = try? Data(contentsOf: u)
+        guard let key = Engine.historyKey else {
+            lock.withLock { unread.read(name, lost: sealed != nil) }
+            return sealed == nil ? try? Data(contentsOf: p) : nil // an older version's plain copy still reads; it is sealed later
+        }
+        lock.withLock { unread.read(name, lost: false) }
+        let r = SealedFile.load(sealed: sealed, plain: try? Data(contentsOf: p), key: key, label: label)
         if r.migrate, let d = r.data { write(name, d, plain: plain, label: label) }
-        else if FileManager.default.fileExists(atPath: u.path) { try? FileManager.default.removeItem(at: p) } // left over from a move cut short
+        else if sealed != nil { try? FileManager.default.removeItem(at: p) } // left over from a move cut short
         return r.data
     }
 
-    /// Seals and writes `data` in one piece; then the plain copy, if one is left, goes. Nothing is written if it can't be sealed.
-    static func write(_ name: String, _ data: Data, plain: String, label: String) {
-        let u = url(name)
-        guard let sealed = SealedFile.seal(data, key: Engine.historyKey, label: label) else { return }
+    /// Seals and writes `data` in one piece; then the plain copy, if one is left, goes. Nothing is written if it can't be
+    /// sealed (`UnreadFiles.mayWrite`). True if it was written.
+    @discardableResult static func write(_ name: String, _ data: Data, plain: String, label: String) -> Bool {
+        let u = url(name), key = Engine.historyKey
+        guard let key, lock.withLock({ unread.mayWrite(name, keyKnown: true) }),
+              let sealed = SealedFile.seal(data, key: key, label: label) else { return false }
         try? FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard (try? sealed.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil else { return }
+        guard (try? sealed.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil else { return false }
         var f = u, v = URLResourceValues(); v.isExcludedFromBackup = true; try? f.setResourceValues(v)
+        try? FileManager.default.removeItem(at: url(plain))
+        return true
+    }
+
+    /// The book is empty: its file goes, unless it only looks empty because it couldn't be read (`UnreadFiles.mayWrite`).
+    static func clear(_ name: String, plain: String) {
+        let keyKnown = Engine.historyKey != nil
+        guard lock.withLock({ unread.mayWrite(name, keyKnown: keyKnown) }) else { return }
+        try? FileManager.default.removeItem(at: url(name))
         try? FileManager.default.removeItem(at: url(plain))
     }
 
+    /// The file goes whatever it holds (its group was left).
     static func remove(_ name: String, plain: String) {
+        lock.withLock { unread.removed(name) }
         try? FileManager.default.removeItem(at: url(name))
         try? FileManager.default.removeItem(at: url(plain))
     }
@@ -195,7 +220,7 @@ enum DayBookFile {
 
     /// Writes the whole book in one piece, or removes the file when there is nothing to keep.
     static func write(_ book: DayBook) {
-        if book.isEmpty { return OwnFile.remove(name, plain: plain) }
+        if book.isEmpty { return OwnFile.clear(name, plain: plain) }
         OwnFile.write(name, book.saved, plain: plain, label: label)
     }
 }
@@ -215,15 +240,16 @@ enum QuietFile {
             return String(decoding: d, as: UTF8.self).split(separator: "\n").map(String.init)
         }
         let old = UserDefaults.standard.stringArray(forKey: "quiet.\(group)") ?? []
-        if !old.isEmpty { write(group, old) }
+        if !old.isEmpty, !write(group, old) { return old } // stays in the preferences until it can be sealed
         UserDefaults.standard.removeObject(forKey: "quiet.\(group)")
         return old
     }
 
-    /// Writes the whole book in one piece, or removes the file when there is nothing to keep.
-    static func write(_ group: String, _ lines: [String]) {
-        if lines.isEmpty { return OwnFile.remove(name(group), plain: plain(group)) }
-        OwnFile.write(name(group), Data(lines.joined(separator: "\n").utf8), plain: plain(group), label: label(group))
+    /// Writes the whole book in one piece, or removes the file when there is nothing to keep. False if it couldn't be
+    /// sealed and written.
+    @discardableResult static func write(_ group: String, _ lines: [String]) -> Bool {
+        if lines.isEmpty { OwnFile.clear(name(group), plain: plain(group)); return true }
+        return OwnFile.write(name(group), Data(lines.joined(separator: "\n").utf8), plain: plain(group), label: label(group))
     }
 
     /// The group was left: its clocks go.

@@ -30,11 +30,13 @@ struct HelpIntent: AppIntent {
 
 enum CheckInShortcut {
     /// Queues the check-in in the group on screen and says what happened. Main thread.
-    /// "I'm safe" waits, like an alert's answer (`CheckInWait`), until a phone, a radio or a relay took it, at most
-    /// `SafeAnswer.waitSeconds`: iOS may suspend DarkProof as soon as the intent returns, and the result must not say
-    /// "Sent" for a check-in that still waits here (it already stopped the clock on this phone). Otherwise it says it
-    /// waits on this phone, or that it wasn't sent (`SafeAnswer.said`).
+    /// "I'm safe" waits, like an alert's answer (`CheckInWait`), until a phone, a radio or a relay took it, but answers
+    /// within `SafeAnswer.siriSeconds` in all (iOS limits how long an intent runs, and Siri gives up sooner): no wait for
+    /// a new position, only one under 2 minutes old goes with it. iOS may suspend DarkProof as soon as the intent
+    /// returns, and the result must not say "Sent" for a check-in that still waits here (it already stopped the clock on
+    /// this phone). Otherwise it says it waits on this phone, or that it wasn't sent (`SafeAnswer.said`).
     @MainActor static func send(_ c: CheckIn) async -> String {
+        let asked = Date() // Siri's 10 s count from here, the mesh's start included
         Mesh.shared.startIfSetUp()
         guard let e = Mesh.shared.engine else { return c == .safe ? SafeAnswer.line(.notSent, .safe)! : "Open DarkProof and join a group first." }
         // With "Lock DarkProof" on, whoever holds the phone can't tell the group you're safe without unlocking.
@@ -42,7 +44,7 @@ enum CheckInShortcut {
         let group = AppLock.shared.enabled ? "your group" : UserDefaults.standard.string(forKey: "groupName") ?? "your group"
         if c == .safe {
             let o = await withCheckedContinuation { (ended: CheckedContinuation<SafeAnswer.Outcome, Never>) in
-                CheckInWait.send(.safe, e, group: nil) { ended.resume(returning: $0) }
+                CheckInWait.send(.safe, e, group: nil, from: .siri, asked: asked) { ended.resume(returning: $0) }
             }
             return SafeAnswer.said(o, .safe, group: group)
         }

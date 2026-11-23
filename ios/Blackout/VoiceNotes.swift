@@ -774,9 +774,10 @@ struct VoiceNoteRow: View {
                     .frame(width: Self.barsWidth, height: 34) // 34 pt of touch
                     .contentShape(Rectangle())
                     .onTapGesture(coordinateSpace: .local) { p in if !failed { audio.seek(id: id, to: Voice.seekAt(Double(p.x), width: Double(Self.barsWidth))) } }
-                    // While a finger moves the bars, the message doesn't also swipe to reply (`VoiceAudio.scrubbing`).
+                    // While a finger moves the bars, the message doesn't also swipe to reply (`VoiceAudio.scrubbing`). A note
+                    // that can't be played has no bars to move: the flag stays off, so nothing can leave it set (`onDisappear`).
                     .gesture(SidewaysDrag(
-                        moved: { x in audio.scrubbing = true; if !failed { drag = Voice.seekAt(Double(x), width: Double(Self.barsWidth)) } },
+                        moved: { x in guard !failed else { return }; audio.scrubbing = true; drag = Voice.seekAt(Double(x), width: Double(Self.barsWidth)) },
                         ended: { done in audio.scrubbing = false; if done, let d = drag { audio.seek(id: id, to: d) }; drag = nil }))
                     .accessibilityHidden(true)
                     Text(Voice.label(secs)).scaledFont(14, .semibold).monospacedDigit().foregroundStyle(ink)

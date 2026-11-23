@@ -1956,14 +1956,16 @@ final class Engine: ObservableObject {
     }
 
     /// The same, telling `written` what became of the check-in (`Written`): an answer from an alert waits until its
-    /// packet left this phone (Notifier). False, and `written` is never called, if it wasn't taken. Main thread.
+    /// packet left this phone (Notifier). False, and `written` is never called, if it wasn't taken. `freshFix`: false
+    /// takes only a position under 2 minutes old, with no wait for a new one (Siri, `SafeAnswer.waitsForFix`). Main thread.
     @discardableResult
-    func checkIn(_ c: CheckIn, needs: Set<Need> = [], people: Int? = nil, group: String? = nil, haptic: Bool = true, written: @escaping (Written) -> Void) -> Bool {
+    func checkIn(_ c: CheckIn, needs: Set<Need> = [], people: Int? = nil, group: String? = nil, haptic: Bool = true, freshFix: Bool = true,
+                 written: @escaping (Written) -> Void) -> Bool {
         guard !stopped, checkInSending == nil else { return false }
         checkInSending = c
         if haptic { UINotificationFeedbackGenerator().notificationOccurred(c == .safe ? .success : .warning) }
         let battery = Self.batteryPercent
-        LocationService.shared.forCheckIn { [weak self] spot in
+        LocationService.shared.forCheckIn(waitForNew: freshFix) { [weak self] spot in
             guard let self else { return written(.nothing) }
             self.send(c.text(battery: battery, spot: spot, needs: needs, people: people), group: group)
             let w = self.lastWritten
@@ -2102,29 +2104,42 @@ final class Engine: ObservableObject {
 
     private static let historyLock = NSLock()
     private static var historyKeyHeld: Data? // historyLock; forgotten by "Erase everything" (`forgetHistoryKey`)
+    private static var historyKeyMissed: ContinuousClock.Instant? // historyLock; when the Keychain last couldn't read it
     /// The key of this phone's copies of messages, in the Keychain (this phone only, readable after the first unlock).
-    /// It also seals the check-in clock records and the day book (`QuietFile`, `DayBookFile`, `SealedFile`). Any thread.
-    static var historyKey: Data {
+    /// It also seals the check-in clock records and the day book (`QuietFile`, `DayBookFile`, `SealedFile`). Made the
+    /// first time; one that is saved but can't be read right now is never replaced (`OwnKey`): nil then, and nothing is
+    /// sealed, opened or written with it. Asked for again after a few seconds, not on every packet. Any thread.
+    static var historyKey: Data? {
         historyLock.withLock {
             if let k = historyKeyHeld { return k }
-            if let k = Vault.get("history"), k.count == 32 { historyKeyHeld = k; return k }
-            var b = [UInt8](repeating: 0, count: 32); _ = SecRandomCopyBytes(kSecRandomDefault, 32, &b)
-            Vault.put("history", Data(b))
-            historyKeyHeld = Data(b)
-            return Data(b)
+            if let t = historyKeyMissed, ContinuousClock.now - t < .seconds(5) { return nil }
+            switch OwnKey.use(Vault.lookup("history")) {
+            case .use(let k):
+                historyKeyHeld = k; historyKeyMissed = nil
+                return k
+            case .make:
+                var b = [UInt8](repeating: 0, count: 32)
+                guard SecRandomCopyBytes(kSecRandomDefault, 32, &b) == errSecSuccess, Vault.put("history", Data(b)) else { historyKeyMissed = .now; return nil }
+                historyKeyHeld = Data(b); historyKeyMissed = nil
+                return Data(b)
+            case .none:
+                historyKeyMissed = .now
+                return nil
+            }
         }
     }
 
     /// Keeps a readable copy of a message opened with its own key: that key is about to be deleted. `id`: the name its
     /// packet goes by (`StoreCap.name`).
     private func remember(_ id: String, _ k: Keys, _ o: GroupCrypto.Opened) {
-        guard let l = o.leaf, let blob = History.seal(key: Self.historyKey, id: id, group: k.id, epoch: l.epoch.id, o, index: l.index, counter: l.counter) else { return }
+        guard let key = Self.historyKey, let l = o.leaf,
+              let blob = History.seal(key: key, id: id, group: k.id, epoch: l.epoch.id, o, index: l.index, counter: l.counter) else { return }
         history.append(Packet(id: Self.copyId(id), ts: o.message.ts, ttl: 0, cipher: blob))
     }
 
     /// A message from this phone's copy, while its epoch is still held: when the epoch goes, the message goes too.
     private func fromHistory(_ id: String, _ blob: Data, _ set: (active: Keys?, others: [Keys], pub: Keys?)) -> Seen? {
-        guard let s = History.open(key: Self.historyKey, id: id, blob: blob),
+        guard let key = Self.historyKey, let s = History.open(key: key, id: id, blob: blob),
               let k = ([set.active].compactMap({ $0 }) + set.others).first(where: { $0.id == s.group }),
               let e = k.ring.all.first(where: { $0.id == s.epoch }) ?? k.ring.all.first(where: { $0.hash == s.epoch }) else { return nil } // by hash: copies kept before epochs had an id
         var o = s.opened
@@ -2138,12 +2153,12 @@ final class Engine: ObservableObject {
     /// group id -> the epochs deleted, and those still held. A copy is sealed under its packet's name, and kept under
     /// `copyId` of it: a name longer than that is found in the index. On `work`.
     private func copies(of expired: [String: (gone: [Keyring.Epoch], held: [Keyring.Epoch])]) -> Set<String> {
-        guard !expired.isEmpty else { return [] }
+        guard !expired.isEmpty, let key = Self.historyKey else { return [] } // without the key, none is found now: next time
         let long = storeLock.withLock { Dictionary(index.keys.filter { $0.count > 16 }.map { (Self.copyId($0), $0) }, uniquingKeysWith: { a, _ in a }) }
         var out = Set<String>()
         history.forEach { p in
             for name in [p.id, long[p.id]].compactMap({ $0 }) {
-                guard let s = History.open(key: Self.historyKey, id: name, blob: p.cipher) else { continue }
+                guard let s = History.open(key: key, id: name, blob: p.cipher) else { continue }
                 if let e = expired[s.group], History.goes(s, with: e.gone, held: e.held) { out.insert(name) }
                 break
             }
@@ -2600,13 +2615,14 @@ extension Engine {
         // A copy is sealed under its packet's name and kept under `copyId` of it (`copies(of:)`).
         let long = storeLock.withLock { Dictionary(index.keys.filter { $0.count > 16 }.map { (Self.copyId($0), $0) }, uniquingKeysWith: { a, _ in a }) }
         var found: [(kept: String, packet: String)] = []
-        history.forEach { p in
+        let key = Self.historyKey // without it, the copies can't say whose they are: they stay, sealed
+        if let key { history.forEach { p in
             for name in [p.id, long[p.id]].compactMap({ $0 }) {
-                guard let s = History.open(key: Self.historyKey, id: name, blob: p.cipher) else { continue }
+                guard let s = History.open(key: key, id: name, blob: p.cipher) else { continue }
                 if s.group == k.id { found.append((p.id, name)) }
                 break
             }
-        }
+        } }
         // The note's packet stays, also if a copy of it named it: its copy goes with the others (`LeaveCleanup`).
         let cleanup = LeaveCleanup.removed(packets: names, copies: found, keeping: note)
         names = cleanup.packets
@@ -2637,13 +2653,13 @@ extension Engine {
         var long: [String: String] = [:] // a copy is kept under `copyId` of its packet's name, and sealed under the name
         more.forEachNamed { _, name in long[copyId(name)] = name }
         var names = Set<String>(), copies = Set<String>()
-        history.forEach { p in
+        if let key = historyKey { history.forEach { p in // without it, the copies can't say whose they are: they stay, sealed
             for name in [p.id, long[p.id]].compactMap({ $0 }) {
-                guard let s = History.open(key: historyKey, id: name, blob: p.cipher) else { continue }
+                guard let s = History.open(key: key, id: name, blob: p.cipher) else { continue }
                 if s.group == id { names.insert(name); copies.insert(p.id) }
                 break
             }
-        }
+        } }
         store.remove(names); more.remove(names); history.remove(copies)
         var book = DayBookFile.read()
         if book.forget(group: id) { DayBookFile.write(book) }
@@ -2655,7 +2671,7 @@ extension Engine {
     func cleanUpNow() { work.async { self.compact() } }
 
     /// "Erase everything" deleted the key of this phone's message copies from the Keychain: the next engine makes a new one.
-    static func forgetHistoryKey() { historyLock.withLock { historyKeyHeld = nil } }
+    static func forgetHistoryKey() { historyLock.withLock { historyKeyHeld = nil; historyKeyMissed = nil } }
 }
 
 // MARK: - If I go quiet (spec/FORMAT.md, "If I go quiet")

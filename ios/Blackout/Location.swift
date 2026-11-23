@@ -45,20 +45,22 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     /// My position for a check-in, only if I share it (Settings). See `fix`.
-    func forCheckIn(_ done: @escaping (Spot?) -> Void) {
+    func forCheckIn(waitForNew: Bool = true, _ done: @escaping (Spot?) -> Void) {
         guard Self.sharing else { return done(nil) }
-        fix(done)
+        fix(waitForNew: waitForNew, done)
     }
 
-    /// My position: a fix from the last 2 minutes, else a new one, waiting at most 10 seconds. nil if location isn't
-    /// allowed or the phone can't get a fix in time. Main thread.
-    func fix(_ done: @escaping (Spot?) -> Void) {
+    /// My position: a fix from the last 2 minutes, else (`waitForNew`) a new one, waiting at most 10 seconds. nil if
+    /// location isn't allowed or the phone can't get a fix in time; without `waitForNew`, at once if there is no recent
+    /// fix (Siri's "I'm safe", `SafeAnswer.waitsForFix`). Main thread.
+    func fix(waitForNew: Bool = true, _ done: @escaping (Spot?) -> Void) {
         guard allowed else { return done(nil) }
         let toSpot: (CLLocation?) -> Spot? = { l in
             guard let l, l.horizontalAccuracy >= 0, l.horizontalAccuracy <= 500 else { return nil }
             return Spot(lat: l.coordinate.latitude, lon: l.coordinate.longitude, accuracy: Int(l.horizontalAccuracy.rounded()))
         }
         if let l = manager.location, -l.timestamp.timeIntervalSinceNow < 120, toSpot(l) != nil { location = l; return done(toSpot(l)) }
+        guard waitForNew else { return done(nil) }
         var finished = false
         let finish: (CLLocation?) -> Void = { l in if !finished { finished = true; done(toSpot(l)) } }
         waiting.append(finish)

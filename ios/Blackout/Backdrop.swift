@@ -467,7 +467,7 @@ struct BackgroundRows: View {
                     HStack {
                         RowLabel(icon: "circle.lefthalf.filled", title: "Strength", detail: "Text stays readable at every strength.")
                         Spacer(minLength: 8)
-                        Text("\(Int((strength * 100).rounded())) %").scaledFont(15).foregroundStyle(Theme.dim).monospacedDigit()
+                        Text("\(Int((strength * 100).rounded()))%").scaledFont(15).foregroundStyle(Theme.dim).monospacedDigit()
                     }
                     Slider(value: $strength, in: 0.2...1).tint(Theme.text)
                         .accessibilityLabel("Strength").accessibilityValue("\(Int((strength * 100).rounded())) percent")
