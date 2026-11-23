@@ -65,14 +65,36 @@ class ScreenFixTest {
 
     // ---- L5: the chat's reach line, and "Asked" only when something can carry it ----
 
+    // Re-check screens 2: the iPhone's header words (Status.swift `reachLine`), each case.
     @Test fun theChatSaysOnlineWhenNoPhoneIsInReach() {
-        assertEquals("0 phones in reach", ChatReach.line(0, 0, tor = true))
-        assertEquals("1 phone in reach", ChatReach.line(1, 0, tor = false))
-        assertEquals("3 phones in reach · online", ChatReach.line(3, 2, tor = true))
-        assertEquals("Online through Tor", ChatReach.line(0, 4, tor = true))
-        assertEquals("Online", ChatReach.line(0, 1, tor = false))
-        assertEquals("Asked My group", ChatReach.asked("My group", inReach = true))
-        assertEquals("Saved. It goes out when a phone or the internet is in reach.", ChatReach.asked("My group", inReach = false))
+        assertEquals("No one in reach right now", ChatReach.line(0, 0, radio = false))
+        assertEquals("1 phone in reach", ChatReach.line(1, 0, radio = false))
+        assertEquals("3 phones in reach · online", ChatReach.line(3, 2, radio = true))
+        assertEquals("Online · 4 relays", ChatReach.line(0, 4, radio = false))
+        assertEquals("Online · 1 relay", ChatReach.line(0, 1, radio = true))
+        assertEquals("LoRa radio linked", ChatReach.line(0, 0, radio = true))
+    }
+
+    // Re-check screens 1: the iPhone's "Ask" toasts (HelpFlow.swift `queuedToast`), to a person and to the whole group.
+    @Test fun theAskToastSaysSentOnlyWhenSomethingCarriesIt() {
+        assertEquals("Sent the question to Marco", ChatReach.asked("Marco", inReach = true))
+        assertEquals("The question to Marco waits for a phone in reach", ChatReach.asked("Marco", inReach = false))
+        assertEquals("Sent the question", ChatReach.asked(null, inReach = true))
+        assertEquals("The question waits for a phone in reach", ChatReach.asked(null, inReach = false))
+    }
+
+    // Re-check screens 7: the high-risk sheet names Find by Bluetooth only where it is offered.
+    @Test fun theHighRiskSheetNamesFindByBluetoothOnlyWithTheTrial() {
+        assertEquals("Receipts don't say how a message arrived.", HighRisk.saysLess(finder = false))
+        assertEquals("No Find by Bluetooth, and receipts don't say how a message arrived.", HighRisk.saysLess(finder = true))
+        assertFalse("no retired name", "Finder" in HighRisk.saysLess(true) || "Finder" in HighRisk.saysLess(false))
+        assertTrue("offered only with the trial, on a phone", FinderPrefs.offered(trial = true, bluetooth = true))
+        assertFalse(FinderPrefs.offered(trial = false, bluetooth = true)); assertFalse(FinderPrefs.offered(trial = true, bluetooth = false))
+    }
+
+    // Re-check screens 9: the Background switch's line while on, as the iPhone's.
+    @Test fun theBackgroundSwitchSaysWhatItCosts() {
+        assertEquals("Drawn once, so it costs almost no battery. Pure black saves the most.", AsciiBackground.ON_LINE)
     }
 
     // ---- L1: one strength range, the iPhone's ----
@@ -144,5 +166,35 @@ class ScreenFixTest {
         assertNull(kept.get("bad") { tries++; null }); assertNull(kept.get("bad") { tries++; null })
         assertEquals(2, tries)
         assertEquals("200 notes by default: a long chat scrolls back without decoding again", 200, VoiceLevels().let { l -> repeat(250) { i -> l.get("m$i") { FloatArray(20) } }; l.size })
+    }
+
+    /**
+     * Re-check screens 4: leaving a group or erasing empties the decoded sound and the levels, and a decode that was
+     * still running when they were emptied hands its result to its caller but keeps nothing (the iPhone's cacheTurn).
+     */
+    @Test fun aDecodeThatEndsAfterTheCacheWasEmptiedKeepsNothing() {
+        val kept = VoiceLevels()
+        kept.get("a") { FloatArray(20) }; kept.get("b") { FloatArray(20) }
+        assertEquals(2, kept.size)
+        kept.clear()
+        assertEquals("everything goes, with the message ids", 0, kept.size)
+        // A decode under way while the cache is emptied.
+        val decoding = CountDownLatch(1); val emptied = CountDownLatch(1)
+        var got: FloatArray? = null
+        val t = Thread { got = kept.get("late") { decoding.countDown(); emptied.await(5, TimeUnit.SECONDS); FloatArray(20) { 0.5f } } }
+        t.start()
+        assertTrue(decoding.await(5, TimeUnit.SECONDS))
+        kept.clear(); emptied.countDown(); t.join(5_000)
+        assertNotNull("its caller still gets it", got)
+        assertEquals("but it isn't kept", 0, kept.size)
+        // The next decode after that is kept as usual.
+        var made = 0
+        kept.get("late") { made++; FloatArray(20) }; kept.get("late") { made++; FloatArray(20) }
+        assertEquals(1, made); assertEquals(1, kept.size)
+        // The decoded sound uses the same rule.
+        val sound = TurnKept<ShortArray>(4)
+        repeat(6) { i -> sound.get("n$i") { ShortArray(8) } }
+        assertEquals("the last 4 notes", 4, sound.size)
+        sound.clear(); assertEquals(0, sound.size)
     }
 }

@@ -18,18 +18,30 @@ object Cut {
 
 /** What the chat's header and the "Ask" toasts say about what can carry a message right now (design review L5). */
 object ChatReach {
-    /** The line under the chat's title: phones in reach first (and "online" when relays are linked too), else the relays. As the iPhone's. */
-    fun line(phones: Int, relays: Int, tor: Boolean): String = when {
+    /**
+     * The line under the chat's title, in the iPhone's words (`Engine.reachLine`, re-check screens 2): phones in reach
+     * first (and "online" when relays are linked too), else the relays with their number, else a LoRa radio ([radio]),
+     * else nothing yet.
+     */
+    fun line(phones: Int, relays: Int, radio: Boolean): String = when {
         phones > 0 -> (if (phones == 1) "1 phone in reach" else "$phones phones in reach") + if (relays > 0) " · online" else ""
-        relays > 0 -> if (tor) "Online through Tor" else "Online"
-        else -> "0 phones in reach"
+        relays > 0 -> "Online · $relays ${if (relays == 1) "relay" else "relays"}"
+        radio -> "LoRa radio linked"
+        else -> "No one in reach right now"
     }
 
     /** What a toast says when nothing can carry a message now: it waits on this device. */
     const val SAVED = "Saved. It goes out when a phone or the internet is in reach."
 
-    /** After "Ask": "Asked My group" only when something can carry it now ([inReach]). */
-    fun asked(to: String, inReach: Boolean) = if (inReach) "Asked $to" else SAVED
+    /**
+     * After "Ask", in the iPhone's words (`queuedToast`, re-check screens 1): "Sent the question to Marco" only when
+     * something can carry it now ([inReach]), else "The question to Marco waits for a phone in reach". [to]: the person
+     * asked; null for the whole group ("Ask if everyone is safe?").
+     */
+    fun asked(to: String?, inReach: Boolean): String {
+        val what = "the question" + (to?.let { " to $it" } ?: "")
+        return if (inReach) "Sent $what" else what.replaceFirstChar { it.uppercase() } + " waits for a phone in reach"
+    }
 }
 
 /** How long a message alert stays (spec "Alerts"). */

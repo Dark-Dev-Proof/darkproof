@@ -135,6 +135,8 @@ object AsciiBackground {
     const val MIN_STRENGTH = 20
     /** A saved strength as Settings offers it: an older build's lower number reads as the least. */
     fun strengthOf(saved: Int) = saved.coerceIn(MIN_STRENGTH, 100)
+    /** The Background switch's line while it is on: the iPhone's sentence (re-check screens 9); off, it says "Pure black". */
+    const val ON_LINE = "Drawn once, so it costs almost no battery. Pure black saves the most."
     /** How long a window has to keep its size before the texture is drawn again for it. */
     const val SETTLE_MS = 150L
     /** "Slow drift": at most this many pictures a second. */
@@ -493,8 +495,8 @@ fun BackgroundPage(c: Context) {
     fun set(n: BgStyle) = AsciiBackground.set(c, n)
     BgPreview(s)
     RowCard {
-        // The iPhone's words for the same switch (design review L1).
-        ToggleRow(R.drawable.ic_image, "Background", s.on, if (s.on) "Faint characters behind the screens" else "Pure black") { set(s.copy(on = it)) }
+        // The iPhone's words for the same switch (design review L1, re-check screens 9).
+        ToggleRow(R.drawable.ic_image, "Background", s.on, if (s.on) AsciiBackground.ON_LINE else "Pure black") { set(s.copy(on = it)) }
     }
     Column(Modifier.alpha(if (s.on) 1f else 0.4f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Card(padding = 18.dp) {

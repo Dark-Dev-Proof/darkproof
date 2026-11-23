@@ -66,7 +66,7 @@ fun DarkProofApp(s: AppState, a: MainActivity) {
     MaterialTheme(colorScheme = darkColorScheme(background = Theme.bg, surface = Theme.bg, primary = Theme.text, onPrimary = Color.Black)) {
         CompositionLocalProvider(LocalPhotoPicker provides { pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) {
         Box(Modifier.fillMaxSize().background(Theme.bg)) {
-            Wipe.erased?.let { lines -> EmptyScreen(lines) { Wipe.emptySeen() } } // "This phone is empty", once, after "Erase everything"
+            Wipe.erased?.let { lines -> EmptyScreen(lines) { Wipe.emptySeen() } } // "DarkProof is empty on this phone" (or what is left), once, after "Erase everything"
             val g = s.group
             if (g == null) {
                 SetupFlow(s.invite, askName = true, modifier = Modifier.statusBarsPadding().navigationBarsPadding(), myName = s.name, dropInvite = { s.invite = null }) { name, group, created ->
@@ -543,6 +543,7 @@ private fun HomeTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<
             }
             RoundIcon(R.drawable.ic_settings, desc = "Settings") { open(Sheet.Settings) }
         }
+        StoreProblemCard(remember(tick) { MeshEngine.storeProblem })
         PhoneProblems(s, a)
         // Hero: the logo's shape, the number of phones in range, and every other way out.
         val hero = remember { vaultShape() }
@@ -621,6 +622,16 @@ fun linkLines(): List<String> = listOfNotNull(
     MeshEngine.lora?.takeIf { it.paired || it.connected }?.status,
     MeshEngine.meshcore?.takeIf { it.paired || it.connected }?.status,
 )
+
+/**
+ * Why the saved messages couldn't be opened ([MeshEngine.storeProblem]: for instance a store a newer DarkProof wrote), while
+ * that is so: on Home and at the top of the computer's chat pane, where the person looks (re-check N4). White, not red:
+ * red is for help. [why] is read by the caller, whose screen follows the engine's changes.
+ */
+@Composable
+fun StoreProblemCard(why: String?, modifier: Modifier = Modifier) {
+    if (why != null) Card(modifier) { Txt(why, 16, FontWeight.SemiBold) }
+}
 
 /** Missing permissions and phone switches that stop DarkProof from working well, each with the button that fixes it. */
 @Composable

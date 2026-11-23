@@ -142,6 +142,8 @@ object Wipe {
         runCatching { c.getSystemService(JobScheduler::class.java)?.cancelAll() }
         // The check-in clocks' backup alarm: it outlives the process, and carries a member's name and the group's code.
         runCatching { QuietAlarms.cancel(c) }
+        // Voice notes' decoded sound and levels held in memory, with their message ids (re-check screens 4).
+        runCatching { VoiceAudio.forget() }
         // Downloads under way belong to Android's downloader, which would carry on by itself: they are taken back, with their files.
         runCatching {
             val dm = c.getSystemService(DownloadManager::class.java)

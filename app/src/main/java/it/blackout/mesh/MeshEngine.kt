@@ -55,8 +55,15 @@ private class Db(c: Context) : SQLiteOpenHelper(c, "mesh.db", null, STORE_VERSIO
 }
 
 /** The store was written by a newer DarkProof: version [had]; this one reads [reads]. */
-class StoreTooNew(had: Int, reads: Int) : android.database.sqlite.SQLiteException(
-    "The saved messages were written by a newer version of DarkProof (store $had, this version reads $reads). Install the newer version again.", null)
+class StoreTooNew(had: Int, reads: Int) : android.database.sqlite.SQLiteException(text(had, reads), null) {
+    companion object {
+        fun text(had: Int, reads: Int) =
+            "The saved messages were written by a newer version of DarkProof (store $had, this version reads $reads). Install the newer version again."
+        const val CANT_OPEN = "Can't open the saved messages"
+        /** What the screens say when the store can't be opened ([MeshEngine.storeProblem]): the newer-version words, or a plain line. Pure: tested. */
+        fun words(e: Throwable): String = (e as? StoreTooNew)?.message ?: CANT_OPEN
+    }
+}
 
 /**
  * Table q's rows (decision C of the final review, 2026-11-23): a group's check-in clocks as [QuietBook.saved] writes them
@@ -93,6 +100,32 @@ object QuietSeal {
  */
 object QuietRang {
     class Result(val post: List<QuietAlert>, val left: List<QuietAlert>, val changed: Set<String>)
+
+    /** How long after a ring that couldn't read anything ([again]) the alarm rings again. */
+    const val AGAIN_MS = 5 * 60_000L
+
+    /**
+     * The alarm rang while what it needs couldn't be read: the clocks are sealed and the vault's key can't be had, or the
+     * saved groups can't be opened (the Keystore failed for a moment; re-check N2 and N3, 2026-11-23). Nothing is posted
+     * and nothing is dropped as gone: what [due] carries is armed again, to ring [AGAIN_MS] later. Only an alert more
+     * than 12 hours past its time goes ([QuietClock.LATE_MS], when a clock alert never comes any more), so a key that
+     * stays unreadable doesn't wake the phone for ever. Pure: tested.
+     */
+    fun again(due: List<QuietAlert>, now: Long): List<QuietAlert> = due.filter { now - it.at <= QuietClock.LATE_MS }
+
+    /** What the alarm's receiver does first, with the engine not running: ring, arm again ([again]), or go. */
+    enum class Gate { RING, AGAIN, CANCEL }
+
+    /**
+     * Re-check N3: [group], a group is in use; [saved], the vault holds the saved groups; [readable], they open now. No
+     * group because none is saved (an erase ended) or because every group was left: the alarm goes. Saved groups that
+     * can't be read right now are not "no group": the alarm is armed again, never cancelled for good. Pure: tested.
+     */
+    fun gate(group: Boolean, saved: Boolean, readable: Boolean): Gate = when {
+        group -> Gate.RING
+        saved && !readable -> Gate.AGAIN
+        else -> Gate.CANCEL
+    }
 
     fun handle(due: List<QuietAlert>, books: Map<String, QuietBook>, now: Long): Result {
         val post = ArrayList<QuietAlert>(); val left = ArrayList<QuietAlert>(); val changed = HashSet<String>()
@@ -297,6 +330,12 @@ object MeshEngine {
     var deviceId = ""; private set
     var name = ""; private set
     var transportStatus = "Starting…"
+    /**
+     * Why the store couldn't be opened at the start, in the words the person sees ([StoreTooNew.words]), or null. Its own
+     * field (re-check N4): the link line ([transportStatus]) is the phone's "Nearby" line, which the service overwrites and
+     * a computer never shows. The window and Home show it as a banner ([StoreProblemCard]).
+     */
+    @Volatile var storeProblem: String? = null; internal set
     private var startedAt = 0L
 
     /**
@@ -317,12 +356,13 @@ object MeshEngine {
             handedOffOver.clear(); handedOffOver.putAll(parseOver(prefs.getString(OVER_PREF, "") ?: ""))
         }
         // Open already if a group was left before the engine started ([leave]). A store this version can't open (one a newer
-        // DarkProof wrote, [StoreTooNew]) leaves the engine off and says why, instead of ending the app at every start.
+        // DarkProof wrote, [StoreTooNew]) leaves the engine off and says why ([storeProblem]), instead of ending the app at every start.
         if (db == null) db = try { Db(c.applicationContext).writableDatabase } catch (e: android.database.sqlite.SQLiteException) {
             DebugTools.log("store: can't open: $e")
-            transportStatus = (e as? StoreTooNew)?.message ?: "Can't open the saved messages"; notifyUi()
+            storeProblem = StoreTooNew.words(e); notifyUi()
             return
         }
+        storeProblem = null
         loadGone()
         sealPlainClocks() // decision C: clocks a version before this one saved readable are sealed now, and their readable copy emptied
         if (!prefs.getBoolean("v06", false)) { // groups saved before v0.6 count as founded here (spec "Making the first epoch")
@@ -1247,7 +1287,7 @@ object MeshEngine {
      * phone is "I need help", under 24 hours old, it goes again ([FinderResend]) with a fresh battery level and, if location
      * sharing is on, the last known position; at most every 10 minutes per group. Only where the note is written
      * ([FinderPrefs.writes]: the trial switch on (decision B of the final review), the switch on, high-risk mode off), and
-     * never while an own clock message newer than that help call is held there (item 3): the re-sent check-in would be
+     * never while an own clock message dated at or after that help call is held there (item 3): the re-sent check-in would be
      * dated after the clock and stop it on every phone (rule Q4). It alerts the group again, as any "I need help" does.
      * Background thread.
      */
@@ -1266,7 +1306,7 @@ object MeshEngine {
             if (newest == null) continue
             // This phone's own newest clock: its message, or its record when the message is gone (the group's timer, high-risk mode).
             val ownClock = listOfNotNull(clockTs, synchronized(k.quietBook) { k.quietBook.clock(k.me)?.ts }).maxOrNull()
-            if (!FinderResend.due(CheckIn.of(newest.text), newest.ts, now, prefs.getLong(FinderResend.PREF + k.id, 0L), ownClockAfter = ownClock != null && ownClock > newest.ts)) continue
+            if (!FinderResend.due(CheckIn.of(newest.text), newest.ts, now, prefs.getLong(FinderResend.PREF + k.id, 0L), ownClockAfter = FinderResend.clockAfter(ownClock, newest.ts))) continue
             prefs.edit().putLong(FinderResend.PREF + k.id, now).apply()
             val spot = if (prefs.getBoolean("shareLocation", false)) runCatching { Locator.lastKnown(c) }.getOrNull() else null
             DebugTools.log("finder: help check-in sent again after a restart")
@@ -2401,6 +2441,7 @@ object MeshEngine {
                 .putStringSet("checked", checkedSet().filterNot { it.startsWith("${k.id}|") }.toSet())
                 .putStringSet("checkedInPerson", inPersonSet().filterNot { it.startsWith("${k.id}|") }.toSet()).apply()
             Moderation.forgetGroup(c, k.id)
+            runCatching { VoiceAudio.forget() } // its voice notes' decoded sound and levels, with their message ids (re-check screens 4)
             ReadMarks.forget(c, k.code)
             if (code != k.code) Groups.forget(c, code) // it was saved under a code the group has moved on from
             val next = Groups.forget(c, k.code)
@@ -2512,6 +2553,11 @@ object MeshEngine {
         runCatching { d.rawQuery("PRAGMA secure_delete = OFF", null).use { it.moveToNext() } }
         DebugTools.log("store: ${plain.size} group(s) of clocks sealed")
     }
+
+    /** Whether table q holds a sealed row: one that opens only with the vault's key. False if the table can't be read ([quietBooks] says so then). */
+    private fun quietSealed(d: SQLiteDatabase): Boolean =
+        try { d.rawQuery("SELECT 1 FROM q WHERE box IS NOT NULL LIMIT 1", null).use { it.moveToNext() } }
+        catch (e: android.database.sqlite.SQLiteException) { false }
 
     /** Every group's clocks as table q holds them, by group id; null if the table can't be read. */
     private fun quietBooks(d: SQLiteDatabase): Map<String, QuietBook>? {
@@ -2667,9 +2713,11 @@ object MeshEngine {
      * from the store itself, with the same limit of one alert about a member every 10 minutes; what is still to come is
      * returned, to be armed again ([QuietRang]). All of it under the engine's own lock, which [start] takes too: a start
      * can't read table q between this read and this save, so the engine never posts the same alert a second time
-     * (final review 2026-11-23). Background thread.
+     * (final review 2026-11-23). Null: the clocks are sealed and the vault's key can't be had right now (re-check N2), so
+     * nothing was posted or dropped, and the caller arms [due] again a few minutes later ([QuietRang.again]): a row that
+     * can't be opened is not a clock that was cancelled. Background thread.
      */
-    fun quietAlarmRang(c: Context, due: List<QuietAlert>, out: QuietOut): List<QuietAlert> {
+    fun quietAlarmRang(c: Context, due: List<QuietAlert>, out: QuietOut): List<QuietAlert>? {
         if (stopped) return emptyList()
         if (router != null) { quietPass(); return emptyList() } // the pass arms the alarm again
         synchronized(this) {
@@ -2679,6 +2727,7 @@ object MeshEngine {
             if (app == null) app = c.applicationContext
             if (db == null) runCatching { db = Db(c.applicationContext).writableDatabase }.onFailure { DebugTools.log("quiet: can't open the store: $it") }
             val d = db ?: return due.filter { it.at > now } // what is due now can't be checked: it isn't armed again to ring at once, again and again
+            if (historyKey == null && quietSealed(d)) { DebugTools.log("quiet: the alarm rang, the clocks can't be opened right now: armed again"); return null }
             sealPlainClocks()
             val books = quietBooks(d) ?: return due.filter { it.at > now }
             val r = QuietRang.handle(due, books, now)

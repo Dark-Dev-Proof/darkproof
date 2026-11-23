@@ -143,6 +143,32 @@ class QuietStoreEngineTest {
         }.also { assertEquals(10, it.writableDatabase.version); it.close() }
     }
 
+    /**
+     * Re-check N4: an older desktop build started on a folder a newer one wrote opens with nothing in it. It now says why,
+     * at the top of the window's middle pane, above every page; before, the words went to the phones' "Nearby" line, which
+     * a computer never shows.
+     */
+    @Test fun aStoreFromANewerVersionIsSaidInTheWindow() {
+        RealEngine.started(); val a = RealEngine.activity
+        val words = StoreTooNew.words(StoreTooNew(10, 9))
+        assertEquals(StoreTooNew.text(10, 9), words)
+        assertNull("the tests' store opened", MeshEngine.storeProblem)
+        Screen { App(a) }.use { s ->
+            try {
+                a.state.tab = 1; a.state.everyone = false; a.state.sheet = null; s.settle()
+                assertFalse(s.has("newer version of DarkProof"))
+                MeshEngine.storeProblem = words; a.state.tick++; s.settle()
+                assertTrue("on the chat: ${s.texts()}", s.says(words))
+                a.state.tab = 2; s.settle()
+                assertTrue("on Places too", s.says(words))
+                s.png("build/screen-store-too-new.png")
+            } finally {
+                MeshEngine.storeProblem = null; a.state.tab = 1; a.state.tick++; s.settle()
+            }
+            assertFalse("gone once the store opens", s.has("newer version of DarkProof"))
+        }
+    }
+
     @Test fun aGroupLeftWithNoEngineCanBeJoinedAgain() {
         RealEngine.started(); val c = RealEngine.activity
         val blocks = MeshEngine::class.java.getDeclaredMethod("leftColdBlocks", Context::class.java, String::class.java).apply { isAccessible = true }

@@ -132,13 +132,23 @@ class QuietAlarms(c: Context) : QuietOut {
      * from then: a few wake-ups, and an alert at most about 3 minutes late (Doze, which lets an app's alarm ring only once
      * every 9 minutes or so, can add to that). While the app sleeps, the running service's own timer doesn't run either.
      */
-    override fun arm(coming: List<QuietAlert>) {
+    override fun arm(coming: List<QuietAlert>) = set(coming, again = false)
+
+    /**
+     * [coming] armed again after a ring that couldn't read the clocks or the saved groups (the Keystore failed for a
+     * moment, re-check N2 and N3): never sooner than [QuietRang.AGAIN_MS] from now, so what was due then and couldn't be
+     * checked doesn't ring at once, again and again. What is past its last chance has gone from [coming] already
+     * ([QuietRang.again]); nothing left: the alarm goes.
+     */
+    fun again(coming: List<QuietAlert>) = set(coming, again = true)
+
+    private fun set(coming: List<QuietAlert>, again: Boolean) {
         if (coming.isEmpty()) { cancel(c); return }
         val am = c.getSystemService(AlarmManager::class.java) ?: return
         val pi = PendingIntent.getBroadcast(c, REQUEST, intent(c, coming), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val now = System.currentTimeMillis()
         val first = coming.minOf { it.at } - MeshEngine.quietAhead // by the phone's own clock (debug builds can move the clock the rules use)
-        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, ringAt(first, now), pi)
+        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, ringAt(first, now).let { if (again) maxOf(it, now + QuietRang.AGAIN_MS) else it }, pi)
     }
 
     /** When the alarm for [target] rings, set at [now]: halfway there while it is more than [STEP_MS] away. */
@@ -155,11 +165,24 @@ class QuietAlarmReceiver : BroadcastReceiver() {
         Thread {
             try {
                 // No group saved (an erase ended, or every group was left): no channel and no store are made, the alarm goes.
-                if (Groups.code(c) == null) { QuietAlarms.cancel(c); return@Thread }
+                // Saved groups the vault can't open right now (the Keystore failed for a moment) are not "no group": the
+                // alarm is armed again a few minutes later, never cancelled for good (re-check N3).
+                if (Groups.code(c) == null) {
+                    val saved = c.getSharedPreferences("vault", 0).contains("groups")
+                    when (QuietRang.gate(group = false, saved = saved, readable = !saved || Vault.get(c, "groups") != null)) {
+                        QuietRang.Gate.AGAIN -> { DebugTools.log("quiet: the alarm rang, the saved groups can't be read right now: armed again"); QuietAlarms(c).again(QuietRang.again(due, MeshEngine.quietNow())) }
+                        else -> QuietAlarms.cancel(c)
+                    }
+                    return@Thread
+                }
                 QuietAlarms.setUp(c)
                 val out = MeshEngine.quietOut ?: QuietAlarms(c)
+                // Null: the clocks are sealed and the vault's key can't be had right now (re-check N2): nothing was posted or
+                // dropped, and all of it rings again a few minutes later.
                 val left = MeshEngine.quietAlarmRang(c, due, out)
-                if (MeshEngine.router == null) out.arm(left) // with the engine running, its pass armed it already
+                if (MeshEngine.router == null) { // with the engine running, its pass armed it already
+                    if (left != null) out.arm(left) else QuietAlarms(c).again(QuietRang.again(due, MeshEngine.quietNow()))
+                }
             } catch (e: Exception) { DebugTools.log("quiet: alarm failed: $e") }
             finally { pending.finish() }
         }.start()

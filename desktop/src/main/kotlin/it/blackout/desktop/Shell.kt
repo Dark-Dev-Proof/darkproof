@@ -90,6 +90,7 @@ import it.blackout.mesh.RoundIcon
 import it.blackout.mesh.SavedGroup
 import it.blackout.mesh.SetupFlow
 import it.blackout.mesh.Sheet
+import it.blackout.mesh.StoreProblemCard
 import it.blackout.mesh.Theme
 import it.blackout.mesh.Txt
 import it.blackout.mesh.linkLines
@@ -172,6 +173,10 @@ private fun Panes(s: AppState, a: MainActivity, g: SavedGroup) {
             Sidebar(s, a, g, phones, unread, peopleAtSide)
             Line()
             Column(Modifier.weight(1f).fillMaxHeight().padding(top = TOP)) {
+                // The store couldn't be opened (one a newer DarkProof wrote): said above every page, since the window
+                // opens with nothing in it then (re-check N4).
+                val problem = remember(tick) { MeshEngine.storeProblem }
+                StoreProblemCard(problem, Modifier.widthIn(max = PAGE).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 4.dp))
                 when (s.tab) {
                     2 -> Box(Modifier.widthIn(max = PAGE)) { PlacesTab(s, messages) { s.sheet = it } }
                     3 -> Box(Modifier.widthIn(max = PAGE)) { PeopleTab(s, a, g, messages, phones) { s.sheet = it } }

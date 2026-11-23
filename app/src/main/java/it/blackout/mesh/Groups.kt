@@ -23,16 +23,21 @@ object Groups {
     /**
      * Group codes are kept in the [Vault], encrypted with a key that never leaves the Keystore: a code is what lets
      * someone ask to join. Read once, then from memory. Codes saved in plain preferences by older builds move here.
+     * Saved codes the vault can't open right now (the Keystore failed for a moment) are not kept in memory as "no group":
+     * the next call reads them again, so the alarm armed again after such a moment (re-check N3) and the screens find
+     * them once the Keystore answers. Nothing is moved meanwhile.
      */
     @Synchronized private fun saved(c: Context): Saved {
         cache?.let { return it }
         val p = prefs(c)
-        val s = Vault.get(c, "groups")?.let { raw -> runCatching { JSONObject(String(raw)).let { o ->
+        val vaulted = Vault.get(c, "groups")?.let { raw -> runCatching { JSONObject(String(raw)).let { o ->
             Saved(o.optString("code").ifEmpty { null }, o.optString("name").ifEmpty { null }, groupsFrom(o.getJSONArray("others")),
                 o.getJSONArray("founded").let { f -> (0 until f.length()).map(f::getString).toSet() },
                 o.optJSONObject("pins")?.let { m -> m.keys().asSequence().associateWith { m.getString(it) } }.orEmpty())
-        } }.getOrNull() } ?: Saved(p.getString("code", null), p.getString("groupName", null),
+        } }.getOrNull() }
+        val s = vaulted ?: Saved(p.getString("code", null), p.getString("groupName", null),
             runCatching { groupsFrom(JSONArray(p.getString("groups", "[]"))) }.getOrDefault(emptyList()), p.getStringSet("found", emptySet())!!.toSet())
+        if (vaulted == null && c.getSharedPreferences("vault", 0).contains("groups")) return s
         cache = s
         if (p.contains("code") || p.contains("groups") || p.contains("found")) {
             write(c, s)
