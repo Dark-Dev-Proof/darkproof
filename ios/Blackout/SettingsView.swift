@@ -184,6 +184,7 @@ struct SettingsSheet: View {
     @CurrentCode private var code
     @AppStorage("name") private var myName = ""
     @AppStorage(LocationService.shareKey) private var shareLocation = false
+    @AppStorage(FinderNote.settingKey) private var findable = true
     @ObservedObject private var loc = LocationService.shared
     @ObservedObject private var notifier = Notifier.shared
     @ObservedObject private var lock = AppLock.shared
@@ -203,6 +204,11 @@ struct SettingsSheet: View {
                           detailColor: shareLocation && loc.denied ? Theme.help : Theme.dim,
                           isOn: Binding(get: { shareLocation }, set: { shareLocation = $0; if $0 { LocationService.shared.requestPermission() } }))
                 if shareLocation && loc.denied { OpenSettingsButton().padding(.bottom, 8) }
+                // Finder (spec "Finder", F2): the link id in "I need help". High-risk mode turns it off whatever this says.
+                SwitchRow(icon: "dot.radiowaves.left.and.right", title: "Let my group find this phone",
+                          detail: risk.isOn ? "Off in high-risk mode." : "When you send “I need help”, your group can tell which nearby phone is yours until DarkProof restarts.",
+                          isOn: Binding(get: { findable && !risk.isOn }, set: { findable = $0 }))
+                    .disabled(risk.isOn)
                 LinkRow(icon: "bell.fill", title: "Notifications", value: notificationsValue) { NotificationsPage() }
                 SwitchRow(icon: "lock.fill", title: "Lock DarkProof",
                           detail: lock.enabled && !lock.available ? "This iPhone has no passcode any more, so this lock can't protect DarkProof. Set one in the iPhone's Settings."

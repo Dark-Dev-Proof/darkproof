@@ -30,7 +30,7 @@ class TimerVectorsTest {
     @Test fun vectorCounts() {
         assertEquals(15, of("timer-field").size); assertEquals(2, of("timer-rekey").size); assertEquals(12, of("timer-epoch").size)
         assertEquals(4, of("timer-rival").size); assertEquals(11, of("timer-due").size); assertEquals(2, of("timer-notice").size)
-        assertEquals(6, of("timer-late").size)
+        assertEquals(8, of("timer-late").size)
     }
 
     @Test fun fields() {
@@ -148,16 +148,21 @@ class TimerVectorsTest {
      * `kind: timer-late`: a key numbered 6 that arrives after Cara's key 7, kept only to read with. Epoch 5 (Anna and Ben
      * admins) has the vector's `before`, which the key current at 6 inherits. Where the late key must win, the key current
      * at 6 is a member's weekly key (an admin's late key beats it; Dan's, a member's, beats it by hash); where it must lose,
-     * it is Anna's (Ben's late key loses by hash, Dan's by rank). `lines`: whether it stands in for number 6 in the chat's lines.
+     * it is Anna's (Ben's late key loses by hash, Dan's by rank). `beaten: not-admin` for an admin of 5 (Ben): the key current at
+     * 6 is Anna's, which demoted him, and his late key beats it by hash. `lines`: whether it stands in for number 6 in the chat's lines.
      */
     @Test fun lateKeys() {
         fun hash(s: Int) = Keyring.Epoch.fresh(6, t0, ByteArray(32) { s.toByte() }, listOf(anna), listOf(anna)).hash
         val bySize = (60..69).sortedBy(::hash); val lo = bySize.first(); val hi = bySize.last()
+        val m = listOf(anna, ben, cara, dan)
+        fun keyBy(epoch: Long, made: Long, admins: List<String>) = Rekey(epoch, made, ByteArray(33), admins, null, m.map { it to ByteArray(1) }, members = m)
         for (v in of("timer-late")) {
             val wins = v["wins"] == "yes"; val admin = v["maker"] == "admin"
+            val demoted = admin && v["beaten"] == "not-admin" // Anna's key 6 took Ben's admin role away
             val ring = base(timer(v["before"]!!))
-            assertTrue("$v", take(ring, key(6, t0), if (wins) cara else anna, null, ByteArray(32) { (if (wins) hi else lo).toByte() }, t0))
-            assertTrue(take(ring, key(7, t0 + 2 * hour), cara, null, ByteArray(32) { 7 }, t0 + 2 * hour))
+            val admins6 = if (demoted) listOf(anna) else listOf(anna, ben)
+            assertTrue("$v", take(ring, keyBy(6, t0, admins6), if (wins && !demoted) cara else anna, null, ByteArray(32) { (if (wins) hi else lo).toByte() }, t0))
+            assertTrue(take(ring, keyBy(7, t0 + 2 * hour, admins6), cara, null, ByteArray(32) { 7 }, t0 + 2 * hour))
             assertEquals(timer(v["before"]!!), ring.timer().seconds)
             val field = if (v["field"] == "none") null else v["field"]!!.toInt()
             assertTrue("$v", take(ring, key(6, t0 + hour), if (admin) ben else dan, field, ByteArray(32) { (if (wins) lo else hi).toByte() }, t0 + 3 * hour))
@@ -166,6 +171,40 @@ class TimerVectorsTest {
             assertEquals("$v", timer(v["timer"]!!), ring.timer().seconds)
             assertEquals("$v", v["lines"] == "yes", ring.lineEpochs().single { it.number == 6L } === late)
         }
+    }
+
+    /**
+     * M4's stricter rule (2026-11-23): a late key kept only to read with also needs its maker to be an admin of the epoch it
+     * beats. Ben, an admin of epoch 5, is demoted by Anna's key 6; a key 6 of Ben's that arrives after Cara's key 7 and
+     * wins at 6 by its hash sets nothing, freezes nothing and makes no line. Ben still an admin in Anna's key 6: his late
+     * key is his word on the timer, as `kind: timer-late` has it.
+     */
+    @Test fun aDemotedAdminsLateKeySetsNothing() {
+        fun hash(s: Int) = Keyring.Epoch.fresh(6, t0, ByteArray(32) { s.toByte() }, listOf(anna), listOf(anna)).hash
+        val bySize = (60..69).sortedBy(::hash); val lo = bySize.first(); val hi = bySize.last()
+        val m = listOf(anna, ben, cara, dan)
+        fun key(epoch: Long, made: Long, admins: List<String>) = Rekey(epoch, made, ByteArray(33), admins, null, m.map { it to ByteArray(1) }, members = m)
+        for (demoted in listOf(true, false)) {
+            val admins6 = if (demoted) listOf(anna) else listOf(anna, ben)
+            val ring = base(86_400)
+            assertTrue(take(ring, key(6, t0, admins6), anna, null, ByteArray(32) { hi.toByte() }, t0))
+            assertTrue(take(ring, key(7, t0 + 2 * hour, admins6), cara, null, ByteArray(32) { 7 }, t0 + 2 * hour))
+            assertEquals(86_400, ring.timer().seconds)
+            assertTrue(take(ring, key(6, t0 + hour, listOf(anna, ben)), ben, 300, ByteArray(32) { lo.toByte() }, t0 + 3 * hour))
+            val late = ring.all().single { it.number == 6L && it.members.isEmpty() }
+            assertTrue("it wins at 6 by its hash", ring.won(late))
+            assertEquals("demoted=$demoted", if (demoted) 86_400 else 300, ring.timer().seconds)
+            assertEquals("demoted=$demoted", !demoted, ring.lineEpochs().single { it.number == 6L } === late)
+        }
+        // No epoch with a member list held at 6 (this phone went from 5 to 7): Ben's late key corrects nothing and says nothing.
+        val ring = base(86_400)
+        assertTrue(take(ring, key(7, t0 + 2 * hour, listOf(anna, ben)), cara, null, ByteArray(32) { 7 }, t0 + 2 * hour))
+        assertEquals(7L, ring.current().number)
+        assertTrue(take(ring, key(6, t0 + hour, listOf(anna, ben)), ben, 300, ByteArray(32) { lo.toByte() }, t0 + 3 * hour))
+        val late = ring.all().single { it.number == 6L }
+        assertTrue(late.members.isEmpty() && ring.won(late))
+        assertEquals(86_400, ring.timer().seconds)
+        assertTrue(ring.lineEpochs().none { it === late })
     }
 
     @Test fun whenAMessageGoes() {

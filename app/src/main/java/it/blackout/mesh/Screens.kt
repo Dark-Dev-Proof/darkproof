@@ -326,6 +326,8 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
     val vouch = if (!m.public) Vouch.of(m.text) else null
     val ask = if (!m.public) AreYouSafe.of(m.text) else null
     val place = if (m.public) Place.of(m.text) else null
+    // A check-in clock (spec "If I go quiet"): a card here; apps without the feature show its text as a bubble.
+    val quiet = if (!m.public) (m.notice as? Notice.Clock)?.deadline else null
     val time = clock(ctx, m.ts)
     var menu by remember { mutableStateOf(false) }
     var held by remember { mutableStateOf(false) }
@@ -357,12 +359,16 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
             Toast.makeText(ctx, "Reported and hidden on this ${Here.device}", Toast.LENGTH_SHORT).show()
         })
     } }
-    val card = check != null || vouch != null || ask != null || place != null
+    val card = check != null || vouch != null || ask != null || place != null || quiet != null
     // The message itself; [preview]: drawn again over the dimmed chat while it is held, without what goes under it.
     val body: @Composable (Boolean) -> Unit = { preview ->
         // A card has no bubble to hold the quote: it sits above the card.
         if (card) x.quote?.let { q -> QuoteView(q, Modifier.padding(bottom = 4.dp).background(Theme.card, RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 8.dp), tap = if (preview) null else ({ q.row?.let(x.jump) }), hold = if (preview) null else openMenu) }
         when {
+            quiet != null -> {
+                QuietCard(m, quiet, if (me) null else MeshEngine.quietName(m.group, m.sender) ?: m.name, time)
+                if (!preview) { Chips(x); if (me) Status(delivery, null, x.journey) }
+            }
             check != null -> {
                 val c = if (check == CheckIn.HELP) Theme.help else Theme.safe
                 Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(c.copy(alpha = 0.12f)).padding(horizontal = 18.dp, vertical = 16.dp),

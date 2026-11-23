@@ -136,4 +136,11 @@ final class Round2bFixTests: XCTestCase {
         XCTAssertEqual(LeaveWords.erased(sent: 2, left: 1), "1 of 2 notes didn't leave this phone in time.")
         XCTAssertEqual(LeaveWords.erased(sent: 0, left: 0), "Your groups were not told.")
     }
+
+    /// One note in the singular, as Android has it: never "1 of 1 notes".
+    func testOneNoteIsSaidInTheSingular() {
+        XCTAssertEqual(LeaveWords.erased(sent: 1, left: 1), "The note left this phone.")
+        XCTAssertEqual(LeaveWords.erased(sent: 1, left: 0), "The note didn't leave this phone in time.")
+        XCTAssertEqual(LeaveWords.erased(sent: 2, left: 0), "2 of 2 notes didn't leave this phone in time.")
+    }
 }

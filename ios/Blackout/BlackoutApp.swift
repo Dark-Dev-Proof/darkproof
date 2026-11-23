@@ -74,6 +74,9 @@ struct BlackoutApp: App {
                 e.approveJoin(GroupSecrets.shared.current, r.id) { DebugLog.write("approve \(args[i + 1]): \($0)") }
             }
         }
+        // finderFeed "-90x5,-75x6,-,-58x8": Finder's readings instead of Bluetooth, one a second (`x` repeats, `-` is none);
+        // with `set finderTrial 1` and `sheet finder` the screen opens on a stand-in who asked for help.
+        if let i = args.firstIndex(of: "finderFeed"), args.indices.contains(i + 1) { FinderSession.fakeFeed = FinderDemo.feed(args[i + 1]) }
         if let i = args.firstIndex(of: "voiceFeed"), args.indices.contains(i + 1) { // voiceFeed <audio file>: stands in for the microphone (the Simulator's is silent)
             VoiceAudio.shared.fakeInput = OpusCodec.samples(of: URL(fileURLWithPath: args[i + 1]))
             DebugLog.write("voiceFeed: \(VoiceAudio.shared.fakeInput?.count ?? 0) samples at 48 kHz")
@@ -96,6 +99,24 @@ struct BlackoutApp: App {
 
     var body: some Scene {
         WindowGroup { RootView().preferredColorScheme(.dark) }
+    }
+}
+
+/// Finder on the Simulator, which has no Bluetooth (`finderFeed`, `sheet finder` above, debug builds only).
+enum FinderDemo {
+    /// "-90x5,-75,-" -> five -90s, a -75, a second without a reading.
+    static func feed(_ s: String) -> [Int?] {
+        s.split(separator: ",").flatMap { part -> [Int?] in
+            let bits = part.split(separator: "x"), n = bits.count > 1 ? Int(bits[1]) ?? 1 : 1
+            return Array(repeating: bits.first == "-" ? nil : Int(bits.first ?? ""), count: max(1, n))
+        }
+    }
+
+    /// A stand-in who asked for help 6 minutes ago, with a finder note.
+    static func person() -> Person {
+        var p = Person(id: "finder-demo", name: "Marco", lastTs: Int64(Date().timeIntervalSince1970 * 1000) - 360_000)
+        p.checkIn = .help; p.checkInTs = p.lastTs; p.battery = 15; p.needs = [.trapped]; p.finder = "a1b2c3d4e5f6"
+        return p
     }
 }
 

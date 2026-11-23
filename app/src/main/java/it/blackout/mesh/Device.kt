@@ -432,6 +432,7 @@ object Notifier {
         nm.createNotificationChannel(NotificationChannel(MESSAGES, "Messages and check-ins", NotificationManager.IMPORTANCE_DEFAULT))
         nm.createNotificationChannel(NotificationChannel(HELP, "Someone needs help", NotificationManager.IMPORTANCE_HIGH))
         MeshEngine.onIncoming = { m -> received(c.applicationContext, m) }
+        QuietAlarms.setUp(c) // check-in clocks' alerts and their alarm (spec "If I go quiet")
     }
 
     /** What a group message from someone else says, as an alert. */
@@ -450,6 +451,8 @@ object Notifier {
             ask != null && ask.isFor(me) -> Alert(if (ask.to == null) "${m.name} asks: is everyone safe?" else "${m.name} asks: are you safe?",
                 "Answer with one tap · $group", m.group, true, true, m.id)
             check == CheckIn.SAFE -> Alert("${m.name} is safe", group, m.group, false, false, m.id)
+            // A check-in clock (spec "If I go quiet"): none of its sender's words, which may carry a position.
+            m.notice is Notice.Clock -> Alert("${m.name} · $group", QuietWords.messageAlert(m.notice.deadline, clock(c, m.notice.deadline)), m.group, false, false, m.id)
             vouch != null -> Alert("${vouch.subject} is safe", "Reported by ${m.name} · $group", m.group, false, false, m.id)
             else -> Alert("${m.name} · $group", if (m.photo != null) Photo.text(Photo.caption(m.text)) else m.text, m.group, false, false, m.id)
         }
@@ -481,7 +484,7 @@ object Notifier {
         if (a.ask && !risk) {
             if (!hide) n.addAction(android.app.Notification.Action.Builder(null, "I'm safe", PendingIntent.getBroadcast(c, id,
                 Intent(c, AnswerReceiver::class.java).putExtra(Actions.EXTRA_GROUP, m.group).putExtra(AnswerReceiver.NOTIFICATION, id),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build())
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).apply { if (Build.VERSION.SDK_INT >= 31) setAuthenticationRequired(true) }.build()) // it sends: only after the phone's unlock
             n.addAction(android.app.Notification.Action.Builder(null, "I need help", PendingIntent.getActivity(c, id + 1,
                 Actions.intent(c, Actions.HELP, m.group).putExtra(AnswerReceiver.NOTIFICATION, id),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build())

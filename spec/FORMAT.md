@@ -583,6 +583,9 @@ sharing.
 A person's status is their most recent check-in, and so is their battery level. Their position is the one in their
 most recent check-in that carried a position.
 
+A "needs help" check-in may also carry the sender's link id in its 5th field, so that group members nearby can tell
+which Bluetooth neighbour is that person's phone (see "Finder").
+
 Check-ins, reports about others and "Are you safe?" requests are group messages. On the Public channel, where anyone
 can post, both apps show a text of one of these forms as plain text: no check-in card, no entry in the People list,
 no alert and no one-tap answers. A reaction (see "Reactions") is never one of them, whatever its text.
@@ -604,10 +607,13 @@ A "needs help" check-in may say what is needed, and a check-in of either kind ho
   followed by 1 or 2 ASCII digits and then a space or the end; anything else means no count.
 - A person's needs and head count come from their most recent check-in, like the battery level.
 - Apps that don't know them still read the status, battery and position (vectors: `kind: checkin`).
-- Size: on MeshCore (packets ≤ 163 bytes) the name and the text together have 99 bytes (with a 12-character device
-  id); on Meshtastic (≤ 233 bytes), 169. The first example above is 85 bytes of text, so it fits MeshCore with a name
-  of up to 14 bytes. The longest possible check-in (all six needs, 👥 99, battery, position and accuracy) is 128 bytes:
-  it still fits Meshtastic, but not MeshCore, and then travels on the other links only.
+- Size: a group message's packet is 135 bytes plus its name and text when sealed with a message key (header 18, IV 12,
+  message-key header 3, signature 64, the 16-character member id and three lengths 22, tag 16), 3 bytes less with the
+  epoch's own key. So on MeshCore (packets ≤ 163 bytes) the name and the text together have 28 bytes, and on
+  Meshtastic (≤ 233 bytes) 98: `🆘 I need help` with a short name fits both; with a battery level it fits only
+  Meshtastic; the first example above (85 bytes of text) fits Meshtastic with a name of up to 13 bytes; the longest
+  possible check-in (all six needs, 👥 99, battery, position and accuracy, 128 bytes) fits neither radio and travels on
+  the other links only.
 
 ## Reports about others
 
@@ -749,7 +755,7 @@ the 4th it is there with length 0. Padding follows the last field. Its first byt
 | `0x03` | 5 | a new key; a group message | the group's timer; in a message only a notice (see "Disappearing messages") |
 | `0x04` | 9 | a group message | the sender's check-in clock: `04` and the deadline (see "If I go quiet") |
 | `0x05` | 2 | a group message | the sender left the group: `05 01` (see "Leaving the group") |
-| `0x06` | | | reserved |
+| `0x06` | 7 | a "needs help" check-in | the sender's link id, for Finder: `06` and 6 bytes (see "Finder") |
 
 - A reader ignores a 5th field whose type it doesn't know, whose length isn't the one listed, or that stands where
   its type has no meaning (a reply in a new key): the packet is then read as if it had no 5th field. Anything after
@@ -1045,13 +1051,17 @@ epoch's (see "Current epoch"); for rivals with one number that is the winner's, 
 - **Judged again whenever the phone's keys change**, not once when a key arrives: phones that hold the same keys
   agree, whatever order the keys came in. Among "the epochs numbered one lower" counts, next to the epochs that say
   who is in, a key that arrived late and is kept only to read with (see "Accepting a new key"), if it carries the
-  timer, **is the first of every epoch the phone holds at its number** (the order of "Current epoch"), and its maker
+  timer, **is the first of every epoch the phone holds at its number** (the order of "Current epoch"), its maker
   is an admin of the winning epoch before it (the first with a member list one number lower; if the phone no longer
-  holds that number, as judged when the key came). It decides nothing about people, but it is that admin's word on
-  the timer. Without it, a phone that got the rival that loses first, then a member's next key, would keep the
-  loser's timer for good. Any other late key (one that loses at its number, a member's, or an admin's who is no
-  admin of the winning epoch before it) sets nothing and freezes nothing, and neither it nor any other key kept only
-  to read with makes the chat's lines ("joined", "made an admin", the timer's line) unless it meets the same test.
+  holds that number, as judged when the key came), **and its maker is an admin of the epoch it beats** (the first
+  with a member list at its number; if the phone holds none there, the late key corrects nothing and says nothing).
+  It decides nothing about people, but it is that admin's word on the timer. Without it, a phone that got the rival
+  that loses first, then a member's next key, would keep the loser's timer for good. Any other late key (one that
+  loses at its number, a member's, an admin's who is no admin of the winning epoch before it, or one whom the key it
+  beats demoted) sets nothing and freezes nothing, and neither it nor any other key kept only to read with makes the
+  chat's lines ("joined", "made an admin", the timer's line) unless it meets the same test. The cost: when one admin
+  demotes another at the very moment that one changes the timer, phones that got the demoting key first keep the
+  value they had until an admin's next key carries one.
   An epoch kept only to read with is never the group's timer by itself.
 - **When the epochs before an epoch are gone** (a week after they were replaced), it keeps the timer worked out
   last. Phones save each epoch's timer with the epoch.
@@ -1228,8 +1238,9 @@ no new key format, nothing in how packets are sealed, signed or padded.
 - **Erase:** the switch "Tell my groups first", "Asks their admins' phones to remove this phone and change the key";
   after the hold "Telling your groups…" / "Waiting for a phone or relay to take the note." / the seconds left /
   "Erase now". The last screen names no group (the phone may be taken at that moment): "This phone is empty", and
-  "The notes left this phone.", "1 of 2 notes didn't leave this phone in time.", or, with the switch off or no group
-  this phone could write in, "Your groups were not told."
+  "The notes left this phone.", "1 of 2 notes didn't leave this phone in time.", for a single note "The note left
+  this phone." or "The note didn't leave this phone in time." (never "1 of 1 notes"), or, with the switch off or no
+  group this phone could write in, "Your groups were not told."
 - **Other phones:** while the member is listed, "Marco left the group" on an admin's phone and "Marco left. Waiting
   for an admin's phone to change the key." on anyone else's, at the note's time; once a removal took them out, the
   removal's line reads "Marco left the group" instead of "Anna removed Marco".
@@ -1428,6 +1439,92 @@ note reads a `0x04` field as none). The sender's screen counts only receipts, so
 Vectors: `kind: quiet-field` (reading the field), `kind: quiet-message` (a sealed clock message, and what readers with
 and without the feature make of it), `kind: quiet-valid` (Q2), `kind: quiet-pick` (Q3), `kind: quiet-cancel` (Q4),
 `kind: quiet-late` (Q5 to Q7), `kind: quiet-text` (the text).
+
+## Finder
+
+Someone who sent "I need help" may be near but out of sight: in another room, under rubble, in a pocket. Finder lets a
+group member walking nearby tell which Bluetooth neighbour is that person's phone and how strong its signal is on their
+own phone. It shows a word for the strength and whether it is getting stronger or weaker, never a distance or a
+direction: phone-to-phone signal strength at one spot varies by 10 to 20 dB with a body, a wall or a pocket in between,
+and a number of metres would be trusted and wrong.
+
+### The finder note
+
+- **F1. Field:** a "needs help" check-in (text starting with `🆘`) in a group may carry in its 5th field the type
+  `0x06` and the sender's current link id (see "Link ids") as 6 raw bytes: `06 a1 b2 c3 d4 e5 f6` for `a1b2c3d4e5f6`.
+  The 4th field is there and empty.
+- **F2. Writers** add it to each message of their own whose text starts with `🆘`, in a group, while the switch "Let
+  my group find this phone" is on (default on) and high-risk mode is off. Never on the Public channel, never to `✅`,
+  reports (`👤`), "Are you safe?", replies or reactions.
+- **F3. Radio first:** if the packet would fit 163 bytes (MeshCore) without the note and not with it, the note is left
+  out. The note adds 11 bytes (the empty 4th field's length, the 5th field's length, 7); see "Needs and head count"
+  for the rest of the packet. A check-in with a battery level never fits 163 bytes, so it always carries the note.
+- **F4. Readers** take it only from a group message that opened with a group's key and whose signature checked for a
+  member of that epoch, only when the text starts with `🆘`, the field is exactly 7 bytes and its type is `0x06`.
+  Anything else in the 5th field is ignored (see "The 5th field"). Until the signature checks, nothing is taken. The
+  note never makes a message a reply, a reaction or a notice: it is shown as the check-in it is.
+- **F5.** A person's note is the one in their most recent check-in, of either kind. A later `✅` check-in, or a later
+  `🆘` without a note, ends it: "I'm safe" ends being findable.
+- **F6. After a restart** the old link id is gone. Once per start, if this phone's newest own check-in in a group is
+  "needs help", under 24 hours old, with the switch on and high-risk mode off, the phone sends it again (the same needs
+  and head count, a fresh battery level and position, the new link id), at most once in 10 minutes per group. It alerts
+  the group again, as any "needs help" does.
+
+What it reveals: everyone who holds the group's key learns which link id is this member's until their app restarts.
+During that time a group member, or anyone who has a member's phone or key, can recognise this phone over Bluetooth by
+linking to it and reading its HELLO. Nobody outside the group learns anything new. A later check-in without the note
+ends it for readers, and a restart ends it for everyone. Phones in high-risk mode, and phones whose user turned the
+switch off, never add it.
+
+### Reading the signal
+
+Only on the searcher's phone. Nothing about the match or the readings is ever sent, stored or put in a receipt.
+
+- **F7. Where readings come from:** Finder compares the note's link id with the link ids this phone's Bluetooth LE
+  links reported in HELLO. On a link this phone dialed (it is the central), it reads the connection's signal strength
+  once a second. On a link the other phone dialed, it may open a GATT client on the same connection only to read the
+  signal strength: it discovers nothing, writes no descriptor and sends no HELLO, so it is no link (nothing changes in
+  "Duplicate links" or "Limits"), and it is closed when Finder closes. Whether phones allow this is not known yet. A
+  phone linked only over Apple peer-to-peer, Nearby or Wi-Fi gives no reading. A reading outside −110 to −20 dBm
+  (iOS gives 127 for "not available", some phones 0) is none.
+- **F8. Not in reach:** no reading yet, or none for the last 10 seconds. Everything below starts over.
+- **F9. Smoothing:** at a second with a reading, m is the median of the readings of the last 5 seconds (this one and
+  the 4 before; with an even number of them, the mean of the middle two). The smoothed value S is m at first, then
+  `0.3 * m + 0.7 * S`, in IEEE 754 double precision in that order. At a second without a reading S stays.
+- **F10. Levels:** "Here" if S ≥ −60, "Very close" if S ≥ −70, "Near" if S ≥ −82, else "Far".
+- **F11. Bands:** the band goes up at once to the level of S, but to "Here" only once S has been −60 or above for 3
+  seconds in a row (until then "Very close"). It goes down only when S is more than 3 dB below the band's lower edge
+  (−82, −70, −60), and then to the level of S. The thresholds are starting points for the real-phone tests, changed on
+  both platforms together.
+- **F12. Trend:** the mean of the readings of the last 5 seconds against the mean of the 5 seconds before: 4 dB or more
+  "Signal getting stronger", −4 dB or less "Signal getting weaker", else "Signal steady"; no trend line while either
+  has no reading.
+
+### What the screens say
+
+- The whole Finder screen stays hidden behind a trial switch (`finderTrial`, off by default) until the real-phone tests
+  pass. The note is read and written either way.
+- A person whose latest check-in is "needs help" with a note gets "Find by Bluetooth" on their page, beside "Find" (the
+  compass) if they shared a position. The screen is "Finding Marco": rings that light up one per band (green only at
+  "Here"), the band's word and a line under it, the trend line. Lines: "Keep moving. This phone hasn't heard Marco's
+  phone yet." / "Keep walking and watch the signal." / "Keep going the way the signal gets stronger." / "Within a few
+  rooms. Call out and listen." / "Within a few steps. Look around."
+- Always on the screen: "Bluetooth can't tell direction, only stronger or weaker. Walls and people weaken it."
+- Linked only over Wi-Fi or Apple peer-to-peer: "Linked to Marco's phone, but not over Bluetooth, so the signal can't
+  be measured." Linked only by a link Marco's phone dialed, where this phone can't read the signal: "Linked to Marco's
+  phone, but this phone can't measure the signal on this link." Not linked: "Finder works only when this phone and
+  Marco's are linked by Bluetooth. If Marco's phone restarted after asking, it can't be recognised until it sends a
+  new check-in." Bluetooth off: "Turn on Bluetooth to search."
+- "I'm with Marco" sends the ordinary group message `I'm with Marco` (no new format, never a check-in) and says "Your
+  group is told you're with Marco."
+- A short vibration when the band changes; the screen stays on while Finder is open; VoiceOver says the band when it
+  changes, not every second. No animation runs on its own.
+- Settings: the switch "Let my group find this phone", "When you send “I need help”, your group can tell which nearby
+  phone is yours until DarkProof restarts." In high-risk mode it is off and greyed: "Off in high-risk mode."
+
+Vectors: `kind: finder-field` (what a reader takes from the 5th field), `kind: finder-fit` (radio first, with the
+packet's size), `kind: finder-bands` (signal readings, one a second, to bands and trends), made by
+spec/make-reply-vectors.py (argument `finder`).
 
 ## Forwarding rules
 
@@ -1813,6 +1910,8 @@ that the other side dialed over another connection is not closed for its node id
 may be the real phone and the first one someone who only says its id. If both lead to one phone, that phone closes
 the link it dialed.
 
+A GATT client opened on an existing connection only to read signal strength for Finder is no link (see "Finder", F7).
+
 ### Limits
 
 - At most 6 links per device. At the limit, a new link takes the place of the oldest link whose other side hasn't sent
@@ -1861,6 +1960,8 @@ the link it dialed.
 - `0xB3`, 2026-11-22, last: check-in clocks, a group message with the 5th field `0x04` and a deadline (see "If I go
   quiet"); the group's phones keep the clock and tell their owners if no check-in reaches them in time. A phone on an
   earlier build shows it as the ordinary message `⏳ Check on me if I don't check in within 1 hour`.
+- `0xB3`, 2026-11-23: the finder note, the 5th field `0x06` and the sender's link id in "needs help" check-ins (see
+  "Finder"). A phone on an earlier build ignores the field and shows the check-in as before.
 
 ## Apple peer-to-peer (iPhone to iPhone)
 

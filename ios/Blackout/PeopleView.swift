@@ -343,6 +343,7 @@ struct PersonCheckSheet: View {
     let person: Person
     let code: String
     @State private var finding = false
+    @State private var bluetoothFinding = false
     @State private var checking = false
     @State private var askAdmin = false
     @State private var askRemove = false
@@ -377,6 +378,10 @@ struct PersonCheckSheet: View {
             }
             HStack(alignment: .top, spacing: 6) {
                 if person.spot != nil { PersonAction(label: "Find", symbol: "location.north.fill") { finding = true } }
+                // Finder (spec "Finder"): their latest check-in asks for help and says which Bluetooth neighbour they are. Trial only.
+                if Engine.finderTrial, person.checkIn == .help, person.finder != nil {
+                    PersonAction(label: "Find by Bluetooth", symbol: "dot.radiowaves.left.and.right") { bluetoothFinding = true }
+                }
                 PersonAction(label: "Check", symbol: "qrcode") { checking = true }
                 // Asking one person, as "Are you safe?" does. Not once this phone was removed (it can't write there any
                 // more), nor someone whose name hasn't come yet: the question is addressed by name.
@@ -397,6 +402,7 @@ struct PersonCheckSheet: View {
             }
         }
         .sheet(isPresented: $finding) { FindSheet(person: person) }
+        .sheet(isPresented: $bluetoothFinding) { FinderSheet(engine: engine, person: person, code: code) }
         .sheet(isPresented: $checking) { CheckPersonSheet(engine: engine, person: person, code: code) }
         .alert("Make \(person.name) an admin?", isPresented: $askAdmin) {
             Button("Make admin") { engine.makeAdmin(code, person.id) { note($0, "\(person.name) is now an admin") } }

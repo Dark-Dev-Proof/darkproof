@@ -10,7 +10,7 @@ import android.os.SystemClock
 import java.util.UUID
 import java.util.concurrent.Executors
 
-private class Db(c: Context) : SQLiteOpenHelper(c, "mesh.db", null, 7) {
+private class Db(c: Context) : SQLiteOpenHelper(c, "mesh.db", null, 8) {
     override fun onCreate(d: SQLiteDatabase) {
         d.execSQL("CREATE TABLE p(id TEXT PRIMARY KEY, ts INTEGER, ttl INTEGER, cipher BLOB)")
         onUpgrade(d, 2, 3)
@@ -22,6 +22,8 @@ private class Db(c: Context) : SQLiteOpenHelper(c, "mesh.db", null, 7) {
      * key for another packet under an id that was taken. The tables stay as they are; an older app can't read such rows.
      * 6 → 7: when each packet reached this phone (p.at; 0 for those stored before, [KeepLess.arrival]), and the names of
      * the packets high-risk mode removed (g: [GoneList]).
+     * 7 → 8: each group's check-in clocks (q: [QuietBook.saved], spec "If I go quiet", rule Q10), here beside the gone list
+     * rather than in the preferences: the app's own storage, out of backups.
      */
     override fun onUpgrade(d: SQLiteDatabase, a: Int, b: Int) {
         if (a < 2) d.execSQL("DELETE FROM p")
@@ -35,6 +37,7 @@ private class Db(c: Context) : SQLiteOpenHelper(c, "mesh.db", null, 7) {
             d.execSQL("ALTER TABLE p ADD COLUMN at INTEGER DEFAULT 0")
             d.execSQL("CREATE TABLE g(key TEXT PRIMARY KEY, ts INTEGER, grp TEXT)") // a name, a header time and a group id: nothing of the packet's content
         }
+        if (a < 8) d.execSQL("CREATE TABLE q(grp TEXT PRIMARY KEY, data TEXT)")
     }
 }
 
@@ -121,6 +124,11 @@ object MeshEngine {
          * Guarded by itself; read through [leavingOf], changed through [changeLeaving].
          */
         val leaveBook = LeaveBook()
+        /**
+         * The members' check-in clocks (spec "If I go quiet", [QuietBook]), this phone's own among them. Saved in the store's
+         * table q under the group's id. Guarded by itself; read through [quietOf], changed through [changeQuiet].
+         */
+        val quietBook = QuietBook()
     }
 
     /** A key this phone couldn't open ([Keyring.Taken.LeftOut]): its number and rank, and how many keys this phone has made to get back in. */
@@ -263,7 +271,7 @@ object MeshEngine {
         hourly()
     }
 
-    private fun hourly() { main.postDelayed({ io.execute { weeklyCheck(); compact() }; hourly() }, Keyring.HOUR_MS) }
+    private fun hourly() { main.postDelayed({ io.execute { weeklyCheck(); compact(); quietPassNow() }; hourly() }, Keyring.HOUR_MS) }
 
     /** Runs the clean-up now, as the hourly timer does (tests). */
     fun cleanUp() = io.execute(::compact)
@@ -362,6 +370,7 @@ object MeshEngine {
         if (follow) movedTo(k)?.let { return keys(it, false) }
         loadKnown(k)
         loadRing(k)
+        loadQuiet(k)
         synchronized(keyCache) { keyCache[code] = k }
         k
     }
@@ -1004,7 +1013,7 @@ object MeshEngine {
         for (e in waited) {
             val w = e.item
             val ok = check(k, w.o, had = true) == true
-            if (w.receipt != null) { if (ok) deliveries.add(k.id, w.receipt); continue }
+            if (w.receipt != null) { if (ok) { deliveries.add(k.id, w.receipt); quietReceipt(w.k, w.receipt) }; continue }
             if (w.o.message.notice == Notice.Leave) { // a leave note is decided when it checks (rule L1)
                 if (ok) { w.o.leaf?.forget(); saveMessageKeys(w.k); tookNote(w.k, w.o, checked = true) }
                 continue
@@ -1013,6 +1022,7 @@ object MeshEngine {
                 if (ok) { w.o.leaf?.forget(); saveMessageKeys(w.k); if (entry != null && index.containsKey(name)) reactions.add(name, entry) } // only while its packet is here
                 continue
             }
+            if (ok) quietSaw(w.k, w.o, true) // a clock or a check-in, decided when it checks (rule Q1)
             // Only a packet that is the one shown under its id waits ([KeyWait.message]), so this row is that packet's.
             val row = e.row ?: continue; val i = messages.indexOfFirst { it.id == row }
             if (i < 0 || messages[i].verified) continue
@@ -1146,6 +1156,7 @@ object MeshEngine {
         (listOf(a) + o + listOfNotNull(publicKeys)).forEach(::introIfDue)
         (listOf(a) + o).forEach { rekeyIfDue(it); finishLeaves(it) }
         compact()
+        quietPassNow() // every saved group's clocks are read: alerts, reminders and the alarm as they stand (also after a reboot)
         nostr?.resubscribe() // the relays now send every saved group's mailbox
         notifyUi()
     }
@@ -1234,12 +1245,13 @@ object MeshEngine {
                 null -> { waiting += Pending(x.k, x.o, null, reaction = x.m.id to reaction(x.m, x.k, x.m.id)); if (!x.fromHistory) remember(x.m.id, x.k, x.o); hold(held, arrived, x.m.id, x.k, x.m) }
                 false -> idx[x.m.id]?.let { e -> idx[e.id] = StoreCap.Entry(e.id, e.ts, e.size, StoreCap.Kind.UNREADABLE) }
             } else when (check(x.k, x.o, x.fromHistory)) {
-                true -> { msgs += x.m; marks[x.m.id] = x.o.mark; if (x.m.sender == deviceId) { own += x.m.id; if (!x.m.public) sent += x.k.id to x.m.id }; if (!x.fromHistory) remember(x.m.id, x.k, x.o); if (x.o.leaf != null) { x.o.leaf?.forget(); spent += x.k }; hold(held, arrived, x.m.id, x.k, x.m) }
+                true -> { msgs += x.m; marks[x.m.id] = x.o.mark; if (x.m.sender == deviceId) { own += x.m.id; if (!x.m.public) sent += x.k.id to x.m.id }; if (!x.fromHistory) remember(x.m.id, x.k, x.o); if (x.o.leaf != null) { x.o.leaf?.forget(); spent += x.k }; hold(held, arrived, x.m.id, x.k, x.m)
+                    if (!x.m.public) quietSaw(x.k, x.o, true) } // the clocks are rebuilt from what is stored too, the newer winning (rule Q10)
                 null -> { msgs += x.m.copy(verified = false); marks[x.m.id] = x.o.mark; waiting += Pending(x.k, x.o, null, x.m.id); if (!x.fromHistory) remember(x.m.id, x.k, x.o); hold(held, arrived, x.m.id, x.k, x.m) }
                 false -> idx[x.m.id]?.let { e -> idx[e.id] = StoreCap.Entry(e.id, e.ts, e.size, StoreCap.Kind.UNREADABLE) }
             }
             is Seen.Receipt -> when (check(x.k, x.o)) {
-                true -> { recs += x.k.id to x.r; if (x.r.sender == deviceId) ownReceipts += x.r.id; hold(held, arrived, x.name, x.k, null) }
+                true -> { recs += x.k.id to x.r; if (x.r.sender == deviceId) ownReceipts += x.r.id; hold(held, arrived, x.name, x.k, null); quietReceipt(x.k, x.r) }
                 null -> { waiting += Pending(x.k, x.o, x.r); hold(held, arrived, x.name, x.k, null) }
                 false -> idx[x.name]?.let { e -> idx[e.id] = StoreCap.Entry(e.id, e.ts, e.size, StoreCap.Kind.UNREADABLE) } // a forged receipt is not the group's own, like a message that doesn't check (mirrors the line above)
             }
@@ -1661,6 +1673,7 @@ object MeshEngine {
                         main.postDelayed({ io.execute { answerBehind(k, x.r.made, was) } }, rnd.nextInt(3_000).toLong())
                     if (k.ring.stillToRemove().isNotEmpty()) main.postDelayed({ io.execute { finishRemovals(k) } }, rnd.nextInt(3_000).toLong())
                     sweepLeaving(k) // a member who left may be out now
+                    sweepQuiet(k) // a removed member's clock goes, unless the removal followed their leave note (rule Q9)
                 }
                 is Seen.Msg -> {
                     // A reaction (spec "Reactions"): kept and passed on like any group message, but never a row, an alert or a
@@ -1701,6 +1714,8 @@ object MeshEngine {
                             DebugTools.log("received ${p.id} ${if (m.notice != null) "timer notice" else "reaction"} verified=${ok == true} listed=${entry != null}")
                             return@synchronized
                         }
+                        // A check-in clock, or a check-in that cancels one (spec "If I go quiet"): only once its signature checked (rule Q1).
+                        if (!m.public && ok == true) quietSaw(x.k, x.o, true)
                         val fresh = messageIds.add(m.id)
                         if (fresh) { messages.add(messages.indexOfLast { it.ts <= m.ts } + 1, m); shownAs[x.o.mark] = m.id } // oldest first
                         // It waits for its sender's key only as the message shown under its id: another packet with that id, checked later, must not mark or remove this row.
@@ -1720,6 +1735,7 @@ object MeshEngine {
                     when (ok) {
                         true -> {
                             deliveries.add(x.k.id, x.r)
+                            quietReceipt(x.k, x.r) // it may confirm this phone's own clock (rule Q14)
                             val confirmed = Receipt.ids(x.r.text); val mineNow = synchronized(ids) { confirmed.count { it in mine } }
                             DebugTools.log("receipt ${p.id} confirms ${confirmed.size} message(s), $mineNow of mine")
                         }
@@ -1889,11 +1905,12 @@ object MeshEngine {
      * channel or from the Wi-Fi board: such a message is not sent at all.
      */
     private fun post(board: Boolean, from: String, text: String, public: Boolean, photo: ByteArray? = null, to: String? = null, replyTo: Message? = null,
-                     voice: ByteArray? = null): Boolean {
+                     voice: ByteArray? = null, clock: Long? = null, at: Long? = null): Boolean {
         if (stopped) return true
         if (voice != null && (public || board)) return true
+        if (clock != null && (public || board)) return true // a check-in clock is for groups only (rule QW2)
         val r = router ?: return true
-        val ts = System.currentTimeMillis()
+        val ts = at ?: System.currentTimeMillis()
         val p: Packet; val id: String
         // The group on screen (or [to]); right after switching to a new group its key may still be on its way: derive it here.
         val code = to ?: activeCode
@@ -1901,24 +1918,29 @@ object MeshEngine {
         val group = if (public) null else active?.takeIf { it.code == code } ?: others.firstOrNull { it.code == code } ?: keys(code)
         val k = (if (public) publicKeys else group) ?: return true
         if (!public && k.removed) return true // the screen no longer offers this
+        if (clock != null && (!k.joined || code == leaving)) return true // never held until this phone is let in (rule QW2)
         if (!public && !k.joined) { synchronized(waiting) { waiting.getOrPut(k.id) { ArrayList() } += Waiting(from, text, photo, voice) }; return true } // sent once an admin lets this phone in
         introIfDue(k, writing = true) // members can check this message only with this phone's key
+        var quiet: Pair<About.Target?, Message>? = null
         synchronized(messages) {
             val cr = k.group
             id = Packet.newId(cr.mailbox)
             val wire = if (board) "web-${k.me}" else k.me // member ids (spec "Member ids")
-            val about = if (public || board) null else replyTo?.let { About.target(it, k.code) }?.let { About.Reply(it) }
-            val (cipher, mark) = sealOne(k, cr, public, id, ts, wire, from, text, photo, about, voice)
+            val about = if (public || board || clock != null) null else replyTo?.let { About.target(it, k.code) }?.let { About.Reply(it) }
+            val (cipher, mark) = sealOne(k, cr, public, id, ts, wire, from, text, photo, about, voice, fifth = clock?.let(QuietClock::field))
             p = cr.packet(id, ts, cipher)
             // A group message written here: high-risk mode's day starts only when a link takes it ([handedOffNow]).
             if (public) save(p, StoreCap.Kind.PUBLIC)
             else { save(p, StoreCap.Kind.GROUP, KeepLess.UNSENT); kept[id] = KeepLess.Held(KeepLess.UNSENT, p.ts, k.id) }
             val m = Message(id, ts, if (board) wire else deviceId, from, text, public, if (public) null else photo, if (public) null else group?.code, about = about, mark = mark,
-                voice = if (public) null else voice)
+                voice = if (public) null else voice, notice = if (public || board) null else clock?.let { Notice.Clock(it) })
             messages += if (public) filtered(m) else m; messageIds += id // Wi-Fi board posts are someone else's
             if (!public) deliveries.sent(k.id, id) // only this group's receipts confirm it
+            if (!public && !board) quiet = mark to m
         }
         if (!board) synchronized(ids) { mine += id } // a board post is someone else's: on the relays it waits its turn like any packet passed on
+        // This phone's own clock, or a check-in of its own that stops it (spec "If I go quiet").
+        quiet?.let { (mark, m) -> QuietClock.effect(m)?.let { e -> quietApply(k, k.me, id.take(16), mark?.mark ?: "", ts, e, text) } }
         r.publish(p, if (board) BOARD else ""); notifyUi()
         return Meshtastic.fits(p)
     }
@@ -2193,6 +2215,8 @@ object MeshEngine {
                 forgetStored(drop)
                 kept.values.removeAll { it.group == k.id }
                 forgetGone(names); runCatching { db?.delete("g", "grp = ?", arrayOf(k.id)) } // also the names saved before the engine last started
+                synchronized(k.quietBook) { k.quietBook.clocks.clear(); k.quietBook.checkIns.clear(); k.quietBook.posted.clear() } // its check-in clocks (rule Q10)
+                runCatching { db?.delete("q", "grp = ?", arrayOf(k.id)) }
                 Notifier.forgetAll(c) // its alerts from before the app last started, too
                 runCatching { db?.delete("k", "grp = ?", arrayOf(k.id)) }
                 unchecked.forgetChannel(k)
@@ -2232,6 +2256,7 @@ object MeshEngine {
             leaving = null
             DebugTools.log("left a group: ${drop.size} packet(s) removed")
             if (router != null && wasActive && next != null) savedGroupsChanged(next.code) else { nostr?.resubscribe(); notifyUi() } // its mailboxes are no longer asked for
+            if (router != null) quietPassNow() // the alarm no longer holds anything of the group
             // Nothing is said if an erase began meanwhile ([Wipe]): the group's name isn't shown again on its way out.
             main.post { if (!stopped) done(Groups.current(c)) }
         }
@@ -2282,4 +2307,282 @@ object MeshEngine {
     }
 
     fun notifyUi() = main.post { listener?.invoke() }
+
+    // MARK: - If I go quiet (spec/FORMAT.md, "If I go quiet")
+
+    /** Where clock alerts go: a phone's notifications and backup alarm (Notifier.setUp sets QuietAlarms). Null on the desktop: nothing is posted there yet. */
+    @Volatile var quietOut: QuietOut? = null
+    /** Moves the clock that check-in clocks are judged by, in ms: only debug builds set it (--es quietAhead, minutes). */
+    @Volatile var quietAhead = 0L
+
+    /** The time check-in clocks are judged by: this phone's clock. */
+    fun quietNow() = System.currentTimeMillis() + quietAhead
+
+    private fun highRiskNow() = app?.let(HighRisk::on) ?: false
+
+    /** [k]'s clocks as the store's table q has them, at the start. */
+    private fun loadQuiet(k: Keys) {
+        if (k.isPublic) return
+        val data = try { db?.rawQuery("SELECT data FROM q WHERE grp = ?", arrayOf(k.id))?.use { q -> if (q.moveToNext()) q.getString(0) else null } }
+            catch (e: android.database.sqlite.SQLiteException) { DebugTools.log("store: can't read the clocks: $e"); null } ?: return
+        val b = QuietBook.parse(data.split('\n'))
+        synchronized(k.quietBook) { k.quietBook.clocks.putAll(b.clocks); k.quietBook.checkIns.putAll(b.checkIns); k.quietBook.posted.putAll(b.posted) }
+    }
+
+    /** A copy of [k]'s clocks. Any thread. */
+    private fun quietOf(k: Keys): QuietBook = synchronized(k.quietBook) { k.quietBook.copy() }
+
+    /** Changes [k]'s clocks; saved in table q, under the same lock so that saves can't cross, if [change] says it changed them. Any thread. */
+    private fun changeQuiet(k: Keys, change: (QuietBook) -> Boolean): Boolean = synchronized(k.quietBook) {
+        if (!change(k.quietBook)) return false
+        if (!stopped) saveQuiet(k.id, k.quietBook.saved) // an erase began: nothing is written any more
+        true
+    }
+
+    private fun saveQuiet(group: String, saved: List<String>) {
+        try {
+            if (saved.isEmpty()) db?.delete("q", "grp = ?", arrayOf(group))
+            else db?.insertWithOnConflict("q", null, ContentValues().apply { put("grp", group); put("data", saved.joinToString("\n")) }, SQLiteDatabase.CONFLICT_REPLACE)
+        } catch (e: android.database.sqlite.SQLiteException) { DebugTools.log("store: can't save the clocks: $e") }
+    }
+
+    /**
+     * A group message that may act on its sender's clock: a clock message (rules Q2, Q3) or an own check-in (Q4). It counts
+     * only if its signature checked for a member listed from the epoch that opened it through the current one, with no
+     * leave note of theirs held that it is dated after (Q1): nobody can set, move or stop someone else's clock. Any thread.
+     */
+    private fun quietSaw(k: Keys, o: GroupCrypto.Opened, checked: Boolean?) {
+        if (stopped || k.isPublic) return
+        val effect = QuietClock.effect(o.message) ?: return
+        val sender = o.message.sender
+        if (!QuietClock.counts(sender, checked, o.opener, k.ring, leavingOf(k).hides(sender, o.message.ts))) return
+        val t = About.Target.of(o) // its packet id and the start of its signed digest
+        quietApply(k, sender, t.id, t.mark, o.message.ts, effect, o.message.text)
+    }
+
+    /** Takes a clock message or a check-in of [sender] (a member id; this phone's own is [Keys.me]) into the group's book. One clock per member: the newest by its own time counts (Q3). Any thread. */
+    private fun quietApply(k: Keys, sender: String, id: String, mark: String, ts: Long, effect: QuietClock.Effect, text: String) {
+        if (stopped || k.isPublic) return
+        val now = quietNow(); val high = highRiskNow()
+        val changed = changeQuiet(k) { b ->
+            when (effect) {
+                is QuietClock.Effect.Clock -> b.take(sender, id, mark, ts, effect.deadline, QuietClock.spot(text), now, high)
+                QuietClock.Effect.CheckIn -> b.checkIn(sender, ts, now, high)
+            }
+        }
+        if (!changed) return
+        DebugTools.log("quiet: ${if (effect is QuietClock.Effect.Clock) (if (effect.deadline == 0L) "a stop" else "a clock") else "a check-in"} taken${if (sender == k.me) " (this phone's)" else ""}")
+        quietChanged()
+    }
+
+    private val quietQueued = java.util.concurrent.atomic.AtomicBoolean()
+    /** The screens read the books again, and a pass follows (many changes at once, as at a start, make one). Any thread. */
+    private fun quietChanged() {
+        notifyUi()
+        if (quietQueued.compareAndSet(false, true)) main.postDelayed({ quietQueued.set(false); quietPass() }, 300)
+    }
+
+    /**
+     * Rules Q9, Q10: the clocks of members removed without a leave note go without an alert; a member who left with a note
+     * keeps theirs (it alerts at its deadline as usual), also after the removal that followed the note. Records past their
+     * time go, and a record's position goes when the group's timer would have deleted the clock message, or at once in
+     * high-risk mode ([QuietBook.sweep]). Any thread.
+     */
+    private fun sweepQuiet(k: Keys, pass: Boolean = true) {
+        if (k.isPublic || stopped || synchronized(k.quietBook) { k.quietBook.isEmpty }) return
+        val cur = k.ring.currentOrNull() ?: return
+        val leaving = leavingOf(k); val now = quietNow(); val high = highRiskNow(); val timer = k.watch.deletes(clock())
+        if (changeQuiet(k) { it.sweep(now, high, timer) { m -> m in cur.members || leaving.left(m) } } && pass) quietChanged()
+    }
+
+    /** A checked receipt in [k]'s group: if it confirms this phone's own clock message, its sender's phone keeps the clock (rule Q14). Any thread. */
+    private fun quietReceipt(k: Keys, r: Message) {
+        if (k.isPublic || r.sender == deviceId) return
+        val mine = synchronized(k.quietBook) { k.quietBook.clock(k.me) } ?: return
+        if (mine.id !in Receipt.ids(r.text)) return
+        if (changeQuiet(k) { it.addKeeper(k.me, mine.id, r.sender) }) notifyUi()
+    }
+
+    /** Decides every clock alert and this phone's own reminder now, on the engine's thread: at the start, hourly, after any change, at the next deadline, and when the lock or high-risk mode is switched. */
+    fun quietPass() { if (!stopped) io.execute(::quietPassNow) }
+
+    private val quietTimer = Runnable { quietPass() }
+
+    /**
+     * Rules Q5 to Q8 and Q12. What is due now is posted (at most one alert about a member every 10 minutes, and one learned
+     * late only for a clock newer than the last one alerted); what is to come goes to the backup alarm with its words
+     * decided now, and the running service's own timer is set for the nearest. What can't be guaranteed (spec "Alerts,
+     * and what can't be guaranteed"): Doze may hold the alarm back by minutes, no exact-alarm permission is asked for, a
+     * reboot or a force stop loses it until the app or its service starts again, and a check-in that reached the relays
+     * or a neighbour while Android had ended the app isn't seen in time: the words cover that ("has reached this phone").
+     * Background thread (io).
+     */
+    private fun quietPassNow() {
+        if (stopped) return
+        val c = app ?: return
+        val out = quietOut
+        val now = quietNow(); val hide = AppLock.enabled(c) // includes high-risk mode: no name, no time, no text
+        val coming = ArrayList<QuietAlert>(); val over = ArrayList<String>(); var wake: Long? = null
+        fun soon(at: Long) { if (wake.let { it == null || at < it }) wake = at }
+        for (k in groupsHeld()) {
+            sweepQuiet(k, pass = false)
+            val book = quietOf(k)
+            if (book.isEmpty) continue
+            for ((cl, due) in book.alerts(now, k.me)) when (due) {
+                is QuietClock.Due.At -> { soon(due.at); if (out != null) { coming += quietAlert(k, cl, false, hide, due.at); changeQuiet(k) { it.note(cl.member, cl.mark, scheduled = true) } } }
+                QuietClock.Due.None -> changeQuiet(k) { it.note(cl.member, cl.mark, alerted = true, scheduled = false) } // more than 12 hours after: never
+                else -> {
+                    if (out == null) continue // nowhere to post it (a computer): nothing is marked
+                    val late = due == QuietClock.Due.Late
+                    val at = book.postableAt(cl, late, now)
+                    if (at == null) { changeQuiet(k) { it.note(cl.member, cl.mark, alerted = true, scheduled = false) }; continue }
+                    if (at > now) { soon(at); continue } // posted when the 10 minutes are up
+                    out.post(quietAlert(k, cl, late, hide, now))
+                    DebugTools.log("quiet: alert now, ${if (late) "learned late" else "on time"}${if (hide) ", without names" else ""}") // never who
+                    changeQuiet(k) { it.didPost(cl, now); it.note(cl.member, cl.mark, alerted = true, scheduled = false); true }
+                }
+            }
+            // A check-in or a stop came: an alert still showing for that clock goes.
+            for (cl in book.clocks.values) if (cl.member != k.me && !book.armed(cl.member)) over += QuietAlerts.id(k.id, cl.member)
+            // Rule Q8: this phone's own clock never alerts it; it reminds 10 minutes before, for clocks of 20 minutes or more
+            // ([QuietBook.Clock.alerted] marks the reminder of this phone's own clock).
+            val mine = book.clock(k.me)
+            if (mine == null || !book.armed(k.me)) over += QuietAlerts.remindId(k.id)
+            else {
+                if (mine.deadline > now) soon(mine.deadline) // the ring and Home end then
+                if (!mine.alerted) QuietClock.remindAt(mine.ts, mine.deadline)?.let { at ->
+                    if (at > now) { soon(at); if (out != null) coming += quietReminder(k, mine, hide, at) }
+                    else if (now < mine.deadline && out != null) { out.post(quietReminder(k, mine, hide, now)); changeQuiet(k) { it.note(k.me, mine.mark, alerted = true) } }
+                }
+            }
+        }
+        if (out != null) { out.take(over); out.arm(coming.sortedBy { it.at }) }
+        DebugTools.log("quiet: pass, ${coming.size} to come${if (out == null) ", no alerts here" else ""}")
+        notifyUi() // People's lines and the ring follow the time
+        main.removeCallbacks(quietTimer)
+        wake?.let { w -> main.postDelayed(quietTimer, (w - now + 500).coerceIn(1_000L, Keyring.HOUR_MS)) }
+    }
+
+    /**
+     * The backup alarm rang with [due] (see [QuietOut.arm]). With the engine running, a pass decides everything. Without it
+     * (Android ended the app), what is due is posted unless its record was cancelled, replaced or alerted meanwhile, read
+     * from the store itself, with the same limit of one alert about a member every 10 minutes; what is still to come is
+     * returned, to be armed again. Background thread.
+     */
+    fun quietAlarmRang(c: Context, due: List<QuietAlert>, out: QuietOut): List<QuietAlert> {
+        if (stopped) return emptyList()
+        if (router != null) { quietPass(); return emptyList() } // the pass arms the alarm again
+        val d = synchronized(this) {
+            if (app == null) app = c.applicationContext
+            if (db == null) runCatching { db = Db(c.applicationContext).writableDatabase }.onFailure { DebugTools.log("quiet: can't open the store: $it") }
+            db
+        } ?: return due
+        val books = HashMap<String, QuietBook>()
+        try { d.rawQuery("SELECT grp, data FROM q", null).use { q -> while (q.moveToNext()) books[q.getString(0)] = QuietBook.parse(q.getString(1).split('\n')) } }
+        catch (e: android.database.sqlite.SQLiteException) { DebugTools.log("quiet: can't read the clocks: $e"); return due }
+        val now = quietNow(); val left = ArrayList<QuietAlert>(); val changed = HashSet<String>()
+        for (a in due.sortedBy { it.at }) {
+            if (a.at > now) { left += a; continue }
+            val (grp, book) = books.entries.firstOrNull { (g, b) -> if (a.remind) QuietAlerts.remindId(g) == a.id else b.clocks.values.any { QuietAlerts.id(g, it.member) == a.id } } ?: continue
+            val cl = book.clocks.values.firstOrNull { it.mark == a.mark && !it.alerted && book.armed(it.member) } ?: continue // cancelled, replaced or posted already
+            if (a.remind) { if (now < cl.deadline) { out.post(a); book.note(cl.member, cl.mark, alerted = true); changed += grp }; continue }
+            if (QuietClock.due(cl.deadline, cl.learned, now) == QuietClock.Due.None) continue
+            val at = book.postableAt(cl, false, now) ?: continue
+            if (at > now) { left += a.copy(at = at); continue }
+            out.post(a); book.didPost(cl, now); book.note(cl.member, cl.mark, alerted = true, scheduled = false); changed += grp
+        }
+        for (g in changed) saveQuiet(g, books.getValue(g).saved)
+        DebugTools.log("quiet: the alarm rang, ${due.size - left.size} handled, ${left.size} to come")
+        return left
+    }
+
+    /** "18:30", in the phone's own format. */
+    private fun hm(ms: Long): String = app?.let { clock(it, ms) } ?: ""
+
+    /** The alert about [cl], worded now ([hide]: the lock or high-risk mode is on). */
+    private fun quietAlert(k: Keys, cl: QuietBook.Clock, late: Boolean, hide: Boolean, at: Long): QuietAlert {
+        val name = quietName(k, cl.member); val group = groupName(k.code) ?: "your group"
+        val title = QuietWords.alertTitle(name, late, hm(cl.deadline))
+        return QuietAlert(QuietAlerts.id(k.id, cl.member), cl.mark, at, if (hide) QuietWords.HIDDEN_TITLE else title,
+            if (hide) QuietWords.HIDDEN_BODY else QuietWords.alertBody(name, hm(cl.ts), late, quietPosition(k, cl)?.let(::hm)),
+            title, QuietWords.banner(name, group), k.code, remind = false, safe = false)
+    }
+
+    /** This phone's own reminder (rule Q8), with "I'm safe" under it unless the lock is on. */
+    private fun quietReminder(k: Keys, mine: QuietBook.Clock, hide: Boolean, at: Long): QuietAlert {
+        val title = QuietWords.remindTitle(hm(mine.deadline))
+        return QuietAlert(QuietAlerts.remindId(k.id), mine.mark, at, if (hide) QuietWords.HIDDEN_TITLE else title,
+            if (hide) QuietWords.REMIND_HIDDEN else QuietWords.REMIND_BODY, title, QuietWords.REMIND_BODY, k.code, remind = true, safe = !hide)
+    }
+
+    /**
+     * Who a clock is from, as alerts and the card say it (rule Q13, [QuietWords.who]): "Anna (not checked)" for a member not
+     * checked, "Anna · 🐶🐱🦁🐴" for a checked one whose name another member of the group has too.
+     */
+    private fun quietName(k: Keys, member: String): String {
+        val members = k.members.toSet()
+        val (n, pub, others) = synchronized(k.known) {
+            Triple(k.known[member]?.name ?: "", k.known[member]?.pub, k.known.entries.filter { it.key != member && it.key in members }.map { it.value.name })
+        }
+        val name = n.ifEmpty { "Someone" }; val key = Vouch.key(name)
+        val shared = others.any { Vouch.key(it.ifEmpty { "Someone" }) == key }
+        val emoji = pub?.let { P256.emoji(it).map { i -> Fingerprint.EMOJI[i] } } ?: emptyList()
+        return QuietWords.who(name, isChecked(k.code, member), shared, emoji)
+    }
+
+    /** The same for the chat's card of a clock from [member] in [code]'s group. */
+    fun quietName(code: String?, member: String): String? = held(code)?.takeIf { !it.isPublic }?.let { quietName(it, member.removePrefix("web-")) }
+
+    /** Rule Q11: when the newest position known of the clock's member was sent: from the clock message or any check-in of theirs here. None in high-risk mode. */
+    private fun quietPosition(k: Keys, cl: QuietBook.Clock): Long? {
+        if (highRiskNow()) return null
+        val checkIn = synchronized(messages) { messages.lastOrNull { !it.public && it.group == k.code && it.verified && it.sender == cl.member && CheckIn.spot(it.text) != null }?.ts }
+        return listOfNotNull(if (cl.spot != null) cl.ts else null, checkIn).maxOrNull()
+    }
+
+    // What the screens read and do
+
+    /** This phone's own clock in [code]'s group while it runs or has run out (the "If I go quiet" screen, Home). */
+    fun quietOwn(code: String?, now: Long = quietNow()): Pair<QuietBook.Clock, QuietBook.State>? {
+        val k = held(code)?.takeIf { !it.isPublic } ?: return null
+        return synchronized(k.quietBook) {
+            val b = k.quietBook; val c = b.clock(k.me); val s = b.state(k.me, now)
+            if (c != null && s != null && b.armed(k.me)) c to s else null
+        }
+    }
+
+    /** How [member]'s clock stands on this phone (People, rule Q6); null for this phone's own and for none. */
+    fun quietState(code: String?, member: String, now: Long = quietNow()): QuietBook.State? {
+        val k = held(code)?.takeIf { !it.isPublic } ?: return null
+        val m = memberId(k, member)
+        if (m == k.me) return null
+        return synchronized(k.quietBook) { k.quietBook.state(m, now) }
+    }
+
+    /**
+     * Who confirmed this phone's own clock in [code]'s group, from the clock message's delivery receipts kept in its record
+     * (so the list outlives the message), never from the member list: only phones that got the clock can tell anyone. Only
+     * people who are members now: whoever left or was removed since forgot the group (review round 2b M7).
+     */
+    fun quietKeepers(code: String?): List<String> {
+        val k = held(code)?.takeIf { !it.isPublic } ?: return emptyList()
+        val cur = k.ring.currentOrNull() ?: return emptyList()
+        val leaving = leavingOf(k)
+        val ids = synchronized(k.quietBook) { k.quietBook.keptBy(k.me) { it in cur.members && !leaving.left(it) } }
+        return ids.map { id -> synchronized(k.known) { k.known[id]?.name }?.ifEmpty { null } ?: "Someone" }
+    }
+
+    /**
+     * Rules QW1, QW2: sends this phone's clock message to [code]'s group, deadline [deadline] of the message's time (0
+     * stops), with [spot] (only when the user shares their position and chose "Add where I am"). Never on the Public channel
+     * and never held until this phone is let in: false, and nothing is sent, if it can't write there ([canTell]). Background thread.
+     */
+    fun sendClock(code: String?, deadline: (Long) -> Long, spot: Spot?): Boolean {
+        if (code == null || !canTell(code)) return false
+        val ts = System.currentTimeMillis(); val d = deadline(ts)
+        if (!QuietClock.valid(d, ts)) return false
+        post(false, name, QuietClock.text(d, ts, if (d == 0L) null else spot), false, to = code, clock = d, at = ts)
+        DebugTools.log("quiet: clock ${if (d == 0L) "stopped" else "of ${(d - ts) / 60_000} min"} sent")
+        return true
+    }
 }

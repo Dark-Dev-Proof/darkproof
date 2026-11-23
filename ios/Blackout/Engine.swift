@@ -369,6 +369,9 @@ final class Engine: ObservableObject {
             startNetwork()
         }
         work.async { self.startUp(code) }
+        // Finder (spec "Finder", F6): an own "I need help" still standing goes out again with this start's link id, once
+        // the stored messages are read and links had a moment to form.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.finderResendIfDue() }
         // Back on screen: clocks that ran out while the app was away are settled (spec "If I go quiet").
         NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in self?.quietPass() }
     }
@@ -1913,7 +1916,10 @@ final class Engine: ObservableObject {
         let id = Packet.newId(mailbox: cr.mailbox), ts = at ?? Int64(Date().timeIntervalSince1970 * 1000)
         let about: About? = isPublic ? nil : replyTo.flatMap { About.target(of: $0, group: k.code) }.map { .reply($0) } // never on the Public channel
         let fifth = isPublic || about != nil ? nil : fifth
-        guard let (c, mark, keyed) = sealOne(k, cr, isPublic: isPublic, id: id, ts: ts, text: text, photo: photo, about: about, fifth: fifth, voice: voice) else { return true }
+        // Finder (spec "Finder", F2): an own "needs help" check-in carries this start's link id, unless radio first leaves it out (F3).
+        let finder = fifth == nil && about == nil && photo == nil && voice == nil
+            && FinderNote.writes(text: text, isPublic: isPublic, on: Self.finderOn, highRisk: HighRiskSetting.isOn()) ? FinderNote.field(linkId: linkId) : nil
+        guard let (c, mark, keyed) = sealOne(k, cr, isPublic: isPublic, id: id, ts: ts, text: text, photo: photo, about: about, fifth: fifth, voice: voice, finder: finder) else { return true }
         let p = Packet(id: id, ts: cr.hideTime(ts, c), ttl: Self.maxTtl, cipher: c)
         idsLock.withLock { _ = mine.insert(id) }
         store.append(p)
@@ -2142,8 +2148,13 @@ final class Engine: ObservableObject {
     /// With the cipher comes what a reply or reaction to this message names (`About.Target`), for a group message, and
     /// `keyed`: it was sealed with its own message key, which is deleted, so nothing on this phone opens the packet again.
     /// `voice`: a voice note's frames, the 4th field (spec "Voice notes"); never on the Public channel.
-    private func sealOne(_ k: Keys, _ cr: GroupCrypto, isPublic: Bool, id: String, ts: Int64, text: String, photo: Data?, about: About? = nil, fifth: Data? = nil, voice: Data? = nil) -> (cipher: Data, mark: About.Target?, keyed: Bool)? {
+    /// `finder`: a finder note (spec "Finder"), the 5th field when there is no other, unless it would push a packet that
+    /// fits a LoRa radio over 163 bytes (F3).
+    private func sealOne(_ k: Keys, _ cr: GroupCrypto, isPublic: Bool, id: String, ts: Int64, text: String, photo: Data?, about: About? = nil, fifth: Data? = nil, voice: Data? = nil,
+                         finder: Data? = nil) -> (cipher: Data, mark: About.Target?, keyed: Bool)? {
+        func fifthWith(keyed: Bool) -> Data? { fifth ?? finder.flatMap { FinderNote.fits(sender: k.me, name: name, text: text, keyed: keyed) ? $0 : nil } }
         if !isPublic, let e = k.ring.currentOrNil, let keys = e.messageKeys, let i = keys.index(k.me), let n = keys.takeNext(), let mk = keys.key(i, n) {
+            let fifth = fifthWith(keyed: true)
             guard let c = try? cr.seal(messageKey: mk, index: i, counter: n, id: id, ts: ts, sender: k.me, name: name, text: text, photo: photo, about: about, fifth: fifth, voice: voice, sign: { try k.sign($0) }) else { return nil }
             guard c.count <= Packet.maxCipher else { keys.forget(i, n); saveMessageKeys(k); return nil } // longer than any phone takes, and than the store reads back
             var mark: About.Target?
@@ -2156,6 +2167,7 @@ final class Engine: ObservableObject {
             saveMessageKeys(k)
             return (c, mark, true)
         }
+        let fifth = fifthWith(keyed: false)
         guard let c = try? cr.seal(id: id, ts: ts, sender: k.me, name: name, text: text, photo: isPublic ? nil : photo, about: isPublic ? nil : about, fifth: isPublic ? nil : fifth,
                                    voice: isPublic ? nil : voice, sign: { try k.sign($0) }),
               c.count <= Packet.maxCipher else { return nil }
@@ -3054,3 +3066,52 @@ enum DebugLog {
     }
 }
 #endif
+
+// MARK: - Finder (spec/FORMAT.md, "Finder")
+
+extension Engine {
+    /// "Let my group find this phone": on unless the user turned it off. High-risk mode overrides it where it is read.
+    static var finderOn: Bool { UserDefaults.standard.object(forKey: FinderNote.settingKey) as? Bool ?? true }
+    /// The trial switch: the Finder screen is shown only while it is on (spec "Finder", screens).
+    static var finderTrial: Bool { UserDefaults.standard.bool(forKey: FinderNote.trialKey) }
+
+    /// Rule F6: once per start, an own "I need help" in a group, under a day old and not followed by "I'm safe", goes
+    /// out again (same needs and head count, fresh battery and position, this start's link id), at most once in 10
+    /// minutes per group. Main thread.
+    func finderResendIfDue() {
+        guard !stopped else { return }
+        let now = Self.nowMs(), d = UserDefaults.standard
+        var latest: [String: Message] = [:]
+        for m in allMessages where !m.isPublic && m.sender == deviceId && CheckIn.of(m.text) != nil {
+            guard let g = m.group else { continue }
+            if (latest[g]?.ts ?? .min) < m.ts { latest[g] = m }
+        }
+        let due = latest.values.filter { m in
+            let key = "finderResent." + GroupTag.of(m.group ?? "") // a tag stands for the group: codes never sit in preferences
+            return FinderNote.resends(lastOwn: (CheckIn.of(m.text)!, m.ts), lastResend: (d.object(forKey: key) as? Double).map { Int64($0) },
+                                      now: now, on: Self.finderOn, highRisk: HighRiskSetting.isOn())
+        }.sorted { $0.ts > $1.ts }
+        func next(_ rest: ArraySlice<Message>) {
+            guard let m = rest.first else { return }
+            d.set(Double(now), forKey: "finderResent." + GroupTag.of(m.group ?? ""))
+            #if DEBUG
+            DebugLog.write("finder: sending \"I need help\" again with this start's link id")
+            #endif
+            checkIn(.help, needs: CheckIn.needs(in: m.text), people: CheckIn.people(in: m.text), group: m.group) { next(rest.dropFirst()) }
+        }
+        next(due[...])
+    }
+
+    /// How this phone is linked to the phone with link id `node` (rule F7): over Bluetooth LE, only another way, or not.
+    func finderLinked(_ node: String) -> (bluetooth: Bool, otherWay: Bool) {
+        (ble.nodes.contains(node), mc.nodes.contains(node) || wifi.nodes.contains(node))
+    }
+
+    /// Starts reading the signal of the Bluetooth link(s) to `node`, once a second; `report` gets how (`BleLink.RssiRole`)
+    /// and the reading in dBm, or nil, on the main thread. Only one at a time: a new start replaces the old one.
+    func finderStart(_ node: String, report: @escaping (BleLink.RssiRole, Int?) -> Void) {
+        ble.startRssi(node: node) { role, dbm in DispatchQueue.main.async { report(role, dbm) } }
+    }
+
+    func finderStop() { ble.stopRssi() }
+}

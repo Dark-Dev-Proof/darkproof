@@ -239,7 +239,7 @@ struct InputField<Field: View>: View {
 // MARK: - Main
 
 struct MainView: View {
-    enum Sheet: String, Identifiable { case invite, settings, radio, groups, help, practice, askSafe, vouch, shortcut, models, security, timer, quiet; var id: String { rawValue } }
+    enum Sheet: String, Identifiable { case invite, settings, radio, groups, help, practice, askSafe, vouch, shortcut, models, security, timer, quiet, finder; var id: String { rawValue } }
     @ObservedObject var engine: Engine
     @ObservedObject private var nav = Nav.shared
     @ObservedObject private var unread = Unread.shared
@@ -277,6 +277,7 @@ struct MainView: View {
             case .security: GroupSecuritySheet(engine: engine)
             case .timer: TimerSheet(engine: engine)
             case .quiet: QuietView(engine: engine)
+            case .finder: FinderSheet(engine: engine, person: FinderDemo.person(), code: code) // debug builds only (`sheet finder`)
             }
         }
         .onAppear { firstRun() }

@@ -674,9 +674,11 @@ public enum LeaveWords {
     public static let eraseNow = "Erase now"
     public static let empty = "This phone is empty"
     /// The final screen's line, naming no group: the phone may be taken from its user at that moment. `sent`: notes
-    /// sent; `left`: of those, how many a phone, radio or relay took in time. Same words as Android's.
+    /// sent; `left`: of those, how many a phone, radio or relay took in time. One note is said in the singular ("The
+    /// note left this phone."), never "1 of 1 notes". Same words as Android's.
     public static func erased(sent: Int, left: Int) -> String {
         if sent == 0 { return "Your groups were not told." }
+        if sent == 1 { return left >= 1 ? "The note left this phone." : "The note didn't leave this phone in time." }
         if left >= sent { return "The notes left this phone." }
         return "\(sent - left) of \(sent) notes didn't leave this phone in time."
     }

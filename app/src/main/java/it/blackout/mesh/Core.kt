@@ -495,12 +495,18 @@ class Keyring {
      * True if [e], a key kept only to read with, stands in for its number in the chat's lines ("joined", "made an admin",
      * the timer's line) and, if it carries the field, in the timer ([retime]): it is the first of every epoch held at its
      * number ([won]), its maker is an admin of the winning epoch before it (the first with a member list one number lower;
-     * once that number is gone, as judged when the key came), and no removal that won took its maker out since. Same as
-     * the iPhone's (spec "Disappearing messages", review round 2b M4). Hold the lock.
+     * once that number is gone, as judged when the key came), its maker is also an admin of the epoch it beats (the first
+     * with a member list at its own number: an admin demoted by that very key can't take its place with a late key whose
+     * hash happens to be lower; with none held there, it corrects nothing and says nothing), and no removal that won took
+     * its maker out since. The cost: when one admin demotes another at the same moment, the timer doesn't follow the
+     * demoted admin's late key, and simply keeps its value. Same as the iPhone's Keyring.speaks (spec "Disappearing
+     * messages", review round 2b M4 and its stricter rule of 2026-11-23). Hold the lock.
      */
     private fun standsIn(e: Epoch): Boolean {
         val by = e.by ?: return false
         if (e.members.isNotEmpty() || !won(e) || outSince(by, e.number)) return false
+        val beaten = list.filter { it !== e && it.number == e.number && it.members.isNotEmpty() }.minWithOrNull(order) ?: return false
+        if (by !in beaten.admins) return false
         val before = list.filter { it.number == e.number - 1 && it.members.isNotEmpty() }.minWithOrNull(order)
         return if (before != null) by in before.admins else e.rank == BY_ADMIN
     }

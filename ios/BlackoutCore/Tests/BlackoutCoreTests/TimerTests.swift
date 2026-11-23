@@ -234,6 +234,35 @@ final class TimerTests: XCTestCase {
         XCTAssertEqual(ring.timer.seconds, 86_400)
     }
 
+    /// M4, the stricter rule: a late key that beats no epoch with a member list at its number corrects nothing, so it
+    /// says nothing, even from an admin of the epoch before; nor does an admin whom the key it beats demoted.
+    func testALateKeyThatBeatsNothingOrItsOwnDemotionSaysNothing() throws {
+        // This phone missed Anna's 6 and holds 5 (Anna and Ben admins, a day), then Cara's 7, then Ben's 6, late.
+        let missed = base(timer: 86_400)
+        take(missed, key(7, made: t0 + 2 * hour), by: cara, timer: nil, secret: 7)
+        XCTAssertEqual(missed.current.number, 7)
+        let late = try XCTUnwrap(take(missed, key(6, made: t0 + hour), by: ben, timer: 300, secret: 66, now: t0 + 3 * hour))
+        XCTAssertTrue(late.members.isEmpty)
+        XCTAssertTrue(missed.won(late), "alone at 6")
+        XCTAssertEqual(missed.timer.seconds, 86_400, "nothing at 6 to beat: it says nothing")
+        XCTAssertFalse(missed.counted.contains { $0 === late }, "and makes no line")
+
+        // The review's case: Anna's 6 demotes Ben; his late 6 has a secret ground so that its hash comes first, so it
+        // wins at 6, but he is no admin of the key it beats.
+        let demoted = base(timer: 86_400)
+        let six = try XCTUnwrap(take(demoted, key(6, made: t0, admins: [anna]), by: anna, timer: nil, secret: 6))
+        take(demoted, key(7, made: t0 + 2 * hour), by: cara, timer: nil, secret: 7)
+        XCTAssertEqual(demoted.current.number, 7)
+        let ground = try XCTUnwrap((100...255).map(UInt8.init).first { b in
+            Keyring.Epoch.fresh(number: 6, made: t0, secret: Data(repeating: b, count: 32), members: [], admins: [anna], by: ben).hash < six.hash
+        })
+        let e = try XCTUnwrap(take(demoted, key(6, made: t0 + hour), by: ben, timer: 300, secret: ground, now: t0 + 3 * hour))
+        XCTAssertTrue(e.members.isEmpty)
+        XCTAssertTrue(demoted.won(e), "the ground hash wins at 6")
+        XCTAssertEqual(demoted.timer.seconds, 86_400, "Ben was demoted by the key his late one beats")
+        XCTAssertFalse(demoted.counted.contains { $0 === e }, "no \"joined\" or \"made an admin\" lines from it")
+    }
+
     /// The same key read again is ignored (its part was opened once), so a replay can't bring a value back.
     func testTheSameKeyAgainChangesNothing() {
         let ring = base()

@@ -26,6 +26,9 @@ public struct Message: Equatable, Sendable {
     /// A voice note's frames (`len` ‖ Opus packet, repeated: the 4th field after its type byte, spec "Voice notes"), or
     /// nil. Set only when the field passed every rule (`Voice.of`); play it only if `Voice.playable`.
     public var voice: Data?
+    /// The sender's link id from a finder note (spec "Finder"): only on a "needs help" check-in whose 5th field is
+    /// exactly the note. Act on it only for a checked group message (`Person.all`).
+    public var finder: String?
 
     /// True for a group message that is never a chat row, an alert or a receipt: a reaction, a type `0x02` message that
     /// isn't one, a notice written only for apps that don't know what it is about, or a leave note (a line instead).
@@ -44,14 +47,14 @@ public struct Message: Equatable, Sendable {
     /// The same message with another sender: on this phone, its own messages carry the device id (Engine).
     public func withSender(_ s: String) -> Message {
         var m = Message(id: id, ts: ts, sender: s, name: name, text: text, isPublic: isPublic, photo: photo, group: group)
-        m.verified = verified; m.about = about; m.mark = mark; m.notice = notice; m.voice = voice
+        m.verified = verified; m.about = about; m.mark = mark; m.notice = notice; m.voice = voice; m.finder = finder
         return m
     }
 
     /// The same message under another id: the name its packet goes by on this phone when another packet had its id first (`StoreCap.name`).
     public func withId(_ i: String) -> Message {
         var m = Message(id: i, ts: ts, sender: sender, name: name, text: text, isPublic: isPublic, photo: photo, group: group)
-        m.verified = verified; m.about = about; m.mark = mark; m.notice = notice; m.voice = voice
+        m.verified = verified; m.about = about; m.mark = mark; m.notice = notice; m.voice = voice; m.finder = finder
         return m
     }
 }
@@ -275,6 +278,7 @@ public final class GroupCrypto: Sendable {
         let fifth = fourth == nil ? nil : r.nextBytes().map { Data($0) }
         m.about = About.read(field: fifth, text: Data(text))
         m.notice = Notice.read(field: fifth, ts: ts) // a check-in clock's deadline is checked against the signed time (rule Q2)
+        m.finder = FinderNote.read(field: fifth, text: m.text) // the asker's link id (spec "Finder")
         return Opened(message: m, signature: Data(plain.prefix(64)), digest: Data(SHA256.hash(data: covered?(body) ?? signed(id: id, ts: ts, body: body))),
                       extra: extra.map { Data($0) }, aboutField: m.about == nil ? nil : fifth, fifth: fifth.flatMap { $0.isEmpty ? nil : $0 })
     }

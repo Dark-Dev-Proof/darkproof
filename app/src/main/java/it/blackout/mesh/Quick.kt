@@ -19,6 +19,8 @@ object Actions {
     const val SAFE = "it.darkproof.mesh.action.SAFE"   // send "I'm safe" (shortcut)
     const val HELP = "it.darkproof.mesh.action.HELP"   // open the "Send I need help?" question
     const val CHAT = "it.darkproof.mesh.action.CHAT"   // open the chat (of EXTRA_GROUP, if given)
+    const val PEOPLE = "it.darkproof.mesh.action.PEOPLE" // open People (of EXTRA_GROUP): a check-in clock ran out
+    const val QUIET = "it.darkproof.mesh.action.QUIET"   // open "If I go quiet" (of EXTRA_GROUP): this phone's own clock
     const val EXTRA_GROUP = "group"
     /** The way in for all of these. It isn't exported, so another app on the phone can't send "I'm safe" for you. */
     const val ALIAS = "it.blackout.mesh.QuickActions"
@@ -30,7 +32,7 @@ object Actions {
 
 /** "I'm safe" in an "Are you safe?" notification: answers in that group without opening the app. */
 class AnswerReceiver : BroadcastReceiver() {
-    companion object { const val NOTIFICATION = "notification" }
+    companion object { const val NOTIFICATION = "notification"; const val TAG = "tag" }
     override fun onReceive(c: Context, i: Intent) {
         val pending = goAsync()
         val id = i.getIntExtra(NOTIFICATION, 0)
@@ -40,7 +42,7 @@ class AnswerReceiver : BroadcastReceiver() {
             pending.finish(); return
         }
         QuickCheckIn.send(c, CheckIn.SAFE, i.getStringExtra(Actions.EXTRA_GROUP)) { ok ->
-            if (ok) c.getSystemService(NotificationManager::class.java).cancel(id)
+            if (ok) c.getSystemService(NotificationManager::class.java).cancel(i.getStringExtra(TAG), id) // a clock's reminder has a tag (QuietAlarms)
             pending.finish()
         }
     }

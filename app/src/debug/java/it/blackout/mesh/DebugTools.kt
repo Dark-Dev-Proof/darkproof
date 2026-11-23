@@ -167,10 +167,12 @@ object DebugTools {
             }
             // memberVoice "Ben|<file in the app's files folder>": a voice field (type byte first), its first 500 packets kept.
             val voice = if (cmd == "memberVoice") voiceFile(c, parts[1]) ?: return log("memberVoice: no voice field in ${parts[1]}") else null
-            val text = when (cmd) { "memberSay", "memberSayKeyed" -> parts[1]; "memberVoice" -> Voice.PLACEHOLDER; "memberLeave" -> LeaveNote.TEXT; else -> parts.getOrElse(2) { "" } }
-            val fifth = if (cmd == "memberLeave") LeaveNote.field else null
+            // memberClock "Vera|60": Vera's check-in clock of 60 minutes (0: she stops it), sealed like memberSayKeyed (spec "If I go quiet").
+            val deadline = if (cmd == "memberClock") parts.getOrNull(1)?.toLongOrNull()?.let { if (it == 0L) 0L else now + it * 60_000L } ?: return log("memberClock: minutes?") else null
+            val text = when (cmd) { "memberSay", "memberSayKeyed" -> parts[1]; "memberVoice" -> Voice.PLACEHOLDER; "memberLeave" -> LeaveNote.TEXT; "memberClock" -> QuietClock.text(deadline!!, now); else -> parts.getOrElse(2) { "" } }
+            val fifth = if (cmd == "memberLeave") LeaveNote.field else deadline?.let(QuietClock::field)
             val cr = call("getGroup") as GroupCrypto; val id = Packet.newId(cr.mailbox)
-            val ci = if (cmd == "memberSayKeyed" || cmd == "memberLeave") {
+            val ci = if (cmd == "memberSayKeyed" || cmd == "memberLeave" || cmd == "memberClock") {
                 val e = (call("getRing") as Keyring).currentOrNull() ?: return log("memberSayKeyed: no epoch")
                 val keys = e.messageKeys ?: return log("memberSayKeyed: no message keys"); val i = keys.index(me).takeIf { it >= 0 } ?: return log("memberSayKeyed: $who isn't in the epoch")
                 val n = 1_000 + java.security.SecureRandom().nextInt(10_000); val mk = keys.key(i, n) ?: return log("memberSayKeyed: no key")
@@ -321,6 +323,11 @@ object DebugTools {
             codeScanned(a.state, code, id, n, text); a.state.sheet = Sheet.Check(id)
         } } } }
         i.getStringExtra("ahead")?.let { ahead = it.toLong() * 86_400_000L }
+        // --es quietAhead 61: check-in clocks are judged 61 minutes ahead (spec "If I go quiet"), and a pass runs now.
+        // --es myClock 60: this phone starts its own clock of 60 minutes in the group on screen (0 stops it), as the screen's Start does.
+        i.getStringExtra("quietAhead")?.let { v -> whenStarted { MeshEngine.quietAhead = (v.toLongOrNull() ?: 0L) * 60_000L; MeshEngine.quietPass(); log("quiet: judged ${v} min ahead") } }
+        i.getStringExtra("myClock")?.let { v -> whenStarted { Thread { val m = v.toLongOrNull() ?: 0L
+            log("quiet: own clock ${MeshEngine.sendClock(MeshEngine.currentCode, { ts -> if (m == 0L) 0L else ts + m * 60_000L }, null)}") }.start() } }
         i.getStringExtra("link")?.let { v -> whenStarted { link(v == "1") } }
         // --es clip 1: what kind of thing is on the clipboard (its label, never its text), a moment later when the screen has the focus.
         if (i.getStringExtra("clip") != null) main.postDelayed({
@@ -337,7 +344,7 @@ object DebugTools {
         // --es memberLeave Vera: Vera's leave note (spec "Leaving the group"), sealed with her own message key like memberSayKeyed.
         // --es eraseDry 1: "Erase everything" only shows its steps and its last screen; nothing is deleted (0 to stop).
         i.getStringExtra("eraseDry")?.let { Wipe.dryRun = it == "1"; log("erase dry run ${if (Wipe.dryRun) "on" else "off"}") }
-        for (cmd in listOf("member", "memberSay", "memberSayKeyed", "memberReply", "memberReact", "memberReceipt", "memberVoice", "memberLeave"))
+        for (cmd in listOf("member", "memberSay", "memberSayKeyed", "memberReply", "memberReact", "memberReceipt", "memberVoice", "memberLeave", "memberClock"))
             i.getStringExtra(cmd)?.let { v -> whenStarted { Thread { runCatching { member(c, cmd, v) }.onFailure { log("$cmd failed: $it") } }.start() } }
         voiceHooks(c, i)
         if (i.getStringExtra("weeklyNow") != null) whenStarted { Thread { MeshEngine.weeklyCheck(); log("weekly check done") }.start() }

@@ -65,7 +65,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import it.blackout.mesh.AppState
+import it.blackout.mesh.AsciiBackdrop
+import it.blackout.mesh.AsciiBackground
 import it.blackout.mesh.AskTab
+import it.blackout.mesh.BgBand
 import it.blackout.mesh.ChatTab
 import it.blackout.mesh.Groups
 import it.blackout.mesh.Ic
@@ -103,6 +106,8 @@ private val SIDEBAR = 264.dp
 private val PEOPLE = 440.dp // a phone's width and a little more: the people screen is the phones' own
 private val PAGE = 720.dp // the widest a page of cards and buttons gets: wider, and its buttons become bars
 private val TOP = 12.dp // above every pane's heading, on top of the 8 the phones' screens leave themselves
+private const val SIDE_TEXTURE = 0.25f // how much of the background texture shows behind the sidebar: its rows are text on black
+private const val PEOPLE_TEXTURE = 0.35f // and behind the people at the right
 
 /** Everything in the window. */
 @Composable
@@ -154,6 +159,12 @@ private fun Panes(s: AppState, a: MainActivity, g: SavedGroup) {
         val onGroupChat = s.tab == 1 && !s.everyone
         LaunchedEffect(onGroupChat, all, g) { if (onGroupChat) all.lastOrNull { it.group == g.code }?.let { ReadMarks.markRead(a, g.code, it.ts) } }
         val unread = remember(all, onGroupChat, g) { if (onGroupChat) 0 else ReadMarks.unread(a, all, g.code) }
+
+        // The background texture the person chose (Settings > Background): full behind the chat, faint behind the sidebar
+        // and the people, none behind the rail. Drawn once per window size, not per frame (AsciiBackground.kt).
+        val chatFrom = RAIL + SIDEBAR + 2.dp; val chatTo = if (peopleAtSide) maxWidth - PEOPLE - 1.dp else maxWidth
+        AsciiBackdrop(AsciiBackground.style(a), Modifier.fillMaxSize(), focus = chatFrom to chatTo,
+            bands = listOf(BgBand(0.dp, RAIL + 1.dp, 0f), BgBand(RAIL + 1.dp, chatFrom, SIDE_TEXTURE), BgBand(chatTo, maxWidth, PEOPLE_TEXTURE)))
 
         Row(Modifier.fillMaxSize()) {
             Rail(s, a, g, all)

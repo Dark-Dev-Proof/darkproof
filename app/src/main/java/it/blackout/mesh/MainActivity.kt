@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
     fun setAppLock(on: Boolean) {
         AppLock.set(this, on); state.lockOn = on; applySecure()
         if (on) getSystemService(NotificationManager::class.java).cancelAll() // alerts already showing still have their text
+        MeshEngine.quietPass() // the check-in clocks' alarm is worded again, with or without names
     }
     fun lockNow() { state.locked = true; Notifier.onScreen = false; Notifier.inApp = null }
     fun unlocked() { state.locked = false; Notifier.onScreen = true; Notifier.inApp = { a -> state.banner = a } }
@@ -124,6 +125,8 @@ class MainActivity : ComponentActivity() {
                 if (state.locked) { afterUnlock = send; afterUnlockAt = android.os.SystemClock.elapsedRealtime(); state.waitingSafe = true } else send() }
             Actions.HELP -> { showGroup(group); state.sheet = null; state.helpGroup = group; state.askHelp = true }
             Actions.CHAT -> { showGroup(group); state.sheet = null; state.everyone = false; state.tab = 1 }
+            Actions.PEOPLE -> { showGroup(group); state.sheet = null; state.tab = 3 } // a check-in clock ran out (spec "If I go quiet")
+            Actions.QUIET -> { showGroup(group); state.tab = 0; state.sheet = Sheet.Quiet } // this phone's own clock: its reminder
         }
         i.getIntExtra(AnswerReceiver.NOTIFICATION, 0).takeIf { it != 0 }?.let { getSystemService(NotificationManager::class.java).cancel(it) }
         setIntent(Intent())

@@ -1,8 +1,8 @@
 package it.blackout.mesh
 
 // The 5th plaintext field beyond replies and reactions (spec/FORMAT.md, "The 5th field"): the group's timer for
-// disappearing messages, and the note of a phone that leaves. [About] holds types 0x01 and 0x02. Same as the iPhone's
-// Notices.swift (its timer and leave parts).
+// disappearing messages, the note of a phone that leaves, and a member's check-in clock ("If I go quiet"). [About] holds
+// types 0x01 and 0x02. Same as the iPhone's Notices.swift.
 
 /**
  * The group's timer for disappearing messages (spec/FORMAT.md, "Disappearing messages"): 5th field type `0x03`, then
@@ -121,9 +121,9 @@ sealed class Notice {
     object Leave : Notice() { override fun toString() = "Leave" }
 
     /**
-     * Type `0x04`: the sender's check-in clock ([QuietClock]), its deadline in ms since 1970 UTC; 0 stops it. This app
-     * keeps no clock yet: the message is an ordinary one (shown, alerted, confirmed, on LoRa), but its free text is never
-     * read as a check-in, a help report or a question ([QuietClock.shown]).
+     * Type `0x04`: the sender's check-in clock ([QuietClock]), its deadline in ms since 1970 UTC; 0 stops it. An ordinary
+     * message on every phone (its text says it), shown here as a card, alerted, confirmed and sent on LoRa; its free text
+     * is never read as a check-in, a help report or a question ([QuietClock.shown]).
      */
     data class Clock(val deadline: Long) : Notice()
 
@@ -144,20 +144,34 @@ sealed class Notice {
 }
 
 /**
- * The 5th field of a check-in clock message (spec/FORMAT.md, "If I go quiet", "The clock message"): type `0x04`, then the
- * deadline as a signed 64-bit big-endian number. This app keeps no clock yet (the clock itself is the iPhone's for now):
- * it only knows a clock message when it sees one, so that its free text is never read as a check-in. Same reading as the
- * iPhone's QuietClock.
+ * A check-in clock the group's phones keep (spec/FORMAT.md, "If I go quiet"): an ordinary signed group message whose
+ * `text` says it for every app (`⏳ Check on me if I don't check in within 1 hour`), with the 5th field `0x04` and the
+ * deadline, ms since 1970 UTC as a signed 64-bit big-endian number, by the sender's clock. Deadline 0 stops the sender's
+ * clock. Nothing is ever parsed from the text but a position, read as in a check-in. Same as the iPhone's QuietClock.
  */
 object QuietClock {
     const val TYPE: Byte = 0x04
     /** Type (1), deadline (8). */
     const val SIZE = 9
+    /** Rule Q2: a deadline counts from 5 minutes to 24 hours after the message's own time, both ends included. */
     const val MIN_MS = 5 * 60_000L
     const val MAX_MS = 24 * 3_600_000L
+    /** Rules Q6, Q7: "overdue" in People, and alerted at once by a phone that learns of it late, until this long after the deadline. */
+    const val LATE_MS = 12 * 3_600_000L
+    /** Rule Q8: the sender's own phone reminds its user this long before the deadline, for a clock at least [REMIND_FROM_MS] long. */
+    const val REMIND_MS = 10 * 60_000L
+    const val REMIND_FROM_MS = 20 * 60_000L
+    /** "Add 30 minutes". */
+    const val ADD_MS = 30 * 60_000L
+    /** What the screen offers, in minutes. */
+    val CHOICES = listOf(30, 60, 180, 480)
     /** How every clock text starts: what an app without the field shows of it, and the only free text this app shows of one. */
     const val PREFIX = "⏳"
     const val STOP = "⏳ Clock stopped. No need to check on me"
+    private const val LEAD = "$PREFIX Check on me if I don't check in within "
+
+    /** The field for [deadline] (0: stop). */
+    fun field(deadline: Long): ByteArray = byteArrayOf(TYPE) + ByteArray(8) { i -> (deadline ushr (56 - 8 * i)).toByte() }
 
     /** The deadline a 5th field carries, unchecked: null unless it is exactly [SIZE] bytes of this type. */
     fun raw(field: ByteArray?): Long? {
@@ -183,8 +197,15 @@ object QuietClock {
         return if (h == 0L) n(m, "minute") else if (m == 0L) n(h, "hour") else n(h, "hour") + " " + n(m, "minute")
     }
 
-    /** The text a clock message carries: a start or more time, or the stop. */
-    fun text(deadline: Long, ts: Long): String = if (deadline == 0L) STOP else "$PREFIX Check on me if I don't check in within ${duration(deadline - ts)}"
+    /**
+     * The text a clock message carries: a start or more time, or the stop. Relative to the message's own time, which every
+     * app shows, so time zones don't matter. [spot]: the check-in suffix ` · 📍 45.46420,9.19000 ±12m`, only if the sender
+     * shares their position and chose "Add where I am".
+     */
+    fun text(deadline: Long, ts: Long, spot: Spot? = null): String {
+        if (deadline == 0L) return STOP
+        return LEAD + duration(deadline - ts) + (spot?.takeIf { it.isValid }?.let { " · 📍 " + it.text } ?: "")
+    }
 
     /**
      * What this app shows of a clock message whose text is [said] (spec "The 5th field": nothing is read from it but a
@@ -192,6 +213,396 @@ object QuietClock {
      * which a member could otherwise send under a field that other phones show as a clock.
      */
     fun shown(said: String, deadline: Long, ts: Long): String = if (said.startsWith(PREFIX)) said else text(deadline, ts)
+
+    /** The position a clock message's text carries, read as in a check-in ("Check-ins"). */
+    fun spot(text: String): Spot? = if (text.startsWith(PREFIX)) Spot.last(text) else null
+
+    /** Rule Q4: an own check-in of the clock's member (text starting with `✅` or `🆘`) dated after the clock message cancels it. */
+    fun cancels(text: String, ts: Long, clockTs: Long) = CheckIn.of(text) != null && ts > clockTs
+
+    /** What a group message does to its sender's clock. */
+    sealed class Effect {
+        /** A clock message (rule Q2 passed): it counts if it is the newest (Q3); deadline 0 stops. */
+        data class Clock(val deadline: Long) : Effect()
+        /** An own check-in: cancels a clock dated before it (Q4). */
+        object CheckIn : Effect() { override fun toString() = "CheckIn" }
+    }
+
+    /**
+     * Rule Q4's sorting: a clock message, an own check-in, or null for anything else: a report (`👤`), "Are you safe?", an
+     * ordinary message, and anything silent (a reaction, the timer's notice, a leave note), whatever its text. Never on the
+     * Public channel.
+     */
+    fun effect(m: Message): Effect? {
+        if (m.public) return null
+        (m.notice as? Notice.Clock)?.let { return Effect.Clock(it.deadline) }
+        if (m.silent) return null
+        return if (CheckIn.of(m.text) != null) Effect.CheckIn else null
+    }
+
+    /**
+     * Rule Q1: a message acts on clocks only in a group, from a packet whose signature checked for its sender ([checked];
+     * one waiting for its sender's key is decided when it checks), opened by an epoch with a member list that lists the
+     * sender, as the winning epoch at every number up to the current one does ([Keyring.listsThrough]): nothing of a
+     * removed member, nor a message sealed before a removal and played back after the same key was let in again. [left]:
+     * the message is dated after a valid leave note of the sender that is held ([LeaveBook.hides]): it counts for nothing.
+     * One dated at or before the note still counts, so a check-in sent just before leaving still cancels the clock, which a
+     * leave note itself never ends (rule Q9). A Wi-Fi board writes none.
+     */
+    fun counts(sender: String, checked: Boolean?, opener: Keyring.Epoch?, ring: Keyring, left: Boolean): Boolean {
+        if (checked != true || left || sender.startsWith("web-") || opener == null) return false
+        return ring.listsThrough(sender, opener)
+    }
+
+    /** The deadline of a new clock of [minutes], started at [now]. */
+    fun deadline(minutes: Int, now: Long) = now + minutes * 60_000L
+
+    /** "Add 30 minutes": the old deadline plus 30 minutes (from now if it has passed), at most 24 hours from now, so it always passes rule Q2. */
+    fun added(deadline: Long, now: Long) = minOf(maxOf(deadline, now) + ADD_MS, now + MAX_MS)
+
+    /** Rule Q8: when the sender's own phone reminds its user, or null for a clock shorter than 20 minutes, or a stop. */
+    fun remindAt(ts: Long, deadline: Long): Long? = if (deadline != 0L && deadline - ts >= REMIND_FROM_MS) deadline - REMIND_MS else null
+
+    /** What a phone does about a clock it holds (rules Q5, Q6, Q7). */
+    sealed class Due {
+        /** Not yet: an alert at the deadline, by this phone's clock. */
+        data class At(val at: Long) : Due()
+        /** Now, worded as on time: this phone held the clock before its deadline. */
+        object Now : Due() { override fun toString() = "Now" }
+        /** Now, with "This phone learned of it late.": it learned of the clock after the deadline. */
+        object Late : Due() { override fun toString() = "Late" }
+        /** Never: not armed, a stop, or more than 12 hours after the deadline. No record shows, only the chat card. */
+        object None : Due() { override fun toString() = "None" }
+    }
+
+    /** [learned]: when this phone took the clock; [armed]: no cancelling check-in or newer clock message reached it. */
+    fun due(deadline: Long, learned: Long, now: Long, armed: Boolean = true): Due {
+        if (!armed || deadline == 0L) return Due.None
+        if (now < deadline) return Due.At(deadline)
+        if (now - deadline > LATE_MS) return Due.None
+        return if (learned > deadline) Due.Late else Due.Now
+    }
+}
+
+/**
+ * The check-in clocks of one group on this phone (spec/FORMAT.md, "If I go quiet", rules Q3, Q4, Q6, Q9, Q10, Q12): each
+ * member's clock that counts and their latest check-in, saved apart from the chat (MeshEngine keeps it in the store's
+ * table q, beside the gone list, out of the preferences and of backups), so that a clock survives its message being
+ * deleted by the group's timer or high-risk mode, and app restarts. Built only from messages that passed rule Q1 (the
+ * engine checks it). A leave note, and the removal that follows it, don't end a clock (rule Q9): only a cancelling
+ * check-in or a stop that counts does, or the record's time. A record is kept, without its position, after it is
+ * cancelled, so that a copy of an older clock read again can't arm it again. Same as the iPhone's QuietBook. Not
+ * thread-safe: the engine guards it.
+ */
+class QuietBook {
+    /**
+     * A member's clock: their clock message's packet id (16 hex chars) and mark (the first 8 bytes of its signed digest,
+     * hex, [About.Target]), its `ts`, its deadline (0: a stop), where they were (none in high-risk mode on this phone, or
+     * once cancelled), when this phone took it, whether its alert was posted ([alerted]; for this phone's own clock: its
+     * reminder) or handed to the backup alarm ([scheduled]), and for this phone's own clock who confirmed it ([keepers],
+     * delivery receipts, first confirmation first: ids only, kept here so "Kept by" outlives the message).
+     */
+    data class Clock(val member: String, val id: String, val mark: String, val ts: Long, val deadline: Long, val spot: Spot?, val learned: Long,
+                     val alerted: Boolean = false, val scheduled: Boolean = false, val keepers: List<String> = emptyList()) {
+        /** Rule Q3: the greater `ts`; equal, the greater packet id; equal, the greater mark. Arrival order doesn't matter. */
+        fun beats(o: Clock): Boolean = compareValuesBy(this, o, Clock::ts, Clock::id, Clock::mark) > 0
+    }
+
+    /** Member id -> their clock that counts. */
+    val clocks = HashMap<String, Clock>()
+    /** Member id -> the greatest `ts` of their own check-ins this phone took (rule Q4). */
+    val checkIns = HashMap<String, Long>()
+    /** Member id -> when this phone last posted a clock alert about them, and that clock's `ts` (rule Q12). */
+    val posted = HashMap<String, Pair<Long, Long>>()
+
+    val isEmpty get() = clocks.isEmpty() && checkIns.isEmpty() && posted.isEmpty()
+
+    private fun plain(id: String) = id.removePrefix("web-")
+
+    /** Rule Q3: a valid clock message of [member] (Q2 passed; deadline 0 is a stop), taken at [now]. True if it now counts. */
+    fun take(member: String, id: String, mark: String, ts: Long, deadline: Long, spot: Spot?, now: Long, highRisk: Boolean): Boolean {
+        val m = plain(member)
+        if (!keeps(ts, now, highRisk)) return false
+        var c = Clock(m, id, mark, ts, deadline, if (highRisk || deadline == 0L) null else spot, now)
+        clocks[m]?.let { if (!c.beats(it)) return false }
+        if ((checkIns[m] ?: Long.MIN_VALUE) > ts) c = c.copy(spot = null) // cancelled already: kept only so that older ones stay out
+        clocks[m] = c
+        if (clocks.size > MAX_RECORDS) clocks.values.minWithOrNull(compareBy<Clock>({ it.ts }, { it.member }))?.let { clocks.remove(it.member) }
+        return clocks.containsKey(m)
+    }
+
+    /** Rule Q4: an own check-in of [member] dated [ts]. True if the book changed (it is their latest). */
+    fun checkIn(member: String, ts: Long, now: Long, highRisk: Boolean): Boolean {
+        val m = plain(member)
+        if (!keeps(ts, now, highRisk) || ts <= (checkIns[m] ?: Long.MIN_VALUE)) return false
+        checkIns[m] = ts
+        clocks[m]?.let { c -> if (ts > c.ts) clocks[m] = c.copy(spot = null) } // cancelled: where they were goes
+        return true
+    }
+
+    /** Rule Q4: [member] has a clock that runs or ran out: deadline not 0, and no check-in of theirs dated after it. */
+    fun armed(member: String): Boolean {
+        val c = clocks[plain(member)] ?: return false
+        return c.deadline != 0L && (checkIns[c.member] ?: Long.MIN_VALUE) <= c.ts
+    }
+
+    fun clock(member: String): Clock? = clocks[plain(member)]
+
+    /** What People and the own screen show of a member's clock (rule Q6). */
+    sealed class State {
+        /** Armed, before its deadline. */
+        data class Running(val deadline: Long) : State()
+        /** Armed, its deadline passed less than 12 hours ago: "overdue". */
+        data class RanOut(val deadline: Long) : State()
+        /** A check-in dated after the deadline cancelled it, less than 12 hours after the deadline. */
+        data class CheckedIn(val at: Long, val deadline: Long) : State()
+    }
+
+    fun state(member: String, now: Long): State? {
+        val c = clocks[plain(member)]?.takeIf { it.deadline != 0L } ?: return null
+        val within = now - c.deadline <= QuietClock.LATE_MS
+        checkIns[c.member]?.let { ci -> if (ci > c.ts) return if (ci >= c.deadline && within) State.CheckedIn(ci, c.deadline) else null }
+        if (now < c.deadline) return State.Running(c.deadline)
+        return if (within) State.RanOut(c.deadline) else null
+    }
+
+    /** Rule Q9: [member] was removed by a removal that didn't follow a leave note of theirs: their clock goes without an alert. True if anything went. */
+    fun drop(member: String): Boolean {
+        val m = plain(member)
+        val had = clocks.containsKey(m) || checkIns.containsKey(m)
+        clocks.remove(m); checkIns.remove(m)
+        return had
+    }
+
+    /**
+     * Rule Q10's end: records and check-ins go 36 hours after their `ts` (24 in high-risk mode, which also keeps no
+     * position), and when their member is no longer in the group ([inGroup], rule Q9: still listed in the current epoch,
+     * or taken out only after a leave note of theirs). [positionMs]: the group's timer as it deletes now; a record's
+     * position goes once its clock message would have gone by it (counted from when this phone took the clock, as messages
+     * count from arrival). True if anything changed.
+     */
+    fun sweep(now: Long, highRisk: Boolean, positionMs: Long? = null, inGroup: (String) -> Boolean): Boolean {
+        val before = saved
+        clocks.entries.removeAll { (m, c) -> !keeps(c.ts, now, highRisk) || !inGroup(m) }
+        for ((m, c) in clocks.entries.toList()) if (c.spot != null && (highRisk || (positionMs != null && now - c.learned >= positionMs))) clocks[m] = c.copy(spot = null)
+        checkIns.entries.removeAll { (m, ts) -> !keeps(ts, now, highRisk) || !inGroup(m) }
+        posted.entries.removeAll { (m, p) -> now - p.first >= KEEP_MS || !inGroup(m) }
+        return saved != before
+    }
+
+    /** For this phone's own clock ([me]) whose message is [clockId]: [keeper]'s phone confirmed it. True if the list grew. */
+    fun addKeeper(me: String, clockId: String, keeper: String): Boolean {
+        val m = plain(me); val k = plain(keeper)
+        val c = clocks[m] ?: return false
+        if (c.id != clockId || k == m || k in c.keepers) return false
+        clocks[m] = c.copy(keepers = c.keepers + k)
+        return true
+    }
+
+    /**
+     * Rule Q14: who keeps this phone's own clock ([me]), as "Kept by" names them: of the phones that confirmed it, only
+     * those of people who are members now ([member]: listed in the current epoch and not left with a note), since whoever
+     * left or was removed since forgot the group (review round 2b M7).
+     */
+    fun keptBy(me: String, member: (String) -> Boolean): List<String> = clocks[plain(me)]?.keepers?.filter(member) ?: emptyList()
+
+    /**
+     * Rule Q12: when an alert about [c] may be posted now, or null if never (a late alert for a clock no newer than one
+     * already alerted about that member). At most one alert per member every [ALERT_GAP_MS]: a member can't make every
+     * phone ring again and again with backdated clocks.
+     */
+    fun postableAt(c: Clock, late: Boolean, now: Long): Long? {
+        val last = posted[c.member] ?: return now
+        if (late && c.ts <= last.second) return null
+        return maxOf(now, last.first + ALERT_GAP_MS)
+    }
+
+    /** An alert about [c] was posted at [now]. */
+    fun didPost(c: Clock, now: Long): Boolean {
+        posted[c.member] = now to maxOf(c.ts, posted[c.member]?.second ?: Long.MIN_VALUE)
+        return true
+    }
+
+    /** The armed clocks of other members ([me]: this phone's member id, whose own clock never alerts it, rule Q8) with what is due for each at [now]. Already alerted ones are left out. */
+    fun alerts(now: Long, me: String): List<Pair<Clock, QuietClock.Due>> =
+        clocks.values.filter { it.member != plain(me) && !it.alerted && armed(it.member) }.sortedBy { it.deadline }
+            .map { it to QuietClock.due(it.deadline, it.learned, now) }
+
+    /** Marks the alert of [member]'s clock [mark] as posted or come due ([alerted]), or as handed to the alarm ([scheduled]). Nothing changes for another clock. True if anything changed. */
+    fun note(member: String, mark: String, alerted: Boolean? = null, scheduled: Boolean? = null): Boolean {
+        val m = plain(member)
+        val c = clocks[m]?.takeIf { it.mark == mark } ?: return false
+        val n = c.copy(alerted = alerted ?: c.alerted, scheduled = scheduled ?: c.scheduled)
+        clocks[m] = n
+        return n != c
+    }
+
+    /**
+     * As it is saved, the iPhone's lines: "c <member> <id> <mark> <ts> <deadline> <learned> <alerted> <scheduled> <lat> <lon>
+     * <accuracy> <keepers>" for each clock ("-" for no position, accuracy or keepers; keepers comma-separated; 0 or 1 for the
+     * flags), "i <member> <ts>" for each check-in, "a <member> <at> <ts>" for each alert posted.
+     */
+    val saved: List<String> get() {
+        fun n(d: Double?) = d?.let { String.format(java.util.Locale.ROOT, "%.5f", it) } ?: "-"
+        return clocks.values.sortedBy { it.member }.map { c ->
+            "c ${c.member} ${c.id} ${c.mark} ${c.ts} ${c.deadline} ${c.learned} ${if (c.alerted) 1 else 0} ${if (c.scheduled) 1 else 0} ${n(c.spot?.lat)} ${n(c.spot?.lon)} ${c.spot?.accuracy ?: "-"} ${c.keepers.joinToString(",").ifEmpty { "-" }}"
+        } + checkIns.entries.sortedBy { it.key }.map { "i ${it.key} ${it.value}" } +
+            posted.entries.sortedBy { it.key }.map { "a ${it.key} ${it.value.first} ${it.value.second}" }
+    }
+
+    fun copy(): QuietBook = parse(saved)
+    override fun equals(other: Any?) = other is QuietBook && other.saved == saved
+    override fun hashCode() = saved.hashCode()
+
+    companion object {
+        /** Rule Q12: at most this many clocks in one group (a group has at most 100 members): the oldest goes. */
+        const val MAX_RECORDS = 100
+        /** Rule Q10: a record is kept until 36 hours after its message's `ts`; in high-risk mode 24 hours, never before the deadline. */
+        const val KEEP_MS = QuietClock.MAX_MS + QuietClock.LATE_MS
+        const val KEEP_HIGH_RISK_MS = QuietClock.MAX_MS
+        /** At most one clock alert about a member per group in this long (rule Q12). */
+        const val ALERT_GAP_MS = 10 * 60_000L
+
+        /** True while something dated [ts] is still kept (rule Q10). */
+        fun keeps(ts: Long, now: Long, highRisk: Boolean) = now - ts < (if (highRisk) KEEP_HIGH_RISK_MS else KEEP_MS)
+
+        /** From what [saved] wrote. A line that doesn't read is left out. */
+        fun parse(saved: List<String>): QuietBook = QuietBook().also { b ->
+            for (line in saved) {
+                val f = line.split(' ')
+                if ((f.size == 12 || f.size == 13) && f[0] == "c") {
+                    val ts = f[4].toLongOrNull(); val d = f[5].toLongOrNull(); val l = f[6].toLongOrNull()
+                    if (ts == null || d == null || l == null) continue
+                    val lat = f[9].toDoubleOrNull(); val lon = f[10].toDoubleOrNull()
+                    val spot = if (lat != null && lon != null) Spot(lat, lon, f[11].toIntOrNull()).takeIf { it.isValid } else null
+                    val keepers = if (f.size == 13 && f[12] != "-") f[12].split(',').filter { it.isNotEmpty() } else emptyList()
+                    b.clocks[f[1]] = Clock(f[1], f[2], f[3], ts, d, spot, l, f[7] == "1", f[8] == "1", keepers)
+                } else if (f.size == 3 && f[0] == "i") f[2].toLongOrNull()?.let { b.checkIns[f[1]] = it }
+                else if (f.size == 4 && f[0] == "a") { val at = f[2].toLongOrNull(); val ts = f[3].toLongOrNull(); if (at != null && ts != null) b.posted[f[1]] = at to ts }
+            }
+        }
+    }
+}
+
+/**
+ * What the screens and alerts say about check-in clocks (spec/FORMAT.md, "If I go quiet"): the iPhone's QuietWords, word
+ * for word. Nothing here claims more than the phone knows: an alert says that no check-in *has reached this phone*, never
+ * that someone is missing or that anyone was told. [device]: "phone", or "computer" on the desktop app (Here.device).
+ */
+object QuietWords {
+    const val TITLE = "If I go quiet"
+    const val LEAD = "If you don't check in on time, the phones that got your clock tell their owners."
+    const val SUB = "It still works when your phone is off or gone. Only phones that got the clock can tell anyone."
+    const val ADD_WHERE = "Add where I am"
+    const val ADD_WHERE_SUB = "Where you are now goes with the clock"
+    const val START = "Start the clock"
+    const val SAFE = "I'm safe, stop the clock"
+    const val ADD_MORE = "Add 30 minutes"
+    const val STOP_WITHOUT = "Stop without checking in"
+    const val OLDER = "Phones on older DarkProof versions only show the message."
+    const val SHARE_OFF = "To add where you are, turn on location sharing in Settings."
+    const val GETTING = "Getting your position…"
+    const val OFF = "Off"
+    /** Android: its alarms are inexact, so an alert can come minutes after the deadline (spec "Alerts, and what can't be guaranteed"). */
+    const val CAN_BE_LATE = "It can come a few minutes late."
+    /** The chips: "30 min", "1 hour", "3 hours", "8 hours". */
+    fun chip(minutes: Int) = if (minutes < 60) "$minutes min" else if (minutes == 60) "1 hour" else "${minutes / 60} hours"
+    fun checkInBy(time: String) = "Check in by $time"
+    fun ends(time: String) = "Ends $time"
+    fun ranOutShort(time: String) = "Ran out at $time"
+    fun ranOut(time: String) = "Your clock ran out at $time. Phones that kept it tell their owners."
+    /** Who confirmed the clock message (delivery receipts), never the member list: only phones that got it can tell anyone. */
+    fun kept(names: List<String>) = when (names.size) {
+        0 -> "Not confirmed by any phone yet. If no phone has it, nobody is told."
+        1 -> "Kept by ${names[0]} so far"
+        2 -> "Kept by ${names[0]} and ${names[1]} so far"
+        else -> "Kept by ${names[0]}, ${names[1]} and ${names.size - 2} more so far"
+    }
+    fun cantWrite(group: String, device: String = "phone") = "This $device isn't let in, so it can't send a clock to $group."
+
+    // Toasts. [waiting]: no phone, radio or relay is in reach, so it waits on this phone.
+    fun sent(waiting: Boolean) = if (waiting) "The clock waits for a phone in range" else "Clock sent to your group"
+    fun added(waiting: Boolean) = if (waiting) "30 minutes added. It waits for a phone in range" else "30 minutes added"
+    fun safeSent(waiting: Boolean) = if (waiting) "“I'm safe” waits for a phone in range. The clock stopped here." else "“I'm safe” sent. The clock stopped."
+    fun stopped(waiting: Boolean) = if (waiting) "Clock stopped. The message waits for a phone in range" else "Clock stopped"
+
+    // The chat card. [name]: null for this phone's own.
+    fun started(name: String?) = name?.let { "$it started a check-in clock" } ?: "You started a check-in clock"
+    fun startedSub(name: String?, time: String) =
+        name?.let { "If no check-in from $it reaches this phone by $time, it tells you." } ?: "Ends $time. Phones that got it tell their owners if you don't check in."
+    fun stoppedLine(name: String?) = name?.let { "$it stopped the check-in clock" } ?: "You stopped your check-in clock"
+
+    // People.
+    fun running(time: String) = "Check-in clock · ends $time"
+    fun overdue(time: String) = "Clock ran out at $time · no check-in has reached this phone"
+    fun checkedIn(time: String) = "Checked in at $time"
+
+    /**
+     * Rule Q13: who a clock is from, as the alert and the card name them. The bare name only for a checked member whose name
+     * (by its key, [Vouch.key]) no other member of the group has; a member not checked: "Anna (not checked)"; a checked one
+     * whose name another member has too: "Anna · 🐶🐱🦁🐴", the first four of their person emoji.
+     */
+    fun who(name: String, checked: Boolean, shared: Boolean, emoji: List<String>): String = when {
+        !checked -> "$name (not checked)"
+        shared -> "$name · " + emoji.take(4).joinToString("")
+        else -> name
+    }
+
+    // The alert. [time]: the deadline; [since]: the clock message's time; [position]: when the newest position known was sent.
+    fun alertTitle(name: String, late: Boolean, time: String) = if (late) "$name's check-in clock ran out at $time" else "$name's check-in clock ran out"
+    fun alertBody(name: String, since: String, late: Boolean, position: String?): String {
+        var s = "No check-in from $name has reached this phone since $since. $name's phone may just be out of reach."
+        if (position != null) s += " Last position known: $position."
+        if (late) s += " This phone learned of it late."
+        return s
+    }
+    /** With "Lock DarkProof" or high-risk mode on: no name, no time, no text. */
+    const val HIDDEN_TITLE = "DarkProof"
+    const val HIDDEN_BODY = "A check-in clock in your group ran out. Open DarkProof."
+    /** The banner while DarkProof is on screen (neutral, not red). */
+    fun banner(name: String, group: String) = "No check-in from $name has reached this phone. In $group."
+
+    // The sender's own reminder, 10 minutes before (rule Q8).
+    fun remindTitle(time: String) = "Your check-in clock ends at $time"
+    const val REMIND_BODY = "Check in now?"
+    const val REMIND_HIDDEN = "Your check-in clock ends soon. Open DarkProof."
+
+    /** What a message alert says of a clock message: none of its sender's words, which may carry a position. */
+    fun messageAlert(deadline: Long, time: String) = if (deadline == 0L) "Stopped the check-in clock." else "Started a check-in clock. Ends $time."
+
+    /** Never said anywhere about a clock (lowercased): the "Never say" list. */
+    val NEVER = listOf("is missing", "didn't check in", "did not check in", "will be told", "are told", "group is told")
+}
+
+/**
+ * The names check-in clock alerts go by (spec "If I go quiet"): a hash of the group's id and the member's, so neither sits
+ * in the phone's alert or alarm lists, and the same member's newer clock replaces what waits. Same as the iPhone's.
+ */
+object QuietAlerts {
+    const val PREFIX = "quiet."
+    fun id(group: String, member: String) = PREFIX + hash("m|$group|$member")
+    fun remindId(group: String) = PREFIX + "r." + hash("r|$group")
+    private fun hash(s: String) = Hex.encode(java.security.MessageDigest.getInstance("SHA-256").digest(("darkproof-quiet|$s").toByteArray()).copyOf(8))
+}
+
+/**
+ * A clock alert or this phone's own reminder, with its words decided when it is made (no name and no text with "Lock
+ * DarkProof" or high-risk mode on): posted now, or handed to the backup alarm for [at]. [id]: [QuietAlerts]' name for it;
+ * [mark]: the clock's, so an alert for a clock that was replaced or cancelled meanwhile isn't posted; [group]: the
+ * group's code, to open it; [bannerTitle], [banner]: what the in-app banner says while DarkProof is on screen and
+ * unlocked; [safe]: "I'm safe" may go under a reminder (never with the lock on).
+ */
+data class QuietAlert(val id: String, val mark: String, val at: Long, val title: String, val body: String, val bannerTitle: String, val banner: String,
+                      val group: String, val remind: Boolean, val safe: Boolean)
+
+/** Where clock alerts go: a phone's notifications and alarm (QuietAlarms.kt). The desktop has none yet: nothing is posted there. */
+interface QuietOut {
+    /** [a] now: a banner while DarkProof is on screen, else a notification. */
+    fun post(a: QuietAlert)
+    /** The alerts [ids] that show for clocks that were cancelled meanwhile go. */
+    fun take(ids: Collection<String>)
+    /** The backup alarm for what is still to come ([coming], nearest first; empty: none), in case the app isn't running then. */
+    fun arm(coming: List<QuietAlert>)
 }
 
 /**
@@ -334,6 +745,9 @@ class LeaveBook {
 
     /** The record of [member] while it lasts. */
     fun record(member: String): Record? = records[plain(member)]
+
+    /** True while [member] left with a valid note: their record lasts, or the removal that followed it is kept. Their check-in clock stays (rule Q9). */
+    fun left(member: String): Boolean { val m = plain(member); return records.containsKey(m) || removals.values.any { it.member == m } }
 
     /** L3: true if what [member] wrote at [ts] isn't shown, alerted, confirmed or counted: it is dated after their note. Also after the removal that followed it, while that epoch is held. */
     fun hides(member: String, ts: Long): Boolean {

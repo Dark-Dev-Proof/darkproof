@@ -141,6 +141,7 @@ fun switchHighRisk(a: MainActivity, s: AppState, on: Boolean) {
     // The lock goes on through the same switch as "Lock DarkProof", and stays on when high-risk mode is switched off again.
     if (on && Here.lock) a.setAppLock(true)
     if (on) MeshEngine.keepLess() // what arrived more than a day ago goes at once; switched off, nothing comes back
+    MeshEngine.quietPass() // check-in clocks: positions go, and their alerts are worded again (spec "If I go quiet")
     s.tick++
 }
 

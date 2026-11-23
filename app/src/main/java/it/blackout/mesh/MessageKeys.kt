@@ -112,7 +112,8 @@ object History {
      * Null for a type 0x02 message that is no reaction ([About.Nothing]), for the timer's notice (spec "Disappearing
      * messages") and for a leave note (spec "Leaving the group", L6): nothing of them is ever shown, so no copy is kept, and
      * a note read again from a copy at a later start would bring back a leaving record that had ended. A check-in clock
-     * message is an ordinary one here: its copy keeps the text it is shown with ([QuietClock.shown]).
+     * message is an ordinary one here: its copy keeps the text it is shown with ([QuietClock.shown]) and the field, so it
+     * is a card again after a restart (spec "If I go quiet": "this phone's copy keeps the field").
      */
     fun seal(key: ByteArray, id: String, group: String, epoch: String, o: GroupCrypto.Opened, index: Int, counter: Int): ByteArray? {
         if (o.message.about == About.Nothing || o.message.notice?.isSilent == true) return null
@@ -122,8 +123,8 @@ object History {
                 write(Rekey.hex(group)); writeUTF(epoch); writeLong(o.message.ts); write(o.digest); write(o.signature)
                 writeShort(index); writeInt(counter); writeUTF(o.message.sender); writeUTF(o.message.name); writeInt(text.size); write(text)
                 val extra = o.extra ?: ByteArray(0); writeInt(extra.size); write(extra)
-                // The 5th field (spec "Replies and reactions"), after everything an older copy holds: a copy without it reads as before.
-                o.aboutField?.let { writeInt(it.size); write(it) }
+                // The 5th field (spec "Replies and reactions", "If I go quiet"), after everything an older copy holds: a copy without it reads as before.
+                (o.aboutField ?: o.fifth?.takeIf { o.message.notice is Notice.Clock })?.let { writeInt(it.size); write(it) }
             }
         }.toByteArray()
         val c = Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES")); c.updateAAD(id.toByteArray())
@@ -143,8 +144,9 @@ object History {
             // type 0x02 message that isn't one, so the text read back here has the bytes the packet had.
             val fifth = if (available() >= 4) runCatching { ByteArray(readInt()).also(::readFully) }.getOrNull() else null
             val about = About.read(fifth, text)
-            Saved(group, epoch, GroupCrypto.Opened(Message(id, ts, sender, name, String(text, Charsets.UTF_8), photo = photo, about = about, voice = voice), signature, digest, extra,
-                if (about == null) null else fifth), index, counter)
+            val clock = if (about == null) QuietClock.read(fifth, ts)?.let { Notice.Clock(it) } else null // its text was kept as shown ([QuietClock.shown])
+            Saved(group, epoch, GroupCrypto.Opened(Message(id, ts, sender, name, String(text, Charsets.UTF_8), photo = photo, about = about, voice = voice, notice = clock), signature, digest, extra,
+                if (about == null) null else fifth, if (clock != null) fifth else null), index, counter)
         }
     }.getOrNull()
 

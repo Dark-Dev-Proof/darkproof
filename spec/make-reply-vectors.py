@@ -30,6 +30,11 @@ the check-in clock's. `voice-trim` reads one of the codec experiment's Apple-mad
 default from ios/BlackoutCore/Tests/voice; another path may follow `voice`:
 
     python3 -I spec/make-reply-vectors.py voice > /tmp/voice-vectors.txt
+
+With `finder` it makes the vectors of "Finder" (`kind: finder-field`, `finder-fit`, `finder-bands`), which follow the
+voice notes':
+
+    python3 -I spec/make-reply-vectors.py finder > /tmp/finder-vectors.txt
 """
 import hashlib, hmac, os, struct, sys
 
@@ -362,18 +367,23 @@ def timer_vectors():
     print("\n# ---- A key that arrives late, kept only to read with (numbered below the current epoch): epoch N, after a member's")
     print("# key N+1 that is current and inherits the timer. `wins`: the late key is the first of every epoch held at N (the order")
     print("# of \"Current epoch\"). `maker`: `admin` if its maker is an admin of the winning epoch before it (N-1), `not-admin` if")
-    print("# not (an admin demoted at N-1 or earlier, or a member). `field`: its timer, or `none`. `before`: the timer of the")
-    print("# epoch N that is current at its number (what N+1 inherits without the late key). `timer`: the group's timer")
-    print("# afterwards. `lines`: whether it may make the chat's lines (\"joined\", \"made an admin\", the timer's line).")
-    late = [("An admin's late key that wins at N: its word on the timer, as if it had come in time.", True, "admin", 3600, 86400),
-            ("The same key without the field: the timer stays.", True, "admin", None, 86400),
-            ("A late key that loses at N sets nothing.", False, "admin", 3600, 86400),
-            ("A late key whose maker isn't an admin of the winning epoch before it (an admin demoted earlier) sets nothing, and freezes nothing.", True, "not-admin", 300, 86400),
-            ("Losing and not an admin: nothing.", False, "not-admin", 300, 86400),
-            ("An admin's late key that wins can turn it off.", True, "admin", 0, 86400)]
-    def late_timer(wins, maker, field, before): return field if wins and maker == "admin" and field is not None else before
-    print("\n\n".join(f"# {note}\nkind: timer-late\nwins: {'yes' if w else 'no'}\nmaker: {m}\nfield: {'none' if f is None else f}\nbefore: {b}\n"
-                      f"timer: {late_timer(w, m, f, b)}\nlines: {'yes' if w and m == 'admin' else 'no'}" for note, w, m, f, b in late))
+    print("# not (an admin demoted at N-1 or earlier, or a member). `beaten`: `admin` if its maker is an admin of the epoch it")
+    print("# beats (the first with a member list at N), `not-admin` if not (demoted at N itself, by the key it beats). `field`:")
+    print("# its timer, or `none`. `before`: the timer of the epoch N that is current at its number (what N+1 inherits without")
+    print("# the late key). `timer`: the group's timer afterwards. `lines`: whether it may make the chat's lines (\"joined\",")
+    print("# \"made an admin\", the timer's line).")
+    late = [("An admin's late key that wins at N: its word on the timer, as if it had come in time.", True, "admin", "admin", 3600, 86400),
+            ("The same key without the field: the timer stays.", True, "admin", "admin", None, 86400),
+            ("A late key that loses at N sets nothing.", False, "admin", "admin", 3600, 86400),
+            ("A late key whose maker isn't an admin of the winning epoch before it (an admin demoted earlier) sets nothing, and freezes nothing.", True, "not-admin", "not-admin", 300, 86400),
+            ("Losing and not an admin: nothing.", False, "not-admin", "not-admin", 300, 86400),
+            ("An admin's late key that wins can turn it off.", True, "admin", "admin", 0, 86400),
+            ("An admin of N-1 whom the key it beats demoted (the review's case): it wins at N, but sets nothing and makes no line.", True, "admin", "not-admin", 300, 86400),
+            ("The same demoted admin can't turn it off either.", True, "admin", "not-admin", 0, 86400)]
+    def late_speaks(wins, maker, beaten): return wins and maker == "admin" and beaten == "admin"
+    def late_timer(wins, maker, beaten, field, before): return field if late_speaks(wins, maker, beaten) and field is not None else before
+    print("\n\n".join(f"# {note}\nkind: timer-late\nwins: {'yes' if w else 'no'}\nmaker: {m}\nbeaten: {bt}\nfield: {'none' if f is None else f}\nbefore: {b}\n"
+                      f"timer: {late_timer(w, m, bt, f, b)}\nlines: {'yes' if late_speaks(w, m, bt) else 'no'}" for note, w, m, bt, f, b in late))
 
     t0, hour, day = 1794000000000, 3_600_000, 86_400_000
     print("\n# ---- When a message goes. `seconds`: the group's timer on this phone (`unknown`: not known); `value_since`: since when")
@@ -787,6 +797,113 @@ def voice_vectors(fixture):
                      f"mark: {mark(signed).hex()}", "reads: voice", f"packets: {len(voice_packets(fourth))}", f"seconds: {voice_seconds(60)}",
                      f"about_id: {fifth[1:9].hex()}", f"about_mark: {fifth[9:17].hex()}", f"older: {VOICE_TEXT.decode()}"]))
 
+# ---- Finder (spec/FORMAT.md, "Finder") ----
+FINDER_TYPE = 0x06
+HELP = "\U0001F198"
+
+def finder_reads(field, text, channel, checked):
+    """Rule F4: the link id a reader takes, or None."""
+    if channel != "group" or checked != "yes" or field is None: return None
+    if len(field) != 7 or field[0] != FINDER_TYPE or not text.startswith(HELP): return None
+    return field[1:].hex()
+
+def finder_fits(sender, name, text, keyed):
+    """Rule F3: whether the note goes in. Without it the packet is header (18), IV (12), message-key header (3, if
+    keyed), signature (64), three fields with their lengths, tag (16); the note adds 2 + 2 + 7."""
+    without = 18 + 12 + (3 if keyed else 0) + 64 + 16 + 6 + len(sender.encode()) + len(name.encode()) + len(text.encode())
+    return not (without <= 163 and without + 11 > 163), without
+
+def finder_bands(trace):
+    """Rules F7 to F12, one step a second. Returns (band letters, trend signs)."""
+    EDGE = {"N": -82.0, "V": -70.0, "H": -60.0}
+    ORDER = "-FNVH"
+    def level(s): return "H" if s >= -60 else "V" if s >= -70 else "N" if s >= -82 else "F"
+    readings, S, band, held, bands, trends = [], None, None, 0, [], []
+    for t, v in enumerate(trace):
+        fresh = v is not None and -110 <= v <= -20
+        if fresh: readings.append((t, v))
+        readings = [(u, d) for u, d in readings if u > t - 10]
+        if not readings:
+            S, band, held = None, None, 0
+            bands.append("-"); trends.append("."); continue
+        if fresh:
+            r = sorted(d for u, d in readings if u > t - 5)
+            n = len(r)
+            m = float(r[n // 2]) if n % 2 else (r[n // 2 - 1] + r[n // 2]) / 2
+            S = m if S is None else 0.3 * m + 0.7 * S
+        held = held + 1 if S >= -60 else 0
+        lv = level(S)
+        cap = "H" if held >= 3 else "V"
+        target = lv if ORDER.index(lv) <= ORDER.index(cap) else cap
+        if band is None or ORDER.index(target) > ORDER.index(band): band = target
+        elif ORDER.index(lv) < ORDER.index(band) and S < EDGE[band] - 3: band = lv
+        bands.append(band)
+        a = [d for u, d in readings if u > t - 5]; b = [d for u, d in readings if u <= t - 5]
+        if a and b:
+            diff = sum(a) / len(a) - sum(b) / len(b)
+            trends.append("+" if diff >= 4 else "-" if diff <= -4 else "=")
+        else: trends.append(".")
+    return bands, trends
+
+def finder_vectors():
+    note = bytes([FINDER_TYPE]) + bytes.fromhex("a1b2c3d4e5f6")
+    print("# ---- Finder (spec/FORMAT.md, \"Finder\"). Made by spec/make-reply-vectors.py (argument `finder`). `kind: finder-field`:")
+    print("# what a reader takes from a group message's 5th field (`field`, hex; `-` for none) with this `text`, sent in `channel`")
+    print("# (`group` or `public`), whose signature checked for a member (`checked`: `yes`, `no`, or `not-yet`: the sender's key")
+    print("# hasn't come). `reads`: the link id, or `ignored`.")
+    rows = [("The note on a \"needs help\" check-in.", note, HELP + " I need help", "group", "yes"),
+            ("With needs, battery and position in the text: the same.", note, HELP + " I need help: trapped · \U0001F50B 15% · \U0001F4CD 45.46420,9.19000 ±12m", "group", "yes"),
+            ("Any text that starts with the help sign is a \"needs help\" check-in.", note, HELP, "group", "yes"),
+            ("One byte short.", note[:6], HELP + " I need help", "group", "yes"),
+            ("One byte too many.", note + b"\x00", HELP + " I need help", "group", "yes"),
+            ("Another type (0x03 is the timer).", b"\x03" + note[1:], HELP + " I need help", "group", "yes"),
+            ("A type this version doesn't know.", b"\x07" + note[1:], HELP + " I need help", "group", "yes"),
+            ("On \"I'm safe\": ignored.", note, "✅ I'm safe", "group", "yes"),
+            ("On a report about someone else: ignored.", note, "\U0001F464 Grandma needs help", "group", "yes"),
+            ("On an ordinary message: ignored.", note, "I'm stuck", "group", "yes"),
+            ("On the Public channel: ignored.", note, HELP + " I need help", "public", "yes"),
+            ("Its signature failed: ignored.", note, HELP + " I need help", "group", "no"),
+            ("Its sender's key hasn't come yet: not taken until it checks.", note, HELP + " I need help", "group", "not-yet")]
+    print("\n\n".join(f"# {n}\nkind: finder-field\nfield: {f.hex() if f is not None else '-'}\ntext: {t}\nchannel: {c}\nchecked: {k}\n"
+                      f"reads: {finder_reads(f, t, c, k) or 'ignored'}" for n, f, t, c, k in rows))
+
+    print("\n# ---- Radio first (rule F3). `size`: the whole packet without the note, before padding (`keyed`: sealed with its own")
+    print("# message key, 3 bytes more). `note`: whether the writer adds it: `no` only when the packet fits 163 bytes without it")
+    print("# and not with it (11 bytes more).")
+    a = "1111111111111111"
+    fits = [("A short check-in that fits a LoRa radio: the note would push it over, so it stays out.", a, "Marco", HELP + " I need help", True),
+            ("The same with the epoch's own key: still over with the note.", a, "Marco", HELP + " I need help", False),
+            ("A shorter name: it fits with the note too.", a, "Al", HELP + " I need help", False),
+            ("Exactly 163 with the note: it goes in.", a, "Alex", HELP + " I need help", False),
+            ("With the battery it doesn't fit a radio anyway: the note goes in.", a, "Marco", HELP + " I need help · \U0001F50B 15%", True),
+            ("The spec's long example (\"Needs and head count\") with a 14-byte name: the note goes in.", a, "Marco Rossetti",
+             HELP + " I need help: injured, water · \U0001F465 3 · \U0001F50B 23% · \U0001F4CD 45.46420,9.19000 ±12m", True)]
+    out = []
+    for n, snd, name, text, keyed in fits:
+        ok, size = finder_fits(snd, name, text, keyed)
+        out.append(f"# {n}\nkind: finder-fit\nsender: {snd}\nname: {name}\ntext: {text}\nkeyed: {'yes' if keyed else 'no'}\nsize: {size}\nnote: {'yes' if ok else 'no'}")
+    print("\n\n".join(out))
+
+    print("\n# ---- From signal readings to a band (rules F7 to F12). `rssi`: one entry a second from second 0, a reading in dBm or")
+    print("# `-` for none. `bands`: what the screen shows each second: `-` Not in reach, `F` Far, `N` Near, `V` Very close,")
+    print("# `H` Here. `trends`: `+` Signal getting stronger, `-` Signal getting weaker, `=` Signal steady, `.` no trend yet.")
+    def ramp(a, b, step): return list(range(a, b + (1 if step > 0 else -1), step))
+    traces = [
+        ("Walking up to the phone: Far, Near, Very close, then Here once it has held 3 seconds.", ramp(-96, -50, 2) + [-50] * 4),
+        ("One strong reading among weak ones: the median drops it, never Here.", [-82, -83, -81, -82, -50, -82, -83, -81, -82, -82]),
+        ("Two seconds at Here's edge (seconds 12 and 13) are not enough; later the third second is.", [-66] * 5 + [-59] * 7 + [-70] * 5 + [-52] * 8),
+        ("Leaving a band needs 3 dB below its edge: a dip to -72 stays Very close, -78 drops to Near.", [-66] * 5 + [-72] * 6 + [-78] * 8),
+        ("Readings stop: the band stays while the last one is under 10 seconds old, then Not in reach, and it starts over.", [-65] * 4 + [None] * 11 + [-90, -90]),
+        ("127, 0, -115 and -10 are no readings: Not in reach until a real one comes.", [127, 0, -115, -10, -88, 127, -88, 0, -87, -88]),
+        ("Walking away: the trend says weaker.", ramp(-55, -95, -3) + [-95] * 3),
+        ("Standing still: steady.", [-74, -75, -73, -74, -76, -74, -75, -73, -74, -75, -74, -74]),
+    ]
+    out = []
+    for n, tr in traces:
+        b, t = finder_bands(tr)
+        out.append(f"# {n}\nkind: finder-bands\nrssi: {' '.join('-' if v is None else str(v) for v in tr)}\nbands: {' '.join(b)}\ntrends: {' '.join(t)}")
+    print("\n\n".join(out))
+
 if __name__ == "__main__":
     if "--check" in sys.argv: check(); sys.exit(0)
     if "voice" in sys.argv:
@@ -796,6 +913,7 @@ if __name__ == "__main__":
     if "timer" in sys.argv: timer_vectors(); sys.exit(0)
     if "leave" in sys.argv: leave_vectors(); sys.exit(0)
     if "quiet" in sys.argv: quiet_vectors(); sys.exit(0)
+    if "finder" in sys.argv: finder_vectors(); sys.exit(0)
     T = TARGET[:8].hex() + ":" + TARGET[8:].hex()
     reply, reaction = b"\x01" + TARGET, b"\x02" + TARGET
     jpeg = b"\x01" + bytes.fromhex("ffd8ffe000104a464946ffd9")  # the 4th field of a photo: 0x01, then (here very few) JPEG bytes

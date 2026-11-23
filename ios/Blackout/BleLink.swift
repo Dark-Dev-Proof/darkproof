@@ -64,6 +64,7 @@ final class BleLink: NSObject, CBCentralManagerDelegate, CBPeripheralManagerDele
     func stopAndWait() {
         q.sync {
             stopped = true
+            endRssi()
             for l in Array(links.values) { drop(l) }
             if cm?.state == .poweredOn { cm?.stopScan() }
             if pm?.state == .poweredOn { pm?.stopAdvertising(); pm?.removeAllServices() }
@@ -170,6 +171,7 @@ final class BleLink: NSObject, CBCentralManagerDelegate, CBPeripheralManagerDele
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi: NSNumber) {
         let k = p.identifier
         guard !links.values.contains(where: { $0.isCentral && $0.key == k }), Date() >= retryAt[k] ?? .distantPast else { return }
+        if probe?.identifier == k { return } // Finder's reader on that connection: not a phone to dial
         if let n = nodeOf[k], links.values.contains(where: { $0.up && $0.remote == n }) { return } // already linked the other way
         guard links.count < Self.maxLinks || makeRoom() else { return }
         let l = Link(id: newLinkId(), isCentral: true, key: k)
@@ -179,9 +181,12 @@ final class BleLink: NSObject, CBCentralManagerDelegate, CBPeripheralManagerDele
         c.connect(p)
     }
 
-    func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) { p.discoverServices([service]) }
-    func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) { if let l = link(p) { drop(l) } }
-    func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) { if let l = link(p) { drop(l) } }
+    func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
+        if link(p) == nil, probe === p { p.readRSSI(); return } // Finder's reader: no services, no descriptor, no HELLO (F7)
+        p.discoverServices([service])
+    }
+    func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) { if probe === p { probeLost() }; if let l = link(p) { drop(l) } }
+    func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) { if probe === p { probeLost() }; if let l = link(p) { drop(l) } }
 
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         guard let l = link(p) else { return }
@@ -274,6 +279,75 @@ final class BleLink: NSObject, CBCentralManagerDelegate, CBPeripheralManagerDele
 
     func peripheralManagerIsReady(toUpdateSubscribers m: CBPeripheralManager) {
         for l in links.values where !l.isCentral { pump(l) }
+    }
+
+    // MARK: - Finder: the signal of one phone's link (spec/FORMAT.md, "Finder", F7)
+
+    /// How a reading comes: this phone dialed the link (`central`); the other phone dialed it and this phone reads
+    /// through a GATT client on the same connection (`client`, not proven on real phones yet); the other phone dialed it
+    /// and no client could be opened (`unmeasurable`); no Bluetooth link to that phone (`none`).
+    enum RssiRole: String { case central, client, unmeasurable, none }
+
+    private var rssiNode: String?                                 // q: the link id Finder looks for
+    private var rssiReport: ((RssiRole, Int?) -> Void)?           // q
+    private var rssiTimer: DispatchSourceTimer?                   // q: once a second while Finder is open
+    private var probe: CBPeripheral?                              // q: the GATT client on a link the other phone dialed
+    private var probeFailed = false                               // q: it couldn't be opened for this Finder session
+
+    /// Reads the signal of the link(s) to `node` once a second until `stopRssi`; `report` gets the role and the reading
+    /// in dBm, or nil, on `q`. Only one at a time.
+    func startRssi(node: String, report: @escaping (RssiRole, Int?) -> Void) {
+        q.async { [weak self] in
+            guard let self else { return }
+            self.endRssi()
+            guard !self.stopped else { return }
+            self.rssiNode = node; self.rssiReport = report
+            let t = DispatchSource.makeTimerSource(queue: self.q)
+            t.schedule(deadline: .now(), repeating: 1)
+            t.setEventHandler { [weak self] in self?.rssiTick() }
+            t.resume()
+            self.rssiTimer = t
+        }
+    }
+
+    func stopRssi() { q.async { self.endRssi() } }
+
+    private func endRssi() {
+        rssiTimer?.cancel(); rssiTimer = nil
+        rssiNode = nil; rssiReport = nil; probeFailed = false
+        if let p = probe { probe = nil; if link(p) == nil { cm?.cancelPeripheralConnection(p) } }
+    }
+
+    private func probeLost() { probe = nil; probeFailed = true }
+
+    /// A link this phone dialed is read directly. With only links the other phone dialed, a GATT client on the same
+    /// connection: CoreBluetooth gives a peripheral for the central's identifier, if it knows one, and connects it. That
+    /// it is the same connection, and the same identifier, is what the real-phone tests must show.
+    private func rssiTick() {
+        guard let node = rssiNode, let report = rssiReport else { return }
+        let mine = links.values.filter { $0.up && $0.remote == node }
+        if let p = mine.first(where: { $0.isCentral })?.peripheral, p.state == .connected {
+            if let pr = probe { probe = nil; if link(pr) == nil { cm?.cancelPeripheralConnection(pr) } } // the real link does it now
+            p.readRSSI(); return
+        }
+        guard let dialed = mine.first(where: { !$0.isCentral }) else { report(.none, nil); return }
+        if let p = probe {
+            if p.state == .connected { p.readRSSI() } else { report(.client, nil) } // still connecting
+            return
+        }
+        guard !probeFailed, let cm, cm.state == .poweredOn, let p = cm.retrievePeripherals(withIdentifiers: [dialed.key]).first else {
+            probeFailed = true; report(.unmeasurable, nil); return
+        }
+        probe = p
+        p.delegate = self
+        if p.state == .connected { p.readRSSI() } else { cm.connect(p); report(.client, nil) }
+    }
+
+    func peripheral(_ p: CBPeripheral, didReadRSSI rssi: NSNumber, error: Error?) {
+        guard let node = rssiNode, let report = rssiReport else { return }
+        let role: RssiRole
+        if let l = link(p), l.remote == node { role = .central } else if probe === p { role = .client } else { return }
+        report(role, error == nil ? rssi.intValue : nil) // 127 and other values outside the range are dropped by FinderMeter (F7)
     }
 
     // MARK: - Both roles

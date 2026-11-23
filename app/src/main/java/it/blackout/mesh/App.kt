@@ -249,12 +249,14 @@ sealed class Sheet {
     object Timer : Sheet()
     /** "How it got there" for one of this phone's own group messages (spec "Journey notes"). */
     data class Journey(val id: String) : Sheet()
+    /** "If I go quiet": this phone's check-in clock in the group in use (spec "If I go quiet"). */
+    object Quiet : Sheet()
 
     companion object {
         /** As text, to come back after Android ended the app in the background (photos are not kept). */
         fun save(s: Sheet): String? = when (s) {
             Invite -> "invite"; Groups -> "groups"; Settings -> "settings"; Radio -> "radio"; NewGroup -> "newgroup"; AddPlace -> "addplace"
-            Practice -> "practice"; Vouch -> "vouch"; Joins -> "joins"; Security -> "security"; Timer -> "timer"
+            Practice -> "practice"; Vouch -> "vouch"; Joins -> "joins"; Security -> "security"; Timer -> "timer"; Quiet -> "quiet"
             is Person -> "person\n${s.id}"
             is Check -> "check\n${s.id}"
             is Journey -> "journey\n${s.id}"
@@ -266,7 +268,7 @@ sealed class Sheet {
             val p = t.split("\n")
             return when (p[0]) {
                 "invite" -> Invite; "groups" -> Groups; "settings" -> Settings; "radio" -> Radio; "newgroup" -> NewGroup; "addplace" -> AddPlace
-                "practice" -> Practice; "vouch" -> Vouch; "joins" -> Joins; "security" -> Security; "timer" -> Timer
+                "practice" -> Practice; "vouch" -> Vouch; "joins" -> Joins; "security" -> Security; "timer" -> Timer; "quiet" -> Quiet
                 "person" -> p.getOrNull(1)?.let(::Person)
                 "check" -> p.getOrNull(1)?.let(::Check)
                 "journey" -> p.getOrNull(1)?.let(::Journey)
@@ -305,6 +307,7 @@ fun MainView(s: AppState, a: MainActivity) {
     val unread = remember(all, s.tab, s.everyone, g) { if (s.tab == 1 && !s.everyone) 0 else ReadMarks.unread(a, all, g.code) }
     BackHandler(enabled = s.tab != 0) { s.tab = 0 } // Back from another tab goes Home first
     Box(Modifier.fillMaxSize()) {
+        AsciiBackdrop(AsciiBackground.style(a), Modifier.matchParentSize()) // Settings > Background: behind the screens, not behind sheets
         Box(Modifier.fillMaxSize().glassSource().statusBarsPadding()) { // the tab bar floats over it
             when (s.tab) {
                 1 -> ChatTab(s, g, messages, phones) { s.sheet = it }
@@ -345,6 +348,7 @@ internal fun Overlays(s: AppState, a: MainActivity, g: SavedGroup, messages: Lis
         Sheet.Security -> SecuritySheet(s, a, g, close)
         Sheet.Timer -> TimerSheet(s, a, g, close)
         is Sheet.Journey -> JourneySheet(s, sh.id, close)
+        Sheet.Quiet -> QuietSheet(s, g, close)
         null -> {}
     }
     if (s.askHelp) HelpConfirm(s, a)
@@ -378,10 +382,13 @@ private fun HelpConfirmDialog(s: AppState, a: MainActivity) {
 /** While DarkProof is open: someone needs help, asks if I'm safe, or another group wrote. */
 @Composable
 private fun AlertBanner(al: Notifier.Alert, s: AppState, a: MainActivity, modifier: Modifier) {
-    LaunchedEffect(al) { if (!al.urgent) { kotlinx.coroutines.delay(6_000); if (s.banner == al) s.banner = null } }
+    // A check-in clock ran out (spec "If I go quiet"): neutral, not red, it stays until closed, and it opens People.
+    val quiet = al.messageId.startsWith("quiet-")
+    LaunchedEffect(al) { if (!al.urgent && !quiet) { kotlinx.coroutines.delay(6_000); if (s.banner == al) s.banner = null } }
     fun openChat() {
         s.banner = null
         Groups.find(a, al.group)?.takeIf { it.code != s.group?.code }?.let(a::switchTo)
+        if (quiet) { s.tab = 3; return }
         s.everyone = false; s.tab = 1
     }
     val color = if (al.urgent && !al.ask) Theme.help else Theme.text
@@ -393,11 +400,11 @@ private fun AlertBanner(al: Notifier.Alert, s: AppState, a: MainActivity, modifi
         .then(if (al.urgent) Modifier.border(1.dp, color.copy(alpha = 0.6f), shape) else Modifier) // red only for help
         .padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Ic(if (al.ask) R.drawable.ic_notifications else if (al.urgent) R.drawable.ic_sos else R.drawable.ic_chat, color, 24.dp)
+            Ic(if (quiet) R.drawable.ic_schedule else if (al.ask) R.drawable.ic_notifications else if (al.urgent) R.drawable.ic_sos else R.drawable.ic_chat, color, 24.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Txt(al.title, 17, FontWeight.Bold, color, maxLines = 2)
-                Txt(al.body, 14, color = Theme.dim, maxLines = 2)
+                Txt(al.body, 14, color = Theme.dim, maxLines = if (quiet) 3 else 2)
             }
             RoundIcon(R.drawable.ic_close, 34.dp, desc = "Close") { s.banner = null }
         }
@@ -569,6 +576,7 @@ private fun HomeTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<
             ActionTile("Invite", R.drawable.ic_qr_code_2, Theme.text, false, Modifier.weight(1f)) { open(Sheet.Invite) }
             ActionTile("Connect", R.drawable.ic_settings_input_antenna, Theme.text, false, Modifier.weight(1f)) { open(Sheet.Radio) }
         }
+        HomeQuietRow(s, g) { open(Sheet.Quiet) } // under the check-in buttons, as on the approved board (spec "If I go quiet")
         mine?.let { m -> Txt("Your last check-in: ${if (CheckIn.of(m.text) == CheckIn.HELP) "need help" else "safe"}, ${ago(m.ts)}.", 15, color = Theme.dim) }
         hours?.let { h -> batteryPercent(a)?.let { p -> Txt("Battery $p% · about $h h left at this rate.", 15, color = if (h <= 3) Theme.help else Theme.dim) } }
         ReadyCard(s, a, people.isNotEmpty())
@@ -725,7 +733,7 @@ private fun SettingsSheet(s: AppState, a: MainActivity, all: List<Message>, invi
     val title = when (page) {
         "name" -> "Your name"; "groups" -> "Groups"; "notifications" -> "Notifications"; "help" -> "Help and privacy"
         "nearby" -> "Nearby phones"; "radio" -> "Long-range radio"; "board" -> "Wi-Fi board"; "share" -> "Send through another app"
-        "blocked" -> "Blocked people"; else -> if (connections) "Connections" else "Settings"
+        "blocked" -> "Blocked people"; "background" -> "Background"; else -> if (connections) "Connections" else "Settings"
     }
     SheetPage(title, close, onBack = if (page.isEmpty()) null else ({ page = "" }), scrollKey = page) {
         BackHandler(enabled = page.isNotEmpty()) { page = "" }
@@ -764,6 +772,7 @@ private fun SettingsSheet(s: AppState, a: MainActivity, all: List<Message>, invi
                 }
             }
             "blocked" -> BlockedPage(s, a)
+            "background" -> BackgroundPage(a)
             else -> {
                 if (connections) {
                     Txt(if (Here.internet) "The ways your messages travel. All but Internet keep working in a blackout." else "The ways your messages travel. They keep working in a blackout.", 15, color = Theme.dim)
@@ -821,6 +830,7 @@ private fun EverydayRows(s: AppState, a: MainActivity, highRisk: () -> Unit, ope
         }
         LinkRow(R.drawable.ic_shield, "High-risk mode", if (s.highRisk) "On" else "Off", dot = s.highRisk, onClick = highRisk)
         if (Here.shareApp) LinkRow(R.drawable.ic_share, "Share the app", detail = "To an Android phone nearby, no internet needed") { ApkShare.share(a) }
+        LinkRow(R.drawable.ic_image, "Background", AsciiBackground.summary(AsciiBackground.style(a))) { open("background") }
         LinkRow(R.drawable.ic_help, "Help and privacy") { open("help") }
     }
 }
@@ -1116,6 +1126,7 @@ fun PersonRow(p: Person, tap: () -> Unit, find: (Spot) -> Unit) {
                 null -> Txt(if (p.lastTs == 0L) "No check-in yet" else "Last seen ${ago(p.lastTs)}", 15, color = Theme.dim)
             }
             needsLine(p)?.let { Txt(it, 14, color = if (p.checkIn == CheckIn.HELP) Theme.text else Theme.dim, maxLines = 2) }
+            if (!p.isReport) QuietLine(MeshEngine.quietState(MeshEngine.currentCode, p.id)) // their check-in clock as this phone holds it (spec "If I go quiet")
             if (!p.isReport) CheckBadge(MeshEngine.currentCode, p)
         }
         p.battery?.let { BatteryLabel(it); Spacer(Modifier.width(12.dp)) }

@@ -13,14 +13,15 @@ final class TimerVectorsTests: XCTestCase {
     func testVectorCounts() {
         XCTAssertEqual(of("timer-field").count, 15); XCTAssertEqual(of("timer-rekey").count, 2); XCTAssertEqual(of("timer-epoch").count, 12)
         XCTAssertEqual(of("timer-rival").count, 4); XCTAssertEqual(of("timer-due").count, 11); XCTAssertEqual(of("timer-notice").count, 2)
-        XCTAssertEqual(of("timer-late").count, 6)
+        XCTAssertEqual(of("timer-late").count, 8)
     }
 
     /// `kind: timer-late` (finding M4): a key that came late, kept only to read with, at number 5, after a member's key 6
-    /// that is current. It speaks for the timer and the chat's lines only if it wins at 5 and its maker is an admin of the
-    /// winning epoch 4. Built as a phone holds them: 4 (admin Anna, timer `before`), Anna's 5 inheriting it, the late 5
-    /// by Ben (an admin of 4, or not), Cara's 6.
-    func testLateKeysSpeakOnlyAsWinnersByAnAdminOfTheWinnerBefore() throws {
+    /// that is current. It speaks for the timer and the chat's lines only if it wins at 5, its maker is an admin of the
+    /// winning epoch 4, and its maker is an admin of the epoch it beats (Anna's 5). Built as a phone holds them: 4 (admin
+    /// Anna, timer `before`), Anna's 5 inheriting it (which keeps Ben an admin, or demotes him), the late 5 by Ben (an
+    /// admin of 4, or not), Cara's 6.
+    func testLateKeysSpeakOnlyAsWinnersByAnAdminOfTheWinnerBeforeAndOfTheEpochTheyBeat() throws {
         let all = [anna, ben, cara]
         func epoch(_ n: Int64, by: String, secret: Data, admins: [String], members: [String], timer: Int?, rank: Int) -> Keyring.Epoch {
             Keyring.Epoch.fresh(number: n, made: t0 + n * hour, secret: secret, roster: all, members: members, admins: admins, by: by, rank: rank, taken: t0 + n * hour,
@@ -37,10 +38,10 @@ final class TimerVectorsTests: XCTestCase {
             fatalError("no secret")
         }
         for v in of("timer-late") {
-            let wins = v["wins"] == "yes", admin = v["maker"] == "admin", before = Int(v["before"]!)!
+            let wins = v["wins"] == "yes", admin = v["maker"] == "admin", kept = v["beaten"] == "admin", before = Int(v["before"]!)!
             let ring = Keyring()
             ring.add(epoch(4, by: anna, secret: Data(repeating: 0x44, count: 32), admins: admin ? [anna, ben] : [anna], members: all, timer: before, rank: Keyring.byAdmin))
-            ring.add(epoch(5, by: anna, secret: real5, admins: [anna], members: all, timer: nil, rank: Keyring.byAdmin))
+            ring.add(epoch(5, by: anna, secret: real5, admins: kept ? [anna, ben] : [anna], members: all, timer: nil, rank: Keyring.byAdmin))
             ring.add(epoch(6, by: cara, secret: Data(repeating: 0x66, count: 32), admins: [anna], members: all, timer: nil, rank: .max))
             XCTAssertEqual(ring.timer.seconds, before, "without the late key")
             let late = epoch(5, by: ben, secret: secret(before: wins), admins: [anna, ben], members: [], timer: timer(v["field"]!), rank: Keyring.byAdmin)

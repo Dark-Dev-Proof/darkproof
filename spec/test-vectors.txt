@@ -1370,13 +1370,16 @@ timer: 86400
 # ---- A key that arrives late, kept only to read with (numbered below the current epoch): epoch N, after a member's
 # key N+1 that is current and inherits the timer. `wins`: the late key is the first of every epoch held at N (the order
 # of "Current epoch"). `maker`: `admin` if its maker is an admin of the winning epoch before it (N-1), `not-admin` if
-# not (an admin demoted at N-1 or earlier, or a member). `field`: its timer, or `none`. `before`: the timer of the
-# epoch N that is current at its number (what N+1 inherits without the late key). `timer`: the group's timer
-# afterwards. `lines`: whether it may make the chat's lines ("joined", "made an admin", the timer's line).
+# not (an admin demoted at N-1 or earlier, or a member). `beaten`: `admin` if its maker is an admin of the epoch it
+# beats (the first with a member list at N), `not-admin` if not (demoted at N itself, by the key it beats). `field`:
+# its timer, or `none`. `before`: the timer of the epoch N that is current at its number (what N+1 inherits without
+# the late key). `timer`: the group's timer afterwards. `lines`: whether it may make the chat's lines ("joined",
+# "made an admin", the timer's line).
 # An admin's late key that wins at N: its word on the timer, as if it had come in time.
 kind: timer-late
 wins: yes
 maker: admin
+beaten: admin
 field: 3600
 before: 86400
 timer: 3600
@@ -1386,6 +1389,7 @@ lines: yes
 kind: timer-late
 wins: yes
 maker: admin
+beaten: admin
 field: none
 before: 86400
 timer: 86400
@@ -1395,6 +1399,7 @@ lines: yes
 kind: timer-late
 wins: no
 maker: admin
+beaten: admin
 field: 3600
 before: 86400
 timer: 86400
@@ -1404,6 +1409,7 @@ lines: no
 kind: timer-late
 wins: yes
 maker: not-admin
+beaten: not-admin
 field: 300
 before: 86400
 timer: 86400
@@ -1413,6 +1419,7 @@ lines: no
 kind: timer-late
 wins: no
 maker: not-admin
+beaten: not-admin
 field: 300
 before: 86400
 timer: 86400
@@ -1422,10 +1429,31 @@ lines: no
 kind: timer-late
 wins: yes
 maker: admin
+beaten: admin
 field: 0
 before: 86400
 timer: 0
 lines: yes
+
+# An admin of N-1 whom the key it beats demoted (the review's case): it wins at N, but sets nothing and makes no line.
+kind: timer-late
+wins: yes
+maker: admin
+beaten: not-admin
+field: 300
+before: 86400
+timer: 86400
+lines: no
+
+# The same demoted admin can't turn it off either.
+kind: timer-late
+wins: yes
+maker: admin
+beaten: not-admin
+field: 0
+before: 86400
+timer: 86400
+lines: no
 
 # ---- When a message goes. `seconds`: the group's timer on this phone (`unknown`: not known); `value_since`: since when
 # it has had that value. `arrived`: when the message reached the phone, or, written there, first left it (`none`: not
@@ -2610,3 +2638,219 @@ seconds: 1
 about_id: e608000000000005
 about_mark: 33ac1741ddfdd2c7
 older: 🎤 Voice note
+
+# ---- Finder (spec/FORMAT.md, "Finder"). Made by spec/make-reply-vectors.py (argument `finder`). `kind: finder-field`:
+# what a reader takes from a group message's 5th field (`field`, hex; `-` for none) with this `text`, sent in `channel`
+# (`group` or `public`), whose signature checked for a member (`checked`: `yes`, `no`, or `not-yet`: the sender's key
+# hasn't come). `reads`: the link id, or `ignored`.
+# The note on a "needs help" check-in.
+kind: finder-field
+field: 06a1b2c3d4e5f6
+text: 🆘 I need help
+channel: group
+checked: yes
+reads: a1b2c3d4e5f6
+
+# With needs, battery and position in the text: the same.
+kind: finder-field
+field: 06a1b2c3d4e5f6
+text: 🆘 I need help: trapped · 🔋 15% · 📍 45.46420,9.19000 ±12m
+channel: group
+checked: yes
+reads: a1b2c3d4e5f6
+
+# Any text that starts with the help sign is a "needs help" check-in.
+kind: finder-field
+field: 06a1b2c3d4e5f6
+text: 🆘
+channel: group
+checked: yes
+reads: a1b2c3d4e5f6
+
+# One byte short.
+kind: finder-field
+field: 06a1b2c3d4e5
+text: 🆘 I need help
+channel: group
+checked: yes
+reads: ignored
+
+# One byte too many.
+kind: finder-field
+field: 06a1b2c3d4e5f600
+text: 🆘 I need help
+channel: group
+checked: yes
+reads: ignored
+
+# Another type (0x03 is the timer).
+kind: finder-field
+field: 03a1b2c3d4e5f6
+text: 🆘 I need help
+channel: group
+checked: yes
+reads: ignored
+
+# A type this version doesn't know.
+kind: finder-field
+field: 07a1b2c3d4e5f6
+text: 🆘 I need help
+channel: group
+checked: yes
+reads: ignored
+
+# On "I'm safe": ignored.
+kind: finder-field
+field: 06a1b2c3d4e5f6
+text: ✅ I'm safe
+channel: group
+checked: yes
+reads: ignored
+
+# On a report about someone else: ignored.
+kind: finder-field
+field: 06a1b2c3d4e5f6
+text: 👤 Grandma needs help
+channel: group
+checked: yes
+reads: ignored
+
+# On an ordinary message: ignored.
+kind: finder-field
+field: 06a1b2c3d4e5f6
+text: I'm stuck
+channel: group
+checked: yes
+reads: ignored
+
+# On the Public channel: ignored.
+kind: finder-field
+field: 06a1b2c3d4e5f6
+text: 🆘 I need help
+channel: public
+checked: yes
+reads: ignored
+
+# Its signature failed: ignored.
+kind: finder-field
+field: 06a1b2c3d4e5f6
+text: 🆘 I need help
+channel: group
+checked: no
+reads: ignored
+
+# Its sender's key hasn't come yet: not taken until it checks.
+kind: finder-field
+field: 06a1b2c3d4e5f6
+text: 🆘 I need help
+channel: group
+checked: not-yet
+reads: ignored
+
+# ---- Radio first (rule F3). `size`: the whole packet without the note, before padding (`keyed`: sealed with its own
+# message key, 3 bytes more). `note`: whether the writer adds it: `no` only when the packet fits 163 bytes without it
+# and not with it (11 bytes more).
+# A short check-in that fits a LoRa radio: the note would push it over, so it stays out.
+kind: finder-fit
+sender: 1111111111111111
+name: Marco
+text: 🆘 I need help
+keyed: yes
+size: 156
+note: no
+
+# The same with the epoch's own key: still over with the note.
+kind: finder-fit
+sender: 1111111111111111
+name: Marco
+text: 🆘 I need help
+keyed: no
+size: 153
+note: no
+
+# A shorter name: it fits with the note too.
+kind: finder-fit
+sender: 1111111111111111
+name: Al
+text: 🆘 I need help
+keyed: no
+size: 150
+note: yes
+
+# Exactly 163 with the note: it goes in.
+kind: finder-fit
+sender: 1111111111111111
+name: Alex
+text: 🆘 I need help
+keyed: no
+size: 152
+note: yes
+
+# With the battery it doesn't fit a radio anyway: the note goes in.
+kind: finder-fit
+sender: 1111111111111111
+name: Marco
+text: 🆘 I need help · 🔋 15%
+keyed: yes
+size: 168
+note: yes
+
+# The spec's long example ("Needs and head count") with a 14-byte name: the note goes in.
+kind: finder-fit
+sender: 1111111111111111
+name: Marco Rossetti
+text: 🆘 I need help: injured, water · 👥 3 · 🔋 23% · 📍 45.46420,9.19000 ±12m
+keyed: yes
+size: 234
+note: yes
+
+# ---- From signal readings to a band (rules F7 to F12). `rssi`: one entry a second from second 0, a reading in dBm or
+# `-` for none. `bands`: what the screen shows each second: `-` Not in reach, `F` Far, `N` Near, `V` Very close,
+# `H` Here. `trends`: `+` Signal getting stronger, `-` Signal getting weaker, `=` Signal steady, `.` no trend yet.
+# Walking up to the phone: Far, Near, Very close, then Here once it has held 3 seconds.
+kind: finder-bands
+rssi: -96 -94 -92 -90 -88 -86 -84 -82 -80 -78 -76 -74 -72 -70 -68 -66 -64 -62 -60 -58 -56 -54 -52 -50 -50 -50 -50 -50
+bands: F F F F F F F F F F F F N N N N N N V V V V V V V H H H
+trends: . . . . . + + + + + + + + + + + + + + + + + + + + + + +
+
+# One strong reading among weak ones: the median drops it, never Here.
+kind: finder-bands
+rssi: -82 -83 -81 -82 -50 -82 -83 -81 -82 -82
+bands: N N N N N N N N N N
+trends: . . . . . + + + + -
+
+# Two seconds at Here's edge (seconds 12 and 13) are not enough; later the third second is.
+kind: finder-bands
+rssi: -66 -66 -66 -66 -66 -59 -59 -59 -59 -59 -59 -59 -70 -70 -70 -70 -70 -52 -52 -52 -52 -52 -52 -52 -52
+bands: V V V V V V V V V V V V V V V V V V V V V V H H H
+trends: . . . . . = = + + + + + = = - - - - = + + + + + +
+
+# Leaving a band needs 3 dB below its edge: a dip to -72 stays Very close, -78 drops to Near.
+kind: finder-bands
+rssi: -66 -66 -66 -66 -66 -72 -72 -72 -72 -72 -72 -78 -78 -78 -78 -78 -78 -78 -78
+bands: V V V V V V V V V V V V V N N N N N N
+trends: . . . . . = = = - - - - - - - - - = =
+
+# Readings stop: the band stays while the last one is under 10 seconds old, then Not in reach, and it starts over.
+kind: finder-bands
+rssi: -65 -65 -65 -65 - - - - - - - - - - - -90 -90
+bands: V V V V V V V V V V V V V - - F F
+trends: . . . . . = = = . . . . . . . . .
+
+# 127, 0, -115 and -10 are no readings: Not in reach until a real one comes.
+kind: finder-bands
+rssi: 127 0 -115 -10 -88 127 -88 0 -87 -88
+bands: - - - - F F F F F F
+trends: . . . . . . . . . =
+
+# Walking away: the trend says weaker.
+kind: finder-bands
+rssi: -55 -58 -61 -64 -67 -70 -73 -76 -79 -82 -85 -88 -91 -94 -95 -95 -95
+bands: V V H H H H H V V V V N N N N F F
+trends: . . . . . - - - - - - - - - - - -
+
+# Standing still: steady.
+kind: finder-bands
+rssi: -74 -75 -73 -74 -76 -74 -75 -73 -74 -75 -74 -74
+bands: N N N N N N N N N N N N
+trends: . . . . . = = = = = = =

@@ -49,6 +49,7 @@
         <activity-alias android:name=".QuickActions" android:targetActivity=".MainActivity" android:exported="false"/>
         <service android:name=".MeshService" android:exported="false" android:foregroundServiceType="connectedDevice"/>
         <receiver android:name=".AnswerReceiver" android:exported="false"/>
+        <receiver android:name=".QuietAlarmReceiver" android:exported="false"/> <!-- check-in clocks' backup alarm: inexact, no exact-alarm permission -->
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/></intent-filter>
             <intent-filter><action android:name="android.intent.action.MY_PACKAGE_REPLACED"/></intent-filter>

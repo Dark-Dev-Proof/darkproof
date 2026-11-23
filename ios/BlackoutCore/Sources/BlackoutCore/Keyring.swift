@@ -191,10 +191,10 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
     /// - Any other epoch has the timer of the epoch before it: the first of those numbered one lower. Among them
     ///   counts, besides the epochs that say who is in, an admin's key that came late and is kept only to read with,
     ///   if it carries a timer and `speaks`: it is the winner of every epoch held at its number, and its maker is an
-    ///   admin of the winning epoch before it. It decides nothing about people, but it is that admin's word on the
-    ///   timer, and without it a phone that got a rival first, then a member's next key, would keep the rival's value
-    ///   for good. A late key that loses at its number, or whose maker isn't an admin of the winner before it (a
-    ///   demoted admin's), sets and freezes nothing.
+    ///   admin of the epoch it beats and of the winning epoch before it. It decides nothing about people, but it is
+    ///   that admin's word on the timer, and without it a phone that got a rival first, then a member's next key, would
+    ///   keep the rival's value for good. A late key that loses at its number, or whose maker isn't an admin of the
+    ///   winner before it or of the epoch it beats (a demoted admin's), sets and freezes nothing.
     /// - Judged again whenever the keyring changes, not once when a key comes, so phones that hold the same keys
     ///   agree whatever order they came in.
     /// - Once the epochs before it are gone (a week after they were replaced), an epoch keeps what was worked out last.
@@ -219,13 +219,17 @@ public final class Keyring: @unchecked Sendable { // guarded by lock
     }
 
     /// True if `e`, kept only to read with, may speak for the timer and the chat's lines: it is the winner of every epoch
-    /// held at its number, its maker wasn't taken out by a removal since, and its maker is an admin of the winning epoch
-    /// before it (the first with a member list one number lower; if none is held, what was judged when it came: its
-    /// `rank`). Hold the lock.
+    /// held at its number, its maker wasn't taken out by a removal since, its maker is an admin of the epoch it beats
+    /// (the first with a member list at its number; with none held it corrects nothing and says nothing), and its maker
+    /// is an admin of the winning epoch before it (the first with a member list one number lower; if none is held, what
+    /// was judged when it came: its `rank`). The epoch it beats closes a demoted admin's way in: an admin of the epoch
+    /// before who was demoted at this very number can't speak over the key that demoted them. Hold the lock.
     private func speaks(_ e: Epoch) -> Bool {
         guard e.members.isEmpty, isWinner(e), !outSince(e.by, e.number) else { return false }
+        let by = e.by ?? ""
+        guard let beaten = list.filter({ $0.number == e.number && !$0.members.isEmpty }).min(by: Self.first), beaten.admins.contains(by) else { return false }
         guard let before = list.filter({ $0.number == e.number &- 1 && !$0.members.isEmpty }).min(by: Self.first) else { return e.rank == Self.byAdmin }
-        return before.admins.contains(e.by ?? "")
+        return before.admins.contains(by)
     }
 
     /// For each number held, the epoch that counts for the chat's lines ("joined", "made an admin", the timer's line):

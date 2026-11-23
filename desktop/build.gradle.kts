@@ -21,9 +21,9 @@ plugins {
 // stand-ins under Android's names (src/main/java/android) and with its own versions of the phone-only objects they
 // name (src/main/kotlin/it/blackout/desktop/standin).
 val shared = listOf(
-    "About", "App", "AppState", "BleProtocol", "Contact", "Core", "Dials", "EncKeys", "Fingerprint", "Groups", "Help", "HighRisk", "Hpke",
+    "About", "App", "AppState", "AsciiBackground", "BleProtocol", "Contact", "Core", "Dials", "EncKeys", "Fingerprint", "Groups", "Help", "HighRisk", "Hpke",
     "Joins", "Journey", "LockRules", "MeshCore", "MeshEngine", "MessageKeys", "Meshtastic", "Moderation", "Nostr", "NostrLink", "Notices", "P256",
-    "PersonCode", "PlusCode", "Protocol", "QuickCheckIn", "Ready", "Replies", "Schnorr", "ScreenRules", "Screens", "Scrypt", "Security", "Socks5",
+    "PersonCode", "PlusCode", "Protocol", "QuickCheckIn", "Quiet", "Ready", "Replies", "Schnorr", "ScreenRules", "Screens", "Scrypt", "Security", "Socks5",
     "Times", "Ui", "VoiceNotes", "VoiceViews", "WifiLinks", "WordFilter",
 )
 
@@ -32,9 +32,9 @@ val sharedTests = listOf(
     "AboutTest", "AppLockFixTest", "AuthorshipTest", "BleProtocolTest", "CheckInExtrasTest", "CoreTest", "DoorStoreFixTest",
     "FaultTest", "FirstCopyTest", "FormatVectorsTest", "HighRiskTest", "HpkeTest", "HybridTest", "InviteFixTest", "JourneyTest", "KeyChangesTest",
     "KeyringTest", "LeaveTest", "LeaveVectorsTest", "LinkLimitsFixTest", "MeshCoreTest", "MessageKeysTest", "MiscFixTest", "NostrTest",
-    "PaddingTest", "PersonCodeTest", "PlusCodeTest", "PrivacyTest", "ProtocolTest", "RekeyTest", "RelayAttackTest", "RelayIntakeTest",
+    "PaddingTest", "PersonCodeTest", "PlusCodeTest", "PrivacyTest", "ProtocolTest", "QuietVectorsTest", "RekeyTest", "RelayAttackTest", "RelayIntakeTest",
     "RelayLimitsFixTest", "RelayLinksTest", "RepliesVectorsTest", "SchnorrTest", "ScryptTest", "SecurityWordsTest", "SharedVectorsTest", "StoredDataFixTest",
-    "TestSigning", "TimerTest", "TimerVectorsTest", "VoiceNotesTest", "WifiLinksTest", "WordFilterTest",
+    "TestSigning", "TimerTest", "TimerVectorsTest", "VoiceNotesTest", "VoiceVectorsTest", "WifiLinksTest", "WordFilterTest",
 )
 
 // The phone's pictures (app/src/main/res/drawable*) go on the desktop's classpath as they are, and the build writes an

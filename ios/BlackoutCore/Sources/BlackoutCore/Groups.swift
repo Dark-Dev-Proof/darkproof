@@ -416,8 +416,13 @@ public struct Person: Identifiable, Equatable, Sendable {
     /// For a report: who sent it (name and device id). Nil for the person's own check-ins.
     public var reportedBy: String? = nil
     public var reporterId: String? = nil
+    /// The link id from the finder note of their latest check-in (spec "Finder", rule F5): set only while that check-in
+    /// is "needs help" with a note, from a checked group message. A later check-in without one clears it.
+    public var finder: String? = nil
 
     public var isReport: Bool { reportedBy != nil }
+
+    public init(id: String, name: String, lastTs: Int64) { self.id = id; self.name = name; self.lastTs = lastTs }
 
     /// Everyone who wrote in the group (not on the Public channel, not from a Wi-Fi board), plus the people someone
     /// reported on (by name, latest report wins, including reports this phone sent); people asking for help first, then
@@ -442,6 +447,7 @@ public struct Person: Identifiable, Equatable, Sendable {
             if let c = CheckIn.of(m.text), m.ts >= p.checkInTs {
                 p.checkIn = c; p.checkInTs = m.ts; p.battery = CheckIn.battery(in: m.text)
                 p.needs = CheckIn.needs(in: m.text); p.people = CheckIn.people(in: m.text)
+                p.finder = c == .help && m.verified ? m.finder : nil // only from a checked message; "I'm safe" ends it
             }
             if let s = CheckIn.spot(in: m.text), m.ts >= p.spotTs { p.spot = s; p.spotTs = m.ts }
             byId[m.sender] = p
