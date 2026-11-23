@@ -50,7 +50,7 @@ final class Round2bFixTests: XCTestCase {
         XCTAssertEqual(LeaveCleanup.removed(packets: ["m1"], copies: [], keeping: nil).packets, ["m1"])
     }
 
-    // MARK: - M7: "Kept by" is kept in the clock record
+    // MARK: - M7: "Reached" (who confirmed the clock) is kept in the clock record
 
     func testKeepersLiveInTheRecordAndSurviveARestart() {
         var b = QuietBook()

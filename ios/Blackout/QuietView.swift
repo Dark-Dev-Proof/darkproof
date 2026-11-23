@@ -3,7 +3,8 @@ import BlackoutCore
 
 /// "If I go quiet" (spec/FORMAT.md, "If I go quiet"; the approved board's `quiet`): this phone's check-in clock. The
 /// group's phones that get the clock message keep it; if no check-in from this phone reaches one of them by the
-/// deadline, it tells its owner. Who keeps it comes from the clock message's delivery receipts, never the member list.
+/// deadline, it can alert its owner. Whose phones it reached comes from the clock message's delivery receipts, never the
+/// member list; a receipt says only that the message got there ("Reached"), not that the phone keeps the clock.
 struct QuietView: View {
     @ObservedObject var engine: Engine
     @CurrentCode private var code
@@ -19,14 +20,16 @@ struct QuietView: View {
                 let now = Engine.quietNow(), own = engine.quietOwn(code, now: now)
                 VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 6) {
+                        Text(QuietWords.subtitle).scaledFont(13, .semibold).foregroundStyle(Theme.dim) // the name cards and alerts use
                         Text(QuietWords.lead).scaledFont(19, .bold).foregroundStyle(Theme.text)
                         Text(QuietWords.sub).scaledFont(15).foregroundStyle(Theme.dim)
                     }
                     .fixedSize(horizontal: false, vertical: true)
                     dial(own, now: now).frame(maxWidth: .infinity)
-                    if let own { running(own.clock, state: own.state) } else { start }
-                    Text("Phones on older DarkProof versions only show the message.")
-                        .scaledFont(13).foregroundStyle(Theme.faint).fixedSize(horizontal: false, vertical: true)
+                    if let own { running(own.clock, state: own.state) } else {
+                        start
+                        older
+                    }
                 }
             }
         }
@@ -108,8 +111,12 @@ struct QuietView: View {
         if case .ranOut(let d) = state {
             Text(QuietWords.ranOut(Engine.hm(d))).scaledFont(15, .semibold).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true)
         }
-        Text(QuietWords.kept(engine.quietKeepers(code))).scaledFont(15).foregroundStyle(Theme.dim)
-            .frame(maxWidth: .infinity).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+        // Whose phones the clock message reached (their receipts), and directly under it, what a receipt can't say.
+        VStack(spacing: 4) {
+            Text(QuietWords.reached(engine.quietKeepers(code))).scaledFont(15).foregroundStyle(Theme.dim)
+            older
+        }
+        .frame(maxWidth: .infinity).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         Button {
             let e = engine, waiting = e.reach == .none
             e.checkIn(.safe, group: code) { Nav.shared.toast(QuietWords.safeSent(waiting: waiting)) } // a check-in stops the clock everywhere it reaches (rule Q4)
@@ -122,6 +129,10 @@ struct QuietView: View {
         .buttonStyle(SecondaryButton()).disabled(busy)
         Button(QuietWords.stopWithout) { send(deadline: { _ in 0 }, spot: false) { QuietWords.stopped(waiting: $0) } }
             .scaledFont(16, .semibold).foregroundStyle(Theme.dim).frame(maxWidth: .infinity, minHeight: 44).disabled(busy)
+    }
+
+    private var older: some View {
+        Text(QuietWords.olderOnly).scaledFont(13).foregroundStyle(Theme.faint).fixedSize(horizontal: false, vertical: true)
     }
 
     private func send(deadline: @escaping (Int64) -> Int64, spot: Bool, toast: @escaping (Bool) -> String) {
@@ -189,12 +200,16 @@ struct HomeQuietRow: View {
     }
 }
 
-/// A clock message in the chat: what this phone will do about it, in words that claim no more than it knows.
+/// A clock message in the chat: what this phone will do about it, in words that claim no more than it knows. Another
+/// member's card promises "it tells you" only while this phone keeps that clock (`keeping`, item 9) and alerts are
+/// allowed for DarkProof (`alertsOn`; else "it shows here").
 struct QuietCard: View {
     let deadline: Int64 // 0: a stop
     let name: String?   // nil: this phone's own
     let time: String
     var spot: Spot? = nil
+    var keeping = true
+    var alertsOn = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -206,7 +221,7 @@ struct QuietCard: View {
                 Text(time).scaledFont(13).foregroundStyle(Theme.dim)
             }
             if deadline != 0 {
-                Text(QuietWords.startedSub(name, ends: Engine.hm(deadline))).scaledFont(15).foregroundStyle(Theme.dim)
+                Text(QuietWords.startedSub(name, ends: Engine.hm(deadline), keeping: keeping, alertsOn: alertsOn)).scaledFont(15).foregroundStyle(Theme.dim)
                     .fixedSize(horizontal: false, vertical: true).padding(.leading, 36)
             }
             if let spot { PlusCodeLabel(spot: spot).padding(.leading, 36) }

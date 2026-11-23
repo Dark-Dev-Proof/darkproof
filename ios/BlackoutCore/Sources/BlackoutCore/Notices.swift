@@ -56,23 +56,27 @@ public enum GroupTimer {
                      : "⏱ Messages here now disappear \(label(seconds)) after they reach each phone. Older DarkProof versions keep them 1 to 2 weeks."
     }
 
-    // What the screens say.
+    // What the screens say. A screen speaks for this phone only: other phones delete only if they run the latest
+    // DarkProof, so they are never spoken for as a fact.
 
-    /// Under the chat's title: "They disappear 1 day after they reach each phone." `highRisk`: this phone is in
-    /// high-risk mode, whose day counts unless the group's timer is shorter.
+    /// Under the chat's title: "This phone deletes them 1 day after they arrive. So do phones on the latest DarkProof."
+    /// `highRisk`: this phone is in high-risk mode, whose day counts unless the group's timer is shorter.
     public static func chatLine(_ seconds: Int?, highRisk: Bool = false) -> String {
         let timed = seconds.map { $0 > 0 } ?? false
         if highRisk && !(timed && seconds! <= Int(KeepsLess.keepMs / 1000)) { return "High-risk mode: they leave this phone 1 day after they arrive." }
-        guard let seconds, timed else { return "They disappear after one to two weeks." }
-        return "They disappear \(label(seconds)) after they reach each phone."
+        guard let seconds, timed else { return "They disappear after 1 to 2 weeks." }
+        return "This phone deletes them \(label(seconds)) after they arrive. So do phones on the latest DarkProof."
     }
+
+    /// Decision D: under the timer's choices, what the timer also deletes.
+    public static let alsoHelp = "This includes \"I need help\" calls and the positions sent with them."
 
     /// The "Messages disappear" row of Group security. `by`: who set it, as the reader sees them ("Anna", "you"), if this
     /// phone saw the change. `highRisk`: this phone is in high-risk mode, which removes after a day whatever the group says.
     public static func securityLine(_ seconds: Int?, by: String?, highRisk: Bool) -> String {
         let day = " On this phone, 1 day after they arrive."
-        guard let seconds else { return "Not known yet. Until an admin's key brings it, this phone keeps messages one to two weeks." + (highRisk ? day : "") }
-        guard seconds > 0 else { return "After one to two weeks" + (highRisk ? "." + day : "") }
+        guard let seconds else { return "Not known yet. Until an admin's key brings it, this phone keeps messages 1 to 2 weeks." + (highRisk ? day : "") }
+        guard seconds > 0 else { return "After 1 to 2 weeks" + (highRisk ? "." + day : "") }
         let line = "After \(label(seconds))" + (by.map { ", set by \($0)" } ?? "")
         return highRisk && seconds > Int(KeepsLess.keepMs / 1000) ? line + "." + day : line
     }
@@ -85,8 +89,8 @@ public enum GroupTimer {
 
     /// What someone who can't change it reads in the timer sheet.
     public static func sheetLine(_ seconds: Int?) -> String {
-        guard let seconds else { return "Not known on this phone yet. Until an admin's key brings it, messages stay one to two weeks." }
-        return seconds > 0 ? "Messages disappear \(label(seconds)) after they reach each phone." : "Messages disappear after one to two weeks."
+        guard let seconds else { return "Not known on this phone yet. Until an admin's key brings it, messages stay 1 to 2 weeks." }
+        return seconds > 0 ? "This phone deletes messages \(label(seconds)) after they arrive. So do phones on the latest DarkProof." : "Messages disappear after 1 to 2 weeks."
     }
 
     /// What tapping the row explains.
@@ -304,8 +308,9 @@ public struct QuietBook: Equatable, Sendable {
         /// Its alert waits with iOS for the deadline.
         public var scheduled: Bool
         /// For this phone's own clock: the members whose phones confirmed the clock message (delivery receipts), first
-        /// confirmation first. Kept here, not with the message, so "Kept by" outlives the message when the group's
-        /// timer deletes it. Ids only; the screen names them, and leaves out who isn't a member now.
+        /// confirmation first. Kept here, not with the message, so "Reached" outlives the message when the group's
+        /// timer deletes it. A receipt says only that the message reached that phone, not that the phone keeps the
+        /// clock. Ids only; the screen names them, and leaves out who isn't a member now.
         public var keepers: [String] = []
         /// Rule Q3: the greater `ts`; equal, the greater packet id; equal, the greater mark. Arrival order doesn't matter.
         public func beats(_ o: Clock) -> Bool { (ts, id, mark) > (o.ts, o.id, o.mark) }
@@ -389,6 +394,18 @@ public struct QuietBook: Equatable, Sendable {
         if let ci = checkIns[c.member], ci > c.ts { return ci >= c.deadline && within ? .checkedIn(at: ci, deadline: c.deadline) : nil }
         if now < c.deadline { return .running(deadline: c.deadline) }
         return within ? .ranOut(deadline: c.deadline) : nil
+    }
+
+    /// Whether this phone keeps the clock a chat card shows (the card of another member's clock message, deadline
+    /// `card`): only if the message checked (`verified`) and the clock this phone holds for that member, as `state`
+    /// says it, is armed with that deadline. A message that isn't checked, failed rule Q1 (never taken), lost to a newer
+    /// clock (Q3) or was cancelled by a check-in (Q4) is not kept: its card makes no promise.
+    public static func keeps(card: Int64, verified: Bool, state: State?) -> Bool {
+        guard verified, card != 0 else { return false }
+        switch state {
+        case .running(let d)?, .ranOut(let d)?: return d == card
+        case .checkedIn?, nil: return false
+        }
     }
 
     /// Rule Q9: `member` was removed by a removal that didn't follow a leave note of theirs: their clock goes without an
@@ -490,8 +507,12 @@ public struct QuietBook: Equatable, Sendable {
 /// anyone was told. Same as Android's.
 public enum QuietWords {
     public static let title = "If I go quiet"
-    public static let lead = "If you don't check in on time, the phones that got your clock tell their owners."
+    /// The screen's second name for it, once, under the title: what cards, alerts and People call it.
+    public static let subtitle = "A check-in clock"
+    public static let lead = "If you don't check in on time, the phones that got your clock can alert their owners."
     public static let sub = "It still works when your phone is off or gone. Only phones that got the clock can tell anyone."
+    /// Directly under the "Reached" list: a receipt also comes from a phone that only shows the message.
+    public static let olderOnly = "Phones on older DarkProof versions only show the message."
     public static let addWhere = "Add where I am"
     public static let addWhereSub = "Where you are now goes with the clock"
     public static let start = "Start the clock"
@@ -502,29 +523,38 @@ public enum QuietWords {
     public static func chip(_ minutes: Int) -> String { minutes < 60 ? "\(minutes) min" : minutes == 60 ? "1 hour" : "\(minutes / 60) hours" }
     public static func checkInBy(_ time: String) -> String { "Check in by \(time)" }
     public static func ends(_ time: String) -> String { "Ends \(time)" }
-    public static func ranOut(_ time: String) -> String { "Your clock ran out at \(time). Phones that kept it tell their owners." }
-    /// Who confirmed the clock message (delivery receipts), never the member list: only phones that got it can tell anyone.
-    public static func kept(_ names: [String]) -> String {
+    public static func ranOut(_ time: String) -> String { "Your clock ran out at \(time). Phones that have it can alert their owners." }
+    /// Who confirmed the clock message (delivery receipts), never the member list. A receipt means the message reached
+    /// that phone, nothing more: not that it keeps the clock (an older version, a computer or a phone with alerts off
+    /// confirms it too), so the words say "Reached", never "Kept by" (decision A).
+    public static func reached(_ names: [String]) -> String {
         switch names.count {
-        case 0: return "Not confirmed by any phone yet. If no phone has it, nobody is told."
-        case 1: return "Kept by \(names[0]) so far"
-        case 2: return "Kept by \(names[0]) and \(names[1]) so far"
-        default: return "Kept by \(names[0]), \(names[1]) and \(names.count - 2) more so far"
+        case 0: return "Not confirmed by any phone yet. Until a phone has it, nobody can be alerted."
+        case 1: return "Reached \(names[0])'s phone so far"
+        case 2: return "Reached \(names[0])'s and \(names[1])'s phones so far"
+        default: return "Reached \(names[0])'s, \(names[1])'s and \(names.count - 2) more phones so far"
         }
     }
     public static func cantWrite(_ group: String) -> String { "This phone isn't let in, so it can't send a clock to \(group)." }
     public static let shareOff = "To add where you are, turn on location sharing in Settings."
 
     // Toasts. `waiting`: no phone, radio or relay is in reach, so it waits on this phone.
-    public static func sent(waiting: Bool) -> String { waiting ? "The clock waits for a phone in range" : "Clock sent to your group" }
-    public static func added(waiting: Bool) -> String { waiting ? "30 minutes added. It waits for a phone in range" : "30 minutes added" }
-    public static func safeSent(waiting: Bool) -> String { waiting ? "“I'm safe” waits for a phone in range. The clock stopped here." : "“I'm safe” sent. The clock stopped." }
-    public static func stopped(waiting: Bool) -> String { waiting ? "Clock stopped. The message waits for a phone in range" : "Clock stopped" }
+    public static func sent(waiting: Bool) -> String { waiting ? "The clock waits for a phone in reach" : "Clock sent to your group" }
+    public static func added(waiting: Bool) -> String { waiting ? "30 minutes added. It waits for a phone in reach" : "30 minutes added" }
+    public static func safeSent(waiting: Bool) -> String { waiting ? "“I'm safe” waits for a phone in reach. The clock stopped here." : "“I'm safe” sent. The clock stopped." }
+    public static func stopped(waiting: Bool) -> String { waiting ? "Clock stopped. The message waits for a phone in reach" : "Clock stopped" }
 
     // The chat card. `name`: nil for this phone's own.
     public static func started(_ name: String?) -> String { name.map { "\($0) started a check-in clock" } ?? "You started a check-in clock" }
-    public static func startedSub(_ name: String?, ends time: String) -> String {
-        name.map { "If no check-in from \($0) reaches this phone by \(time), it tells you." } ?? "Ends \(time). Phones that got it tell their owners if you don't check in."
+    /// Item 9: the card of a clock this phone doesn't keep (`QuietBook.keeps(card:verified:state:)` false) promises nothing.
+    public static let notKeeping = "This phone isn't keeping this clock."
+    /// The line under the card. For another member's clock: `keeping`, this phone keeps it; `alertsOn`, alerts are
+    /// allowed for DarkProof on this phone, else it can only show it here.
+    public static func startedSub(_ name: String?, ends time: String, keeping: Bool = true, alertsOn: Bool = true) -> String {
+        guard let name else { return "Ends \(time). Phones that got it can alert their owners if you don't check in." }
+        guard keeping else { return notKeeping }
+        return alertsOn ? "If no check-in from \(name) reaches this phone by \(time), it tells you."
+                        : "If no check-in from \(name) reaches this phone by \(time), it shows here. Alerts are off for DarkProof."
     }
     public static func stoppedLine(_ name: String?) -> String { name.map { "\($0) stopped the check-in clock" } ?? "You stopped your check-in clock" }
 
@@ -672,7 +702,13 @@ public enum LeaveWords {
     public static let tellFirstSub = "Asks their admins' phones to remove this phone and change the key"
     public static let tellingTitle = "Telling your groups…"
     public static let eraseNow = "Erase now"
-    public static let empty = "This phone is empty"
+    /// The final screen's headline: only DarkProof is empty (photos saved to the library and the phone's own alert
+    /// history stay). When something is left, it is `notAllErased` with `deleteRest` instead, and never "empty".
+    public static let empty = "DarkProof is empty on this phone"
+    public static let notAllErased = "Not everything could be erased"
+    public static let deleteRest = "Delete DarkProof from this phone to remove the rest."
+    /// The final screen's headline. `left`: the check at the end found something still on the phone.
+    public static func finalTitle(left: Bool) -> String { left ? notAllErased : empty }
     /// The final screen's line, naming no group: the phone may be taken from its user at that moment. `sent`: notes
     /// sent; `left`: of those, how many a phone, radio or relay took in time. One note is said in the singular ("The
     /// note left this phone."), never "1 of 1 notes". Same words as Android's.

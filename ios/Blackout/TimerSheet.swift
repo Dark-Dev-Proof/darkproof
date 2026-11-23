@@ -25,6 +25,8 @@ struct TimerSheet: View {
                         }
                     }
                     .background(Theme.tile, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    // Decision D: what the timer also deletes, said where it is chosen.
+                    Text(GroupTimer.alsoHelp).scaledFont(15, .semibold).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true)
                     if let s = t.seconds, s > 0, !GroupTimer.choices.contains(s) { // set by another version: none of the rows has the check
                         Text("Now \(GroupTimer.label(s)).").scaledFont(15, .semibold).foregroundStyle(Theme.text)
                     } else if t.seconds == nil {
@@ -34,7 +36,7 @@ struct TimerSheet: View {
                         Text("Not changed. This phone doesn't have every member's keys yet. Try again when more phones are in reach.")
                             .scaledFont(15, .semibold).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true)
                     }
-                    Text("Counted from when a message reaches each phone. A new value starts deleting after 10 minutes. Phones on older DarkProof versions keep messages one to two weeks.")
+                    Text("Counted from when a message reaches each phone. A new value starts deleting after 10 minutes. Phones on older DarkProof versions keep messages 1 to 2 weeks.")
                         .scaledFont(14).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text(GroupTimer.sheetLine(t.seconds)).scaledFont(17).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true)
@@ -51,7 +53,7 @@ struct TimerSheet: View {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(seconds == 0 ? "Off" : GroupTimer.label(seconds)).scaledFont(17, .semibold).foregroundStyle(Theme.text)
-                    if seconds == 0 { Text("One to two weeks").scaledFont(14).foregroundStyle(Theme.dim) }
+                    if seconds == 0 { Text("1 to 2 weeks").scaledFont(14).foregroundStyle(Theme.dim) }
                 }
                 Spacer(minLength: 8)
                 if making == seconds { ProgressView().tint(Theme.text) }
@@ -62,7 +64,7 @@ struct TimerSheet: View {
         }
         .buttonStyle(.plain)
         .disabled(making != nil)
-        .accessibilityLabel(seconds == 0 ? "Off, one to two weeks" : GroupTimer.label(seconds))
+        .accessibilityLabel(seconds == 0 ? "Off, 1 to 2 weeks" : GroupTimer.label(seconds))
         .accessibilityAddTraits(current == seconds ? .isSelected : [])
     }
 

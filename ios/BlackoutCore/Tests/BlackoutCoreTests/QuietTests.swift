@@ -393,19 +393,19 @@ final class QuietTests: XCTestCase {
 
     /// Requirement 3: nothing claims more than the phone knows.
     func testTheWordingNeverClaimsMore() {
-        let all = [QuietWords.lead, QuietWords.sub, QuietWords.addWhereSub, QuietWords.kept([]), QuietWords.kept(["Marco"]), QuietWords.kept(["Marco", "Sara"]),
-                   QuietWords.kept(["Marco", "Sara", "Ben", "Lia"]), QuietWords.started("Anna"), QuietWords.startedSub("Anna", ends: "18:30"), QuietWords.startedSub(nil, ends: "18:30"),
+        let all = [QuietWords.lead, QuietWords.sub, QuietWords.addWhereSub, QuietWords.reached([]), QuietWords.reached(["Marco"]), QuietWords.reached(["Marco", "Sara"]),
+                   QuietWords.reached(["Marco", "Sara", "Ben", "Lia"]), QuietWords.started("Anna"), QuietWords.startedSub("Anna", ends: "18:30"), QuietWords.startedSub(nil, ends: "18:30"),
                    QuietWords.stoppedLine("Anna"), QuietWords.running("18:30"), QuietWords.overdue("18:30"), QuietWords.checkedIn("19:10"),
                    QuietWords.alertTitle("Anna", late: false, at: "18:30"), QuietWords.alertTitle("Anna", late: true, at: "18:30"),
                    QuietWords.alertBody("Anna", since: "17:30", late: true, position: "18:02"), QuietWords.hiddenTitle, QuietWords.hiddenBody,
                    QuietWords.banner("Anna", group: "My group"), QuietWords.remindTitle("18:30"), QuietWords.remindBody, QuietWords.remindHidden, QuietWords.ranOut("18:30")]
             + [true, false].flatMap { [QuietWords.sent(waiting: $0), QuietWords.added(waiting: $0), QuietWords.safeSent(waiting: $0), QuietWords.stopped(waiting: $0)] }
         for s in all { for bad in QuietWords.never { XCTAssertFalse(s.lowercased().contains(bad), "\(s) says \(bad)") } }
-        XCTAssertEqual(QuietWords.kept(["Marco", "Sara", "Ben", "Lia"]), "Kept by Marco, Sara and 2 more so far")
+        XCTAssertEqual(QuietWords.reached(["Marco", "Sara", "Ben", "Lia"]), "Reached Marco's, Sara's and 2 more phones so far")
         XCTAssertEqual(QuietWords.alertBody("Anna", since: "17:30", late: false, position: "18:02"),
                        "No check-in from Anna has reached this phone since 17:30. Anna's phone may just be out of reach. Last position known: 18:02.")
         XCTAssertEqual(QuietWords.hiddenBody, "A check-in clock in your group ran out. Open DarkProof.")
         XCTAssertFalse(QuietWords.hiddenBody.contains("Anna"))
-        XCTAssertEqual(QuietWords.lead, "If you don't check in on time, the phones that got your clock tell their owners.")
+        XCTAssertEqual(QuietWords.lead, "If you don't check in on time, the phones that got your clock can alert their owners.")
     }
 }

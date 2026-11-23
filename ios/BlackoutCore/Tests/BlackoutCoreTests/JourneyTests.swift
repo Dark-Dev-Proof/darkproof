@@ -168,7 +168,7 @@ final class JourneyTests: XCTestCase {
         // Confirmed, though this phone never noted handing it on (its list of those is limited): it left.
         XCTAssertEqual(Journey.steps(written: 1_000, handedOff: false, left: nil, readers: [readers[0]], now: 600_000).map(\.title), ["Left your phone", "Reached Marco"])
         XCTAssertEqual(Journey.sealed, "Sealed the whole way")
-        XCTAssertEqual(Journey.carried, "Carried by other phones on the way. They can't read it, and nobody sees whose they are.")
+        XCTAssertEqual(Journey.carried, "Carried by other phones on the way. They can't read it, and DarkProof never notes whose they are.")
     }
 
     // MARK: - What the writer's phone remembers

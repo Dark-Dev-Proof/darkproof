@@ -77,68 +77,93 @@ struct FinderSheet: View {
     let person: Person
     let code: String?
     @StateObject private var session: FinderSession
+    @State private var withThemSent = false // "I'm with Marco" goes once
+    @State private var over = false         // the search ended while the sheet was open: it stays ended (reopen to search again)
+    @Environment(\.dismiss) private var dismiss
 
     init(engine: Engine, person: Person, code: String?) {
         self.engine = engine; self.person = person; self.code = code
         _session = StateObject(wrappedValue: FinderSession(engine: engine, node: person.finder ?? ""))
     }
 
-    /// The person as the latest messages show them: "I'm safe" ends the search (F5).
+    /// The person as the latest messages show them: "I'm safe", or an "I need help" without the note, ends the search
+    /// (rules F5, F6), as on Android.
     private var now: Person { Person.all(in: engine.messages, me: engine.deviceId).first { $0.id == person.id } ?? person }
 
     var body: some View {
-        let p = now, name = person.name, band = session.reading.band
+        let p = now, name = person.name
         SheetPage(title: "Finding \(name)") {
-            VStack(spacing: 10) {
-                FinderRings(band: band)
-                    .padding(.bottom, 6)
-                Text(band.word).scaledFont(44, .heavy).foregroundStyle(band == .here ? Theme.safe : Theme.text)
-                    .accessibilityAddTraits(.updatesFrequently)
-                Text(p.checkIn == .safe ? "\(name) checked in safe." : band.hint(name))
-                    .scaledFont(16).foregroundStyle(Theme.dim).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
-                if band != .notInReach, let t = session.reading.trend {
-                    Text(t.words).scaledFont(15, .semibold).foregroundStyle(Theme.text)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .accessibilityElement(children: .combine)
-
-            if band == .notInReach, let why = reason(name) {
+            if FinderWords.searching(p) && !over { live(p, name) } else {
+                // Over: one card, no rings, no button; the readings and the screen-on lock stop (`onChange` below).
                 Card {
-                    Text(why).scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
-                    if engine.bluetooth == .poweredOff || engine.bluetooth == .unauthorized { OpenSettingsButton() }
+                    Text(FinderWords.ended(name, safe: p.checkIn == .safe)).scaledFont(16).foregroundStyle(Theme.dim)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        }
+        .onAppear { if FinderWords.searching(now) { session.start() } else { over = true } }
+        .onDisappear { session.stop() }
+        .onChange(of: FinderWords.searching(p)) { _, on in if !on { over = true; session.stop() } }
+    }
 
+    @ViewBuilder private func live(_ p: Person, _ name: String) -> some View {
+        let band = session.reading.band
+        VStack(spacing: 10) {
+            FinderRings(band: band)
+                .padding(.bottom, 6)
+            Text(band.word).scaledFont(44, .heavy).foregroundStyle(band == .here ? Theme.safe : Theme.text)
+                .accessibilityAddTraits(.updatesFrequently)
+            Text(band.hint(name))
+                .scaledFont(16).foregroundStyle(Theme.dim).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            if band != .notInReach, let t = session.reading.trend {
+                Text(t.words).scaledFont(15, .semibold).foregroundStyle(Theme.text)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .combine)
+
+        if band == .notInReach, let why = reason(name) {
             Card {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(p.checkIn == .safe ? "\(name) is safe" : "\(name) needs help").scaledFont(18, .bold).foregroundStyle(Theme.text)
-                    Spacer()
-                    if let c = p.checkIn { Chip(c.label, c.color) }
-                }
-                TimelineView(.periodic(from: .now, by: 30)) { t in
-                    Text("Asked \(ago(p.checkInTs, t.date))" + (p.battery.map { " · 🔋 \($0)%" } ?? ""))
-                        .scaledFont(15).foregroundStyle(Theme.dim)
-                }
+                Text(why).scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
+                if engine.bluetooth == .poweredOff || engine.bluetooth == .unauthorized { OpenSettingsButton() }
             }
+        }
 
-            Button("I'm with \(name)") {
-                engine.send("I'm with \(name)", group: code) // an ordinary message: never a check-in
-                Nav.shared.toast("Your group is told you're with \(name).")
+        Card {
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(name) needs help").scaledFont(18, .bold).foregroundStyle(Theme.text)
+                Spacer()
+                if let c = p.checkIn { Chip(c.label, c.color) }
+            }
+            TimelineView(.periodic(from: .now, by: 30)) { t in
+                Text("Asked \(ago(p.checkInTs, t.date))" + (p.battery.map { " · 🔋 \($0)%" } ?? ""))
+                    .scaledFont(15).foregroundStyle(Theme.dim)
+            }
+        }
+
+        // An ordinary group message, never a check-in. Once, and only from a phone that can write in the group; the
+        // toast says whether it left or waits on this phone, as on Android, and the sheet closes.
+        if engine.canTell(code) {
+            Button(FinderWords.withThem(name)) {
+                guard !withThemSent, engine.canTell(code) else { return }
+                withThemSent = true
+                let waiting = engine.reach == .none
+                engine.send(FinderWords.withThem(name), group: code)
+                Nav.shared.toast(FinderWords.withThemSent(group: engine.groupName(code), waiting: waiting))
+                dismiss()
             }
             .buttonStyle(PrimaryButton())
-
-            Text("Bluetooth can't tell direction, only stronger or weaker. Walls and people weaken it.")
-                .font(.footnote).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
-            #if DEBUG
-            Text("debug: \(session.faked ? "fake feed" : session.role.rawValue) · \(session.lastDbm.map { "\($0) dBm" } ?? "no reading")"
-                 + (session.reading.smoothed.map { String(format: " · S %.1f", $0) } ?? "") + " · \(session.node)")
-                .font(.caption2.monospaced()).foregroundStyle(Theme.faint)
-            #endif
+            .disabled(withThemSent)
         }
-        .onAppear { session.start() }
-        .onDisappear { session.stop() }
+
+        Text("Bluetooth can't tell direction, only stronger or weaker. Walls and people weaken it.")
+            .font(.footnote).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
+        #if DEBUG
+        Text("debug: \(session.faked ? "fake feed" : session.role.rawValue) · \(session.lastDbm.map { "\($0) dBm" } ?? "no reading")"
+             + (session.reading.smoothed.map { String(format: " · S %.1f", $0) } ?? "") + " · \(session.node)")
+            .font(.caption2.monospaced()).foregroundStyle(Theme.faint)
+        #endif
     }
 
     /// Why there is no reading (shown only while "Not in reach").
@@ -150,7 +175,7 @@ struct FinderSheet: View {
         case .central, .client: return nil
         case .none:
             if session.otherWay { return "Linked to \(name)'s phone, but not over Bluetooth, so the signal can't be measured." }
-            return "Finder works only when this phone and \(name)'s are linked by Bluetooth. If \(name)'s phone restarted after asking, it can't be recognised until it sends a new check-in."
+            return FinderWords.notLinked(name)
         }
     }
 }

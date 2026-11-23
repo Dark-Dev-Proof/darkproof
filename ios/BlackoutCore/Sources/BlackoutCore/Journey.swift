@@ -104,7 +104,9 @@ public enum Journey {
     }
 
     public static let sealed = "Sealed the whole way"
-    public static let carried = "Carried by other phones on the way. They can't read it, and nobody sees whose they are."
+    /// Not "nobody sees whose they are": a phone linked to a carrier, or a relay without Tor, can see an address. What
+    /// is true is that the message and the receipt name no carrier.
+    public static let carried = "Carried by other phones on the way. They can't read it, and DarkProof never notes whose they are."
     /// How long a packet is passed on (`MeshRouter`, spec "Forwarding rules").
     static let passedOnMs: Int64 = 7 * 24 * 3_600_000
 

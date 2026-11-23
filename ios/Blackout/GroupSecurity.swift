@@ -176,12 +176,12 @@ struct GroupSecuritySheet: View {
 
     @ViewBuilder private func torRow(_ s: GroupSecurityState) -> some View {
         switch s.tor {
-        case .on: SecurityRow(icon: "globe", title: "Internet through Tor", detail: "On") { OkMark() }
-        case .internetOff: SecurityRow(icon: "globe", title: "Internet through Tor", detail: "The internet is off") { EmptyView() }
+        case .on: SecurityRow(icon: "globe", title: "Connect through Tor", detail: "On") { OkMark() }
+        case .internetOff: SecurityRow(icon: "globe", title: "Connect through Tor", detail: "The internet is off") { EmptyView() }
         case .off:
-            SecurityRow(icon: "globe", title: "Internet through Tor", detail: "Off") {
+            SecurityRow(icon: "globe", title: "Connect through Tor", detail: "Off") {
                 Button("Switch on") { engine.setTor(true) }.buttonStyle(SmallButton())
-                    .accessibilityLabel("Switch on: Internet through Tor")
+                    .accessibilityLabel("Switch on: Connect through Tor")
             }
         }
     }
@@ -257,6 +257,7 @@ private struct SmallButton: ButtonStyle {
                 .scaledFont(15, .semibold).foregroundStyle(main ? Color.black : Theme.text)
                 .padding(.horizontal, 14).frame(minHeight: 36)
                 .background(main ? Color.white : Theme.tile, in: Capsule())
+                .frame(minHeight: 44).contentShape(Rectangle()).padding(.vertical, -4) // 44 pt to touch, laid out as 36
                 .opacity(enabled ? (configuration.isPressed ? 0.8 : 1) : 0.6)
         }
     }

@@ -4,7 +4,7 @@ import BlackoutCore
 extension Engine {
     /// What to tell the user once a message is queued: "Sent" only when something can carry it right now.
     func queuedToast(_ what: String) -> String {
-        let s = reach == .none ? "\(what) waits for a phone in range" : "Sent \(what)"
+        let s = reach == .none ? "\(what) waits for a phone in reach" : "Sent \(what)"
         return s.prefix(1).uppercased() + s.dropFirst()
     }
 }

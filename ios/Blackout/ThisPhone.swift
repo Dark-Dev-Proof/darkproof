@@ -200,18 +200,23 @@ private struct RedButton: ButtonStyle {
     }
 }
 
-/// After "Erase everything": the phone is empty, and what became of each group's note (`EraseResult`). Held in memory
-/// only; "Continue" goes on to the welcome screen.
+/// After "Erase everything": DarkProof is empty on this phone, and what became of each group's note (`EraseResult`).
+/// When the check at the end found something left (`left`), it says "Not everything could be erased" and how to remove
+/// the rest instead, never "empty". Held in memory only; "Continue" goes on to the welcome screen.
 struct EmptyScreen: View {
     let lines: [String]
+    var left = false
     let done: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
-            Image(systemName: "checkmark").scaledFont(30, .bold).foregroundStyle(Theme.text)
+            Image(systemName: left ? "exclamationmark" : "checkmark").scaledFont(30, .bold).foregroundStyle(Theme.text)
                 .frame(width: 84, height: 84).background(Circle().fill(Theme.tile)).accessibilityHidden(true)
-            Text(LeaveWords.empty).scaledFont(28, .heavy).foregroundStyle(Theme.text).multilineTextAlignment(.center).accessibilityAddTraits(.isHeader)
+            Text(LeaveWords.finalTitle(left: left)).scaledFont(28, .heavy).foregroundStyle(Theme.text).multilineTextAlignment(.center).accessibilityAddTraits(.isHeader)
+            if left {
+                Text(LeaveWords.deleteRest).scaledFont(17, .semibold).foregroundStyle(Theme.text).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(Array(lines.enumerated()), id: \.offset) { _, l in
                 Text(l).scaledFont(17).foregroundStyle(Theme.dim).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
