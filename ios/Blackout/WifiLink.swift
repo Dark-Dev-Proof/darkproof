@@ -257,7 +257,10 @@ final class WifiLink {
             guard dialing.count < LinkLimits.dials else { break }
             dialing.insert(node)
             let c = NWConnection(to: endpoint, using: Self.lanOnly)
-            run(c, dialed: true, local: true, ended: { [weak self] in self?.dialing.remove(node) })
+            // An attempt is over once the HELLOs are exchanged: a device that answers and then says nothing holds a link
+            // (limited per address), not one of the 8 places, so it can't stop this phone from dialing the others.
+            run(c, dialed: true, local: true, hello: { [weak self] _ in self?.dialing.remove(node) },
+                ended: { [weak self] in self?.dialing.remove(node) })
         }
     }
 

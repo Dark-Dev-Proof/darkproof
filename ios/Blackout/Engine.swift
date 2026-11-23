@@ -505,6 +505,9 @@ final class Engine: ObservableObject {
     @discardableResult private func learn(_ k: Keys, _ id: String, _ c: MemberKey.Checker, enc: Data? = nil, encAt: Int64 = 0, pq: Data? = nil, name who: String = "") -> Bool {
         if !k.isPublic, id != k.me, k.lock.withLock({ k.known[id] == nil }), !Joining.keeps(id, asking: asking(k), listed: k.ring.everyone(), me: k.me) { return false }
         let members = Set(k.members)
+        // The id is the hash of the key (spec "Member ids"): another key under an id known here is a made-up collision,
+        // never the same person. The first key stays, so the emoji someone compared keep standing for the key they compared.
+        if k.lock.withLock({ k.known[id].map { $0.checker.pub != c.pub } ?? false }) { return false }
         let (fresh, changed): (Bool, Bool) = k.lock.withLock {
             let had = k.known[id]
             let newer = enc != nil && EncSchedule.isNewer(known: had?.encAt ?? 0, ts: encAt)
@@ -1465,11 +1468,12 @@ final class Engine: ObservableObject {
             }
         }
         spent.forEach(saveMessageKeys)
+        // Dated more than 10 minutes ahead of this phone's clock: each passed that check when it came, so the clock has
+        // gone back since (a flat battery is enough). They stay stored, left out until the clock catches up: removing
+        // them emptied the store.
         if !future.isEmpty {
-            store.remove(future); more.remove(future)
-            history.remove(Set(future.map(Self.copyId)))
             #if DEBUG
-            DebugLog.write("store: removed \(future.count) packets dated in the future")
+            DebugLog.write("store: \(future.count) packets dated ahead of this phone's clock stay stored")
             #endif
         }
         if !goneCopies.isEmpty { history.remove(goneCopies) }

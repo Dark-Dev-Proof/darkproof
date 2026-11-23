@@ -73,7 +73,8 @@ class WifiLinks(private val nodeId: String, private val router: () -> MeshRouter
     private val byNode = ConcurrentHashMap<String, Link>()  // node id -> its current link
     private val sockets = ConcurrentHashMap.newKeySet<Socket>()
     private val count = AtomicInteger()
-    private val dialing = ConcurrentHashMap.newKeySet<String>()
+    private val dialing = ConcurrentHashMap.newKeySet<String>()  // attempts under way: at most [LinkLimits.DIALS]
+    private val dialedUp = ConcurrentHashMap.newKeySet<String>() // links this phone dialed that said HELLO: not dialed again while up
     private val listening = AtomicBoolean()
     private val manualGen = AtomicInteger()
     @Volatile private var server: ServerSocket? = null
@@ -135,7 +136,9 @@ class WifiLinks(private val nodeId: String, private val router: () -> MeshRouter
 
     /**
      * One attempt to link to a discovered device: only at an address on the local network (a DNS-SD answer can name
-     * any host), and at most 8 attempts at once.
+     * any host), and at most 8 attempts at once. An attempt is over once the HELLOs are exchanged: a device that answers
+     * and then says nothing holds a link (limited per address), not one of the 8 places, so it can't stop this phone
+     * from dialing the others.
      */
     fun dial(host: String, port: Int) {
         if (stopped) return
@@ -143,11 +146,11 @@ class WifiLinks(private val nodeId: String, private val router: () -> MeshRouter
         val at = try { java.net.InetAddress.getByName(host) } catch (_: IOException) { return }
         if (!local(at)) return
         val key = "$host:$port"
-        if (dialing.size >= LinkLimits.DIALS || !dialing.add(key)) return
+        if (key in dialedUp || dialing.size >= LinkLimits.DIALS || !dialing.add(key)) return
         thread(isDaemon = true, name = "wifi-dial") {
             val s = Socket()
-            try { s.connect(InetSocketAddress(at, port), 5_000); serve(s, dialed = true, gen) } catch (_: IOException) { quiet(s) }
-            finally { dialing.remove(key) }
+            try { s.connect(InetSocketAddress(at, port), 5_000); serve(s, dialed = true, gen) { dialedUp.add(key); dialing.remove(key) } } catch (_: IOException) { quiet(s) }
+            finally { dialing.remove(key); dialedUp.remove(key) }
         }
     }
 

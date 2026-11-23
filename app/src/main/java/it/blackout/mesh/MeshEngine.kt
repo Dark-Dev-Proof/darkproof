@@ -1101,6 +1101,9 @@ object MeshEngine {
      */
     private fun learn(k: Keys, id: String, pub: ByteArray, key: java.security.PublicKey, enc: ByteArray?, who: String, encAt: Long, pq: ByteArray?): Boolean {
         val members = k.members.toSet()
+        // The id is the hash of the key (spec "Member ids"): another key under an id known here is a made-up collision,
+        // never the same person. The first key stays, so the emoji someone compared keep standing for the key they compared.
+        if (synchronized(k.known) { k.known[id]?.pub?.contentEquals(pub) == false }) { DebugTools.log("another key under a known member id: ignored"); return false }
         // Someone who isn't in the group and isn't known here yet: kept only while there is room among those asking to join.
         if (!k.isPublic && id != k.me && synchronized(k.known) { !k.known.containsKey(id) } && !Joining.keeps(id, asking(k), k.ring.everyone(), k.me)) return false
         val (fresh, cur, changed) = synchronized(k.known) {
@@ -1441,11 +1444,13 @@ object MeshEngine {
     private fun doorKind(k: Keys, by: String, signed: Boolean) = StoreCap.door(signed && by == k.me, signed && k.ring.inGroup(by))
 
     /**
-     * Adds what [scan] found to what is shown (packets that arrived meanwhile stay, none shows twice), and removes
-     * packets dated more than 10 minutes ahead. Hold the messages lock.
+     * Adds what [scan] found to what is shown (packets that arrived meanwhile stay, none shows twice). Packets dated more
+     * than 10 minutes ahead of this phone's clock stay stored and are left out until the clock catches up: each passed
+     * that check when it came, so the clock has gone back since (a flat battery is enough), and removing them emptied
+     * the store. Hold the messages lock.
      */
     private fun apply(l: Loaded) {
-        if (l.future.isNotEmpty()) { delete(l.future); DebugTools.log("store: removed ${l.future.size} packets dated in the future") }
+        if (l.future.isNotEmpty()) DebugTools.log("store: ${l.future.size} packets dated ahead of this phone's clock stay stored")
         synchronized(ids) { mine += l.own; myReceipts += l.ownReceipts; l.receiptIds.forEach { receiptIds.add(it) } }
         val added = HashSet<String>()
         for (m in l.messages) {

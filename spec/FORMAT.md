@@ -73,7 +73,9 @@ have the same person in them, or match a person to a phone they see over Bluetoo
   app or resetting the phone makes new member keys, which the others see as a new key (see "Person emoji").
 - **Public key:** the 33-byte compressed point (SEC 1: `02` or `03`, then x).
 - **Member id:** the first 8 bytes of SHA-256(public key) as 16 lowercase hex chars. It goes in the `sender` field
-  of the member's messages, receipts and introductions in that group.
+  of the member's messages, receipts and introductions in that group. An introduction that brings another key under
+  a member id the phone already knows is ignored: the id is the hash of the key, so another key under it is a
+  made-up collision, and the first key stays.
 - Posts from the Wi-Fi board (Android) carry `web-` and the host phone's Public member id, and are signed with the
   host phone's Public member key: readers know they came through that phone, not who typed them. For forwarding they
   are other people's packets, not the host phone's own: on the relays they wait their turn with the packets it passes
@@ -1606,7 +1608,9 @@ spec/make-reply-vectors.py (argument `finder`).
   lower ttl is ignored. The ttl must rise each time, so one packet is forwarded again at most 15 times.
 - **Time:** a packet whose `ts` is more than 7 days old, or more than 10 minutes ahead of the receiver's clock, is
   dropped: not stored, shown or forwarded (it is not marked as seen, so it can come again later). Packets saved on the
-  phone that are more than 10 minutes in the future are removed when the app reads its store.
+  phone that are more than 10 minutes in the future stay saved and are left out (not shown, not passed on) until the
+  phone's clock catches up: each passed this check when it came, so the clock has gone back since, and removing them
+  would empty the store of a phone whose clock was set back.
 - **Passing on:** up to 500 packets, the newest of the last 7 days. All of them are sent to every newly connected
   peer, except the packets that peer brought itself: it has them, and what came from the relays must not go back up
   (see "Publish"). A packet another peer has since brought with a higher ttl does go to it.
