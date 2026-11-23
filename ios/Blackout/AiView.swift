@@ -26,6 +26,7 @@ struct AiView: View {
                 .accessibilityLabel("More: new conversation, AI model")
             }
             .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 8)
+            .backdropHeader()
 
             if !ai.selectedReady {
                 ScrollView {
@@ -85,7 +86,7 @@ struct AiView: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 10)
         }
-        .background(Theme.bg.ignoresSafeArea())
+        .tabBackdrop()
         .sheet(isPresented: $choosingModel) { ModelPicker(ai: ai) }
         .confirmationDialog("Start a new conversation?", isPresented: $confirmNew, titleVisibility: .visible) {
             Button("New conversation", role: .destructive) { ai.newConversation() }

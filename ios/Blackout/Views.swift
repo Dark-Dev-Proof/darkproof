@@ -332,7 +332,7 @@ struct HomeView: View {
             let people = wrote + engine.silentMembers(code, besides: wrote) // members who haven't written yet come last, as in People
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    header
+                    header.backdropHeader(above: 8)
                     SetupProblemCard(engine: engine)
                     hero
                     HomeSecurityRow(engine: engine)
@@ -368,7 +368,7 @@ struct HomeView: View {
                 }
                 .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 24)
             }
-            .background(Theme.bg.ignoresSafeArea())
+            .tabBackdrop()
         }
         .sensoryFeedback(.success, trigger: safeSent) // the sent moment's one haptic, also when calm
     }
@@ -708,6 +708,7 @@ struct ChatView: View {
                 }
             }
             .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 8)
+            .backdropHeader()
 
             if list.isEmpty {
                 // With a timer, or in high-risk mode, an empty chat may be one whose messages have left: it doesn't say "yet".
@@ -810,7 +811,7 @@ struct ChatView: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 10) }
         }
-        .background(Theme.bg.ignoresSafeArea())
+        .tabBackdrop()
         .onChange(of: toPublic) { _ in replyingTo = nil } // a reply belongs to the chat it was started in
         .onChange(of: code) { _ in replyingTo = nil }
         .modifier(VoiceHooks(voice: voice, place: "\(toPublic)|\(code)", shown: phase == .active && nav.tab == .chat, send: sendVoice))
@@ -1383,7 +1384,18 @@ struct SheetPage<Content: View>: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView { VStack(alignment: .leading, spacing: 16) { content() }.padding(20) }
+            ScrollViewReader { proxy in
+                ScrollView { VStack(alignment: .leading, spacing: 16) { content() }.padding(20) }
+                #if DEBUG
+                    // `scrollTo background`, with `sheet settings`: opens Settings at its Background section, for pictures.
+                    .onAppear {
+                        let args = CommandLine.arguments
+                        if let i = args.firstIndex(of: "scrollTo"), args.indices.contains(i + 1) {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { proxy.scrollTo(args[i + 1], anchor: .top) }
+                        }
+                    }
+                #endif
+            }
                 .scrollDismissesKeyboard(.interactively)
                 .background(Theme.bg.ignoresSafeArea())
                 .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
