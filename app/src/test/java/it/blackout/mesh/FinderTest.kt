@@ -107,14 +107,15 @@ class FinderTest {
         assertFalse("a computer has no Bluetooth links", FinderPrefs.writes(findable = true, highRisk = false, bluetooth = false))
     }
 
-    // MARK: - Radio first (F4, vectors F-V3 and F-V4)
+    // MARK: - Radio first (F3, vectors finder-fit)
 
     @Test fun theNoteNeverKeepsACheckInOffARadio() {
         assertTrue(FinderNote.keeps(150, 161))
-        assertFalse(FinderNote.keeps(163, 164))   // MeshCore
-        assertTrue(FinderNote.keeps(164, 175))    // past MeshCore either way, under Meshtastic either way
-        assertFalse(FinderNote.keeps(233, 234))   // Meshtastic
-        assertTrue(FinderNote.keeps(240, 251))    // past every radio either way
+        assertTrue(FinderNote.keeps(152, 163))    // exactly 163 with the note
+        assertFalse(FinderNote.keeps(163, 164))   // MeshCore's 163 bytes
+        assertTrue(FinderNote.keeps(164, 175))    // past 163 either way
+        assertTrue("163 is the only limit (spec F3)", FinderNote.keeps(233, 234))
+        assertTrue(FinderNote.keeps(240, 251))
     }
 
     @Test fun radioFirstWithTodaysSizes() {
@@ -124,13 +125,12 @@ class FinderTest {
         assertNull(FinderNote.radioFirst(note, sender, "Al", short, keyed = true))
         // Sealed with the epoch's key it is 3 bytes smaller: 150, and 161 with the note, which still fits.
         assertArrayEquals(note, FinderNote.radioFirst(note, sender, "Al", short, keyed = false))
-        // The spec's example check-in (85 bytes) from an 11-byte name: 231 bytes, 242 with the note: Meshtastic keeps it without.
+        // The spec's example check-in (85 bytes) from an 11-byte name: 231 bytes, past 163 either way, so with the note.
         val example = "🆘 I need help: injured, water · 👥 3 · 🔋 23% · 📍 45.46420,9.19000 ±12m"
         assertEquals(85, utf8(example).size)
-        assertNull(FinderNote.radioFirst(note, sender, "Marco Rossi", example, keyed = true))
-        // From a 14-byte name it doesn't fit Meshtastic even without the note: then the note goes with it.
+        assertArrayEquals(note, FinderNote.radioFirst(note, sender, "Marco Rossi", example, keyed = true))
         assertArrayEquals(note, FinderNote.radioFirst(note, sender, "Marco Rossi 14", example, keyed = true))
-        // A typical help check-in without a position (54 bytes) from a 5-byte name: past MeshCore and within Meshtastic either way, so with the note.
+        // A typical help check-in without a position (54 bytes) from a 5-byte name: past 163 either way, so with the note.
         val typical = CheckIn.HELP.text(23, null, setOf(Need.INJURED, Need.WATER), 3)
         assertArrayEquals(note, FinderNote.radioFirst(note, sender, "Marco", typical, keyed = true))
     }
@@ -207,12 +207,15 @@ class FinderTest {
     @Test fun steadyAndFar() {
         val s = steps(*run(5, -90))
         assertEquals(List(5) { F }, s.map { it.band })
-        assertTrue(s.all { it.ticks == 5 && it.trend == FinderMath.Trend.STEADY && it.smoothed == -90.0 })
+        assertTrue(s.all { it.ticks == 5 && it.smoothed == -90.0 })
+        assertTrue("no trend before there are 5 seconds before (F12)", s.all { it.trend == null })
+        assertEquals(FinderMath.Trend.STEADY, steps(*run(6, -90)).last().trend)
     }
 
-    /** "Here" needs S at −60 or more on 3 readings in a row: the first two are "Very close". */
+    /** "Here" needs S at −60 or more for 3 seconds in a row: the first two are "Very close". */
     @Test fun hereNeedsThreeSeconds() {
         assertEquals(listOf(V, V, H, H), bands(*run(4, -55)))
+        assertEquals("seconds count, also without a reading (S stays)", listOf(V, V, H), bands(-55, null, null))
         assertEquals(36, steps(*run(3, -55)).last().ticks)
     }
 
@@ -264,7 +267,7 @@ class FinderTest {
         assertEquals(FinderMath.Trend.WEAKER, trend(*run(5, -80), *run(5, -90)))
         assertEquals(FinderMath.Trend.STEADY, trend(*run(5, -80), *run(5, -78)))
         assertEquals("exactly 4 dB", FinderMath.Trend.STRONGER, trend(*run(5, -84), *run(5, -80)))
-        assertEquals("nothing before: steady", FinderMath.Trend.STEADY, trend(*run(4, -90), -60))
+        assertNull("nothing before: no trend", trend(*run(4, -90), -60))
         assertEquals(FinderMath.Trend.STRONGER, trend(*run(5, -90), null, null, -80, null, -80))
     }
 
@@ -289,15 +292,22 @@ class FinderTest {
         assertEquals("I'm with Marco", FinderWords.withThem("Marco"))
         assertNull("never a check-in", CheckIn.of(FinderWords.withThem("Marco")))
         val near = FinderMath.Step(9, N, FinderMath.Trend.STRONGER, -75.0, 18)
-        FinderWords.shown("Marco", FinderReach.BLUETOOTH, FinderRole.CENTRAL, near).let { assertEquals("Near", it.word); assertEquals("Signal getting stronger", it.line); assertNull(it.note); assertEquals(2, it.level) }
-        FinderWords.shown("Marco", FinderReach.BLUETOOTH, FinderRole.CENTRAL, FinderMath.Step(9, H, FinderMath.Trend.STEADY, -55.0, 36)).let { assertTrue(it.here); assertEquals(4, it.level) }
+        FinderWords.shown("Marco", FinderReach.BLUETOOTH, FinderRole.CENTRAL, near).let {
+            assertEquals("Near", it.word); assertEquals("Keep going the way the signal gets stronger.", it.line); assertEquals("Signal getting stronger", it.trend)
+            assertNull(it.note); assertEquals(2, it.level)
+        }
+        FinderWords.shown("Marco", FinderReach.BLUETOOTH, FinderRole.CENTRAL, FinderMath.Step(9, H, FinderMath.Trend.STEADY, -55.0, 36)).let { assertTrue(it.here); assertEquals(4, it.level); assertEquals("Signal steady", it.trend) }
+        // The spec's lines, one per band (spec "What the screens say").
+        assertEquals(listOf("Keep moving.", "Keep walking and watch the signal.", "Keep going the way the signal gets stronger.",
+            "Within a few rooms. Call out and listen.", "Within a few steps. Look around."), FinderMath.Band.entries.map(FinderWords::line))
+        assertNull("no trend line yet", FinderWords.shown("Marco", FinderReach.BLUETOOTH, FinderRole.CENTRAL, FinderMath.Step(3, F, null, -88.0, 5)).trend)
         FinderWords.shown("Marco", FinderReach.NONE, FinderRole.NONE, null).let { assertEquals("Not in reach", it.word); assertTrue(it.note!!.contains("linked by Bluetooth")) }
         FinderWords.shown("Marco", FinderReach.OTHER, FinderRole.NONE, null).let { assertEquals("Linked", it.word); assertTrue(it.note!!.contains("not over Bluetooth")) }
         FinderWords.shown("Marco", FinderReach.BLUETOOTH, FinderRole.FAILED, near).let { assertEquals("Linked", it.word); assertTrue(it.note!!.contains("can't measure")) }
         FinderWords.shown("Marco", FinderReach.BLUETOOTH, FinderRole.CENTRAL, FinderMath.Step(9, X, null, null, 0)).let { assertEquals("This phone hasn't heard Marco's phone yet.", it.note) }
         // No metres anywhere (decision 4): no number with a unit, no "metre".
         val all = FinderReach.entries.flatMap { r -> FinderRole.entries.flatMap { ro -> listOf(null, near).map { FinderWords.shown("Marco", r, ro, it) } } }
-            .flatMap { listOfNotNull(it.word, it.line, it.note) } + FinderWords.FINE_PRINT + FinderWords.desktop("Marco")
+            .flatMap { listOfNotNull(it.word, it.line, it.note, it.trend) } + FinderWords.FINE_PRINT + FinderWords.desktop("Marco")
         all.forEach { assertFalse(it, Regex("metre|meter|\\d\\s?m\\b|\\bft\\b").containsMatchIn(it)) }
     }
 

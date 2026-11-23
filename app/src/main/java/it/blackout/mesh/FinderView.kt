@@ -26,7 +26,7 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 // The Finder screen (board piece 9, "Finding Marco"): a ring of ticks that light up with the signal, rings for the band,
-// the band's word and the trend under it, and a card with the person, the fine print and "I'm with Marco". No metres, no
+// the band's word and its line, the trend under the ring, and a card with the person, the fine print and "I'm with Marco". No metres, no
 // animation that runs by itself: the screen changes only when a reading does, and in calm mode it simply changes.
 // Shown only while the trial switch is on (FinderPrefs.trial). The desktop shows the same screen with a line saying
 // Finder needs a phone's Bluetooth instead of the ring.
@@ -104,11 +104,13 @@ private fun LiveFinder(p: Person, link: String, withThem: () -> Unit) {
     FinderBody(shown, FinderAsker.of(p), debug, withThem)
 }
 
-/** The Finder screen at one moment, as drawn (also by the desktop's screenshot test): the ring, a note, then the person's card. */
+/** The Finder screen at one moment, as drawn (also by the desktop's screenshot test): the ring, the trend, a note, then the person's card. */
 @Composable
 fun FinderBody(shown: FinderWords.Shown, asker: FinderAsker, debug: String? = null, withThem: (() -> Unit)?) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         FinderRing(shown)
+        // The trend, outside the ring's live region: TalkBack says the band when it changes, not every second (spec "Finder").
+        shown.trend?.let { Txt(it, 15, FontWeight.SemiBold, Theme.text, align = TextAlign.Center) }
         shown.note?.let { Txt(it, 15, color = Theme.dim, align = TextAlign.Center) }
         debug?.let { Txt(it, 12, color = Theme.faint, align = TextAlign.Center, maxLines = 2) }
     }

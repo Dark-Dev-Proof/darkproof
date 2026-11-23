@@ -1458,7 +1458,8 @@ and a number of metres would be trusted and wrong.
   reports (`👤`), "Are you safe?", replies or reactions.
 - **F3. Radio first:** if the packet would fit 163 bytes (MeshCore) without the note and not with it, the note is left
   out. The note adds 11 bytes (the empty 4th field's length, the 5th field's length, 7); see "Needs and head count"
-  for the rest of the packet. A check-in with a battery level never fits 163 bytes, so it always carries the note.
+  for the rest of the packet. A check-in with a battery level fits 163 bytes only with a name of a few bytes at most,
+  so it nearly always carries the note.
 - **F4. Readers** take it only from a group message that opened with a group's key and whose signature checked for a
   member of that epoch, only when the text starts with `🆘`, the field is exactly 7 bytes and its type is `0x06`.
   Anything else in the 5th field is ignored (see "The 5th field"). Until the signature checks, nothing is taken. The

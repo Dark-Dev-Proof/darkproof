@@ -30,7 +30,7 @@ val shared = listOf(
 // The Android app's unit tests: all of them run again here, on a desktop JVM with no Android.
 val sharedTests = listOf(
     "AboutTest", "AppLockFixTest", "ArrivalsTest", "AuthorshipTest", "BleProtocolTest", "CheckInExtrasTest", "CoreTest", "DoorStoreFixTest",
-    "FaultTest", "FinderTest", "FirstCopyTest", "FormatVectorsTest", "HighRiskTest", "HpkeTest", "HybridTest", "InviteFixTest", "JourneyTest", "KeyChangesTest",
+    "FaultTest", "FinderTest", "FinderVectorsTest", "FirstCopyTest", "FormatVectorsTest", "HighRiskTest", "HpkeTest", "HybridTest", "InviteFixTest", "JourneyTest", "KeyChangesTest",
     "KeyringTest", "LeaveTest", "LeaveVectorsTest", "LinkLimitsFixTest", "MeshCoreTest", "MessageKeysTest", "MiscFixTest", "NostrTest",
     "PaddingTest", "PersonCodeTest", "PlusCodeTest", "PrivacyTest", "ProtocolTest", "QuietVectorsTest", "RekeyTest", "RelayAttackTest", "RelayIntakeTest",
     "RelayLimitsFixTest", "RelayLinksTest", "RepliesVectorsTest", "SchnorrTest", "ScryptTest", "SecurityWordsTest", "SharedVectorsTest", "StoredDataFixTest",

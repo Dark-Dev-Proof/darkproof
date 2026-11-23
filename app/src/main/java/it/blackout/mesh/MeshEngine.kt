@@ -1170,14 +1170,14 @@ object MeshEngine {
      * before names a phone nobody can find any more. Once per start, in each saved group whose newest check-in from this
      * phone is "I need help", under 24 hours old, it goes again ([FinderResend]) with a fresh battery level and, if location
      * sharing is on, the last known position; at most every 10 minutes per group. Only where the note is written
-     * ([FinderPrefs.writes]) and, while Finder is a trial, only with the trial switch on: without Finder a re-send would only
-     * alert the group again. Background thread.
+     * ([FinderPrefs.writes]: the switch on, high-risk mode off), whatever the trial switch says, as on the iPhone (spec
+     * rule F6: the trial hides only the Finder screen). It alerts the group again, as any "I need help" does. Background thread.
      */
     private fun resendHelpOnce(groups: List<Keys>) {
         if (helpLookedAt || stopped) return
         helpLookedAt = true
         val c = app ?: return
-        if (!FinderPrefs.writes(c) || !FinderPrefs.trial(c)) return
+        if (!FinderPrefs.writes(c)) return
         val prefs = c.getSharedPreferences("mesh", 0); val now = System.currentTimeMillis()
         for (k in groups) {
             if (k.isPublic || k.removed || !k.joined || k.code == leaving) continue

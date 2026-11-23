@@ -23,8 +23,8 @@ object FinderNote {
     const val SIZE = 7
     /** What the 4th and 5th fields add to a check-in: an empty 4th (2), the 5th's length (2), the note (7). */
     const val COST = 2 + 2 + SIZE
-    /** The LoRa limits a check-in is kept under first (MeshCore 163, Meshtastic 233): reaching a radio matters more than Finder. */
-    val RADIO_LIMITS = intArrayOf(MeshCore.PAYLOAD_MAX, Meshtastic.PAYLOAD_MAX)
+    /** The LoRa limit a check-in is kept under first (MeshCore's 163 bytes, spec rule F3): reaching a radio matters more than Finder. */
+    const val RADIO_LIMIT = MeshCore.PAYLOAD_MAX
 
     /** True for a link id as HELLO carries it: 12 lowercase hex characters. */
     fun isLinkId(s: String) = s.length == 12 && s.all { it in '0'..'9' || it in 'a'..'f' }
@@ -51,10 +51,9 @@ object FinderNote {
         !public && !board && !photo && !voice && !about && CheckIn.of(text) == CheckIn.HELP
 
     /**
-     * Rule F4, radio first: [note] for a check-in with these fields, or null when the note alone would push its packet past
-     * a LoRa limit it fits without the note. [keyed]: sealed with a message key, whose header adds 3 bytes. A packet that
-     * doesn't fit a limit either way keeps the note. The decisions name 163 bytes; 233 is checked the same way, because
-     * with today's sizes a check-in with a position (the brief's example) is at that limit, not at 163.
+     * Rule F3, radio first: [note] for a check-in with these fields, or null when the note alone would push its packet past
+     * 163 bytes (MeshCore) while it fits without the note. [keyed]: sealed with a message key, whose header adds 3 bytes.
+     * A packet that doesn't fit either way keeps the note. Same as the iPhone's (vectors `kind: finder-fit`).
      */
     fun radioFirst(note: ByteArray, sender: String, name: String, text: String, keyed: Boolean): ByteArray? {
         val over = Packet.OVERHEAD + if (keyed) 3 else 0
@@ -63,8 +62,8 @@ object FinderNote {
         return note.takeIf { keeps(without, with) }
     }
 
-    /** F4 on whole packet sizes before padding: false when [without] fits a LoRa limit and [with] doesn't. */
-    fun keeps(without: Int, with: Int): Boolean = RADIO_LIMITS.none { without <= it && with > it }
+    /** F3 on whole packet sizes before padding: false when [without] fits 163 bytes and [with] doesn't. */
+    fun keeps(without: Int, with: Int): Boolean = !(without <= RADIO_LIMIT && with > RADIO_LIMIT)
 }
 
 /** How this phone is linked to the asker's phone right now (rule F7). */
@@ -94,17 +93,18 @@ enum class FinderRole(val word: String) {
  * From signal readings to an honest reading (decision 4, brief F14 and F18 to F22). No metres anywhere. Pure, so the
  * phone, the desktop and the iPhone give the same word and trend for the same list of readings.
  *
- * Each second the screen takes at most one reading (dBm, or none):
- * - A reading outside −110…−20 dBm (127 and 0 are the "unavailable" values) counts as none (F14).
- * - Readings older than 10 s are forgotten; with no reading for 10 s the word is "Not in reach" and everything starts
- *   again (F22).
- * - On each new reading: m = median of the last 5 readings kept (the mean of the middle two for an even count);
- *   S = m for the first, else S = 0.3·m + 0.7·S before (F18).
- * - Bands on S (F19): below −82 Far, from −82 Near, from −70 Very close, from −60 Here. Going up is at once, except Here,
- *   which needs S ≥ −60 on 3 readings in a row. Going down a band needs S 3 dB below that band's lower edge.
- * - Trend (F20): the mean of the readings of the last 5 s against the mean of those of the 5 s before: +4 dB or more
- *   stronger, −4 dB or less weaker, else steady (also while the 5 s before have none).
- * - Ring (F21): round(clamp((S + 95) / 40, 0, 1) × 36) lit ticks; none when not in reach.
+ * Each second the screen takes at most one reading (dBm, or none); spec/FORMAT.md "Finder", rules F7 to F12, the same
+ * as the iPhone's FinderMeter (vectors `kind: finder-bands`):
+ * - F7: a reading outside −110…−20 dBm (127 and 0 are the "unavailable" values) counts as none.
+ * - F8: readings 10 s old are forgotten; with no reading for 10 s the word is "Not in reach" and everything starts again.
+ * - F9: at a second with a reading, m = the median of the readings of the last 5 seconds (the mean of the middle two
+ *   for an even count); S = m for the first, else S = 0.3·m + 0.7·S before. At a second without a reading S stays.
+ * - F10, F11: bands on S: below −82 Far, from −82 Near, from −70 Very close, from −60 Here. Going up is at once, except
+ *   Here, which needs S ≥ −60 for 3 seconds in a row. Going down needs S more than 3 dB below the band's lower edge,
+ *   and then goes to the level of S. Checked every second.
+ * - F12: trend: the mean of the readings of the last 5 s against the mean of those of the 5 s before: +4 dB or more
+ *   stronger, −4 dB or less weaker, else steady; none while either has no reading.
+ * - Ring: round(clamp((S + 95) / 40, 0, 1) × 36) lit ticks; none when not in reach.
  */
 object FinderMath {
     const val MIN_DBM = -110
@@ -122,14 +122,16 @@ object FinderMath {
     const val TREND_DB = 4.0
     const val TICKS = 36
 
-    enum class Band(val word: String, val level: Int) {
-        NOT_IN_REACH("Not in reach", 0), FAR("Far", 1), NEAR("Near", 2), VERY_CLOSE("Very close", 3), HERE("Here", 4);
+    /** [code]: the letter in vectors `kind: finder-bands`. */
+    enum class Band(val word: String, val level: Int, val code: Char) {
+        NOT_IN_REACH("Not in reach", 0, '-'), FAR("Far", 1, 'F'), NEAR("Near", 2, 'N'), VERY_CLOSE("Very close", 3, 'V'), HERE("Here", 4, 'H');
         companion object { fun of(level: Int) = entries.first { it.level == level } }
     }
 
-    enum class Trend(val line: String) { STRONGER("Signal getting stronger"), WEAKER("Signal getting weaker"), STEADY("Signal steady") }
+    /** [code]: the sign in vectors `kind: finder-bands`. */
+    enum class Trend(val line: String, val code: Char) { STRONGER("Signal getting stronger", '+'), WEAKER("Signal getting weaker", '-'), STEADY("Signal steady", '=') }
 
-    /** What the screen shows at one second. [trend] and [smoothed] are null while not in reach; [ticks] is 0 then. */
+    /** What the screen shows at one second. [smoothed] is null while not in reach, [trend] also while there is none yet; [ticks] is 0 then. */
     data class Step(val second: Long, val band: Band, val trend: Trend?, val smoothed: Double?, val ticks: Int)
 
     /** F14: a reading worth keeping. */
@@ -145,54 +147,48 @@ object FinderMath {
     /** F21: the lit ticks of the ring for smoothed value [s]. */
     fun ticks(s: Double?): Int = if (s == null) 0 else Math.round(((s + 95.0) / 40.0).coerceIn(0.0, 1.0) * TICKS).toInt()
 
-    /** The band S alone points to, Here only after [hold] readings in a row at it. */
-    private fun raw(s: Double, hold: Int): Int = when {
-        s >= HERE_FROM -> if (hold >= HERE_HOLD) 4 else 3
-        s >= VERY_CLOSE_FROM -> 3
-        s >= NEAR_FROM -> 2
-        else -> 1
-    }
+    /** F10: the level a smoothed value falls in (1 Far to 4 Here). */
+    private fun levelOf(s: Double): Int = when { s >= HERE_FROM -> 4; s >= VERY_CLOSE_FROM -> 3; s >= NEAR_FROM -> 2; else -> 1 }
 
+    /** F11: the lower edge of a level, which a band is left downwards only [MARGIN] below. */
     private fun lowerEdge(level: Int): Double = when (level) { 4 -> HERE_FROM.toDouble(); 3 -> VERY_CLOSE_FROM.toDouble(); 2 -> NEAR_FROM.toDouble(); else -> Double.NEGATIVE_INFINITY }
-
-    /** The band after a new S: up at once (Here with its hold), down only past the margin, one band at a time as far as S goes. */
-    internal fun next(level: Int, s: Double, hold: Int): Int {
-        val r = raw(s, hold)
-        if (level == 0 || r > level) return r
-        var l = level
-        while (l > 1 && s < lowerEdge(l) - MARGIN) l--
-        return maxOf(l, r)
-    }
 
     /** The readings of one Finder screen, second by second. Not thread-safe: one screen's ticker feeds it. */
     class Tracker {
         private val kept = ArrayDeque<Pair<Long, Int>>() // (second, dBm) of the valid readings of the last 10 s
         private var s: Double? = null
-        private var level = 0
-        private var hold = 0
-        private var last: Long? = null
+        private var level = 0 // 0: no band yet
+        private var hold = 0  // seconds in a row with S at Here's edge or above
 
         /** Second [second] (one more than the last, or later), with the reading taken in it ([dbm]: null for none). */
         fun step(second: Long, dbm: Int?): Step {
             val fresh = dbm != null && valid(dbm)
-            if (dbm != null && fresh) { kept.addLast(second to dbm); last = second }
-            while (kept.isNotEmpty() && second - kept.first().first >= GAP_S) kept.removeFirst()
-            val l = last
-            if (l == null || second - l >= GAP_S) { kept.clear(); s = null; level = 0; hold = 0; last = null; return Step(second, Band.NOT_IN_REACH, null, null, 0) }
+            if (fresh) kept.addLast(second to dbm!!)
+            while (kept.isNotEmpty() && second - kept.first().first >= GAP_S) kept.removeFirst() // F8: only the last 10 s
+            if (kept.isEmpty()) { s = null; level = 0; hold = 0; return Step(second, Band.NOT_IN_REACH, null, null, 0) }
+            // F9: at a second with a reading, the median of the last 5 seconds' readings, then the exponential average.
             if (fresh) {
-                val m = median(kept.toList().takeLast(MEDIAN_OF).map { it.second })
-                val now = s?.let { 0.3 * m + 0.7 * it } ?: m
-                s = now
-                hold = if (now >= HERE_FROM) hold + 1 else 0
-                level = next(level, now, hold)
+                val m = median(kept.filter { second - it.first < MEDIAN_OF }.map { it.second })
+                s = s?.let { 0.3 * m + 0.7 * it } ?: m
             }
-            return Step(second, Band.of(level), trend(second), s, ticks(s))
+            val now = s ?: kept.last().second.toDouble()
+            // F11: Here only after 3 seconds in a row at its edge; up at once, down only past the margin and then to S's level.
+            hold = if (now >= HERE_FROM) hold + 1 else 0
+            val at = levelOf(now)
+            val target = minOf(at, if (hold >= HERE_HOLD) 4 else 3)
+            level = when {
+                level == 0 || target > level -> target
+                at < level && now < lowerEdge(level) - MARGIN -> at
+                else -> level
+            }
+            return Step(second, Band.of(level), trend(second), now, ticks(now))
         }
 
-        private fun trend(second: Long): Trend {
+        /** F12: the last 5 seconds' readings against the 5 before; none while either has no reading. */
+        private fun trend(second: Long): Trend? {
             val recent = kept.filter { second - it.first < TREND_S }.map { it.second }
             val before = kept.filter { second - it.first >= TREND_S }.map { it.second }
-            if (recent.isEmpty() || before.isEmpty()) return Trend.STEADY
+            if (recent.isEmpty() || before.isEmpty()) return null
             val d = recent.average() - before.average()
             return when { d >= TREND_DB -> Trend.STRONGER; d <= -TREND_DB -> Trend.WEAKER; else -> Trend.STEADY }
         }
@@ -271,22 +267,31 @@ object FinderWords {
     fun desktop(name: String) = "Finder needs a phone's Bluetooth. Search from DarkProof on a phone near $name."
     fun ended(name: String, safe: Boolean) = if (safe) "$name is safe" else "$name's phone can't be found by Bluetooth right now. A new “I need help” from $name makes it findable again."
 
+    /** The line under a band's word (spec "What the screens say"); Not in reach's is "Keep moving." with the rest in the note. */
+    fun line(band: FinderMath.Band): String = when (band) {
+        FinderMath.Band.NOT_IN_REACH -> "Keep moving."
+        FinderMath.Band.FAR -> "Keep walking and watch the signal."
+        FinderMath.Band.NEAR -> "Keep going the way the signal gets stronger."
+        FinderMath.Band.VERY_CLOSE -> "Within a few rooms. Call out and listen."
+        FinderMath.Band.HERE -> "Within a few steps. Look around."
+    }
+
     /**
-     * What the ring and the lines under it say: [word] big in the ring, [line] small under it in the ring, [note] longer,
-     * under the ring (null for none). [level]: 0 to 4, for the band rings. [here]: the green state.
+     * What the ring and the lines under it say: [word] big in the ring, [line] small under it in the ring, [trend] under the
+     * ring (null while there is none, F12), [note] longer, under that (null for none). [level]: 0 to 4, for the band rings.
+     * [here]: the green state.
      */
-    data class Shown(val word: String, val line: String, val note: String?, val ticks: Int, val level: Int, val here: Boolean)
+    data class Shown(val word: String, val line: String, val note: String?, val ticks: Int, val level: Int, val here: Boolean, val trend: String? = null)
 
     /** The screen at one moment, from how the phones are linked ([reach]), how the signal is read ([role]) and the step. */
     fun shown(name: String, reach: FinderReach, role: FinderRole, step: FinderMath.Step?): Shown = when {
         reach == FinderReach.NONE -> Shown("Not in reach", "Keep moving.",
             "Finder works only when this phone and $name's are linked by Bluetooth. If $name's phone restarted after asking, it can't be recognised until it sends a new check-in.", 0, 0, false)
         reach == FinderReach.OTHER -> Shown("Linked", "Not over Bluetooth",
-            "Linked to $name's phone, but not over Bluetooth, so the signal can't be measured. Stay close; it may switch.", 0, 0, false)
+            "Linked to $name's phone, but not over Bluetooth, so the signal can't be measured.", 0, 0, false)
         role == FinderRole.FAILED -> Shown("Linked", "Can't measure",
             "Linked to $name's phone, but this phone can't measure the signal on this link.", 0, 0, false)
-        step == null || step.band == FinderMath.Band.NOT_IN_REACH -> Shown("Not in reach", "Keep moving.", "This phone hasn't heard $name's phone yet.", 0, 0, false)
-        step.band == FinderMath.Band.HERE -> Shown("Here", "Within a few steps. Look around.", null, step.ticks, 4, true)
-        else -> Shown(step.band.word, (step.trend ?: FinderMath.Trend.STEADY).line, null, step.ticks, step.band.level, false)
+        step == null || step.band == FinderMath.Band.NOT_IN_REACH -> Shown("Not in reach", line(FinderMath.Band.NOT_IN_REACH), "This phone hasn't heard $name's phone yet.", 0, 0, false)
+        else -> Shown(step.band.word, line(step.band), null, step.ticks, step.band.level, step.band == FinderMath.Band.HERE, step.trend?.line)
     }
 }
