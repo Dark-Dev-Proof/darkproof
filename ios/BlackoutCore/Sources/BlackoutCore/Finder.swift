@@ -11,10 +11,11 @@ public enum FinderNote {
     public static let size = 7
     /// What the note adds to a check-in's body: the empty 4th field's length, the 5th field's length, the field.
     public static let cost = 2 + 2 + size
-    /// The settings switch "Let my group find this phone" (default on; off in high-risk mode whatever it says).
+    /// The settings switch "Let my group find this phone" (default on; off in high-risk mode whatever it says). Shown
+    /// only while the trial switch is on.
     public static let settingKey = "finderNote"
-    /// The trial switch: the Finder screen is shown only while it is on (default off), until the real-phone tests pass.
-    /// The note is read and written either way.
+    /// The trial switch: the Finder screen, the settings switch, the note in "I need help" and the re-send after a
+    /// restart (F6) exist only while it is on (default off), until the real-phone tests pass. The note is read either way.
     public static let trialKey = "finderTrial"
     /// Rule F6: an own "I need help" this young, not followed by "I'm safe", is sent again after a restart, at most once
     /// every `resendEveryMs`, so the link id matches again.
@@ -37,9 +38,10 @@ public enum FinderNote {
     }
 
     /// Rules F1, F2: whether this phone adds the note to a message it writes: only to its own `🆘` check-ins in a group,
-    /// with the switch on and high-risk mode off.
-    public static func writes(text: String, isPublic: Bool, on: Bool, highRisk: Bool) -> Bool {
-        !isPublic && on && !highRisk && CheckIn.of(text) == .help
+    /// with the trial switch on (`trial`: until then nobody can use the note, so nobody gives it away), the settings
+    /// switch on and high-risk mode off.
+    public static func writes(text: String, isPublic: Bool, on: Bool, highRisk: Bool, trial: Bool) -> Bool {
+        trial && !isPublic && on && !highRisk && CheckIn.of(text) == .help
     }
 
     /// Rule F3, radio first: false only when the check-in would fit a 163-byte LoRa packet without the note and not with
@@ -50,9 +52,15 @@ public enum FinderNote {
     }
 
     /// Rule F6: whether to send this phone's own "I need help" again now, after a restart. `lastOwn`: this phone's newest
-    /// own check-in in the group (its kind and time); `lastResend`: when this phone last did so for the group.
-    public static func resends(lastOwn: (kind: CheckIn, ts: Int64)?, lastResend: Int64?, now: Int64, on: Bool, highRisk: Bool) -> Bool {
-        guard on, !highRisk, let own = lastOwn, own.kind == .help else { return false }
+    /// own check-in in the group (its kind and time); `lastResend`: when this phone last did so for the group; `trial`:
+    /// the trial switch (F2: no note is written without it, so a re-send would carry none). `ownClock`: the `ts` of the
+    /// newest clock message of this phone's own held in the group (a start or a stop, spec "If I go quiet"), if any.
+    /// One dated at or after that help call means no re-send: the re-sent check-in would be dated now, after the clock
+    /// message, and cancel it on every phone (rule Q4), which the help call itself didn't.
+    public static func resends(lastOwn: (kind: CheckIn, ts: Int64)?, lastResend: Int64?, now: Int64, on: Bool, highRisk: Bool,
+                               trial: Bool, ownClock: Int64?) -> Bool {
+        guard trial, on, !highRisk, let own = lastOwn, own.kind == .help else { return false }
+        if let clock = ownClock, clock >= own.ts { return false }
         guard now - own.ts >= 0, now - own.ts < resendWithinMs else { return false }
         if let r = lastResend, now - r >= 0, now - r < resendEveryMs { return false }
         return true

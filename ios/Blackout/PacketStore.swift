@@ -149,37 +149,71 @@ final class PacketStore {
     }
 }
 
-/// Where "Keeps less" (high-risk mode) keeps its book (`DayBook`): since when each message and receipt of a group has been
-/// on this phone, and the gone list. A small file next to the packet stores and, like them, never in a backup. Packet
-/// names and times, no content. Readable from the first unlock on, which is also the earliest an engine starts (the
-/// group's code is in the Keychain), so an engine never reads it as empty while it is there.
-enum DayBookFile {
-    private static var url: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("daybook.txt")
+/// A small file of this phone's own beside the packet stores, sealed with the key of this phone's copies of messages
+/// (`Engine.historyKey`, `SealedFile`): never in a backup, and readable from the first unlock on, like that key in the
+/// Keychain, so a clock's alert can still be worked out while DarkProof runs in the background with the phone locked.
+/// The first unlock is also the earliest an engine starts (the group's code is in the Keychain), so an engine never reads
+/// one as empty while it is there. An older version kept these files plain (`plain`): such a file is read once, sealed,
+/// and the plain copy deleted.
+private enum OwnFile {
+    static func url(_ name: String) -> URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(name)
     }
 
-    static func read() -> DayBook { (try? Data(contentsOf: url)).map { DayBook(saved: $0) } ?? DayBook() }
+    /// The file's contents, or nil if there is none (or it doesn't open). `label`: what it is, which its seal is bound to.
+    static func read(_ name: String, plain: String, label: String) -> Data? {
+        let (u, p) = (url(name), url(plain))
+        let r = SealedFile.load(sealed: try? Data(contentsOf: u), plain: try? Data(contentsOf: p), key: Engine.historyKey, label: label)
+        if r.migrate, let d = r.data { write(name, d, plain: plain, label: label) }
+        else if FileManager.default.fileExists(atPath: u.path) { try? FileManager.default.removeItem(at: p) } // left over from a move cut short
+        return r.data
+    }
 
-    /// Writes the whole book in one piece, or removes the file when there is nothing to keep.
-    static func write(_ book: DayBook) {
-        let u = url
-        if book.isEmpty { try? FileManager.default.removeItem(at: u); return }
+    /// Seals and writes `data` in one piece; then the plain copy, if one is left, goes. Nothing is written if it can't be sealed.
+    static func write(_ name: String, _ data: Data, plain: String, label: String) {
+        let u = url(name)
+        guard let sealed = SealedFile.seal(data, key: Engine.historyKey, label: label) else { return }
         try? FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard (try? book.saved.write(to: u, options: .atomic)) != nil else { return }
+        guard (try? sealed.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil else { return }
         var f = u, v = URLResourceValues(); v.isExcludedFromBackup = true; try? f.setResourceValues(v)
+        try? FileManager.default.removeItem(at: url(plain))
+    }
+
+    static func remove(_ name: String, plain: String) {
+        try? FileManager.default.removeItem(at: url(name))
+        try? FileManager.default.removeItem(at: url(plain))
     }
 }
 
-/// Each group's check-in clocks (`QuietBook`, spec "If I go quiet", rule Q10): a file per group beside the day book, in
-/// the app's own folder, excluded from backups, never in the preferences (which go into backups and stay readable on a
-/// phone after its first unlock). A book that an older version kept in the preferences is moved here when first read.
-enum QuietFile {
-    private static func url(_ group: String) -> URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("quiet.\(group).txt")
+/// Where "Keeps less" (high-risk mode) keeps its book (`DayBook`): since when each message and receipt of a group has been
+/// on this phone, and the gone list. Packet names and times, no content; sealed all the same (`OwnFile`): in high-risk
+/// mode the gone list is a week-long log of how many messages each group had, and when.
+enum DayBookFile {
+    private static let name = "daybook.sealed", plain = "daybook.txt", label = "daybook"
+
+    static func read() -> DayBook { OwnFile.read(name, plain: plain, label: label).map { DayBook(saved: $0) } ?? DayBook() }
+
+    /// Writes the whole book in one piece, or removes the file when there is nothing to keep.
+    static func write(_ book: DayBook) {
+        if book.isEmpty { return OwnFile.remove(name, plain: plain) }
+        OwnFile.write(name, book.saved, plain: plain, label: label)
     }
+}
+
+/// Each group's check-in clocks (`QuietBook`, spec "If I go quiet", rule Q10), with the members' positions: a sealed file
+/// per group beside the day book (`OwnFile`), never in the preferences (which go into backups and stay readable on a
+/// phone after its first unlock). A book that an older version kept in the preferences, or in a plain file, is moved
+/// here when first read.
+enum QuietFile {
+    private static func name(_ group: String) -> String { "quiet.\(group).sealed" }
+    private static func plain(_ group: String) -> String { "quiet.\(group).txt" }
+    private static func label(_ group: String) -> String { "quiet.\(group)" }
 
     static func read(_ group: String) -> [String] {
-        if let d = try? Data(contentsOf: url(group)) { return String(decoding: d, as: UTF8.self).split(separator: "\n").map(String.init) }
+        if let d = OwnFile.read(name(group), plain: plain(group), label: label(group)) {
+            UserDefaults.standard.removeObject(forKey: "quiet.\(group)")
+            return String(decoding: d, as: UTF8.self).split(separator: "\n").map(String.init)
+        }
         let old = UserDefaults.standard.stringArray(forKey: "quiet.\(group)") ?? []
         if !old.isEmpty { write(group, old) }
         UserDefaults.standard.removeObject(forKey: "quiet.\(group)")
@@ -188,16 +222,13 @@ enum QuietFile {
 
     /// Writes the whole book in one piece, or removes the file when there is nothing to keep.
     static func write(_ group: String, _ lines: [String]) {
-        let u = url(group)
-        if lines.isEmpty { try? FileManager.default.removeItem(at: u); return }
-        try? FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard (try? Data(lines.joined(separator: "\n").utf8).write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil else { return }
-        var f = u, v = URLResourceValues(); v.isExcludedFromBackup = true; try? f.setResourceValues(v)
+        if lines.isEmpty { return OwnFile.remove(name(group), plain: plain(group)) }
+        OwnFile.write(name(group), Data(lines.joined(separator: "\n").utf8), plain: plain(group), label: label(group))
     }
 
     /// The group was left: its clocks go.
     static func remove(_ group: String) {
-        try? FileManager.default.removeItem(at: url(group))
+        OwnFile.remove(name(group), plain: plain(group))
         UserDefaults.standard.removeObject(forKey: "quiet.\(group)")
     }
 }

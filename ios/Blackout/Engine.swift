@@ -81,6 +81,12 @@ final class Engine: ObservableObject {
     @Published private(set) var hiddenTargets: Set<String> = []
     /// A check-in waiting for its GPS fix (up to 10 s): the buttons show "Sending…" and stay disabled meanwhile.
     @Published private(set) var checkInSending: CheckIn?
+    /// What the last `send` did with its message: written as a packet (its id), held until an admin lets this phone in,
+    /// or nothing (shut down, removed). An answer from an alert waits on it (`checkIn(_:group:written:)`). Main thread.
+    enum Written: Equatable { case packet(String), held, nothing }
+    private var lastWritten = Written.nothing
+    /// The observer that settles clocks when the app comes back on screen; removed when the engine shuts down.
+    private var foregroundObserver: NSObjectProtocol?
     /// Changes whenever a group's check-in clocks change (spec "If I go quiet"): the screens read them from the groups' books.
     @Published private(set) var quietVersion = 0
     private var quietQueued = false          // main thread: a pass of the clocks is on its way
@@ -196,8 +202,8 @@ final class Engine: ObservableObject {
         }
 
         /// The members' check-in clocks (spec "If I go quiet", `QuietBook`), this phone's own among them. Saved under the
-        /// group's id, apart from the chat, in the app's own files beside the day book (excluded from backups, not in the
-        /// preferences): a clock outlives its message when the group's timer or high-risk mode deletes it, and app
+        /// group's id, apart from the chat, in the app's own files beside the day book (sealed, excluded from backups, not
+        /// in the preferences): a clock outlives its message when the group's timer or high-risk mode deletes it, and app
         /// restarts. Leaving the group or erasing the phone deletes it.
         private var quietBook = QuietBook() // lock
         var quiet: QuietBook { lock.withLock { quietBook } }
@@ -283,7 +289,7 @@ final class Engine: ObservableObject {
     private var dueAt: Int64?                         // when the next clean-up for a group's timer is set to run, if one is; storeLock
     /// Since when each of those has been on this phone, and the gone list: what the rule removed, which may come back
     /// from a neighbour and is then carried but never opened again (`DayBook`). Kept whether the mode is on or off, so
-    /// that switching it on counts from the real arrivals. Saved in "daybook.txt". storeLock.
+    /// that switching it on counts from the real arrivals. Saved, sealed, in "daybook.sealed" (`DayBookFile`). storeLock.
     private var book = DayBookFile.read()
     private var bookQueued = false                    // a save of `book` is on its way; storeLock
     /// Saved once every saved group's key has read the store under a version that keeps those times: what was stored
@@ -370,10 +376,11 @@ final class Engine: ObservableObject {
         }
         work.async { self.startUp(code) }
         // Finder (spec "Finder", F6): an own "I need help" still standing goes out again with this start's link id, once
-        // the stored messages are read and links had a moment to form.
+        // the stored messages are read and links had a moment to form. Only while the trial switch is on.
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in self?.finderResendIfDue() }
-        // Back on screen: clocks that ran out while the app was away are settled (spec "If I go quiet").
-        NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in self?.quietPass() }
+        // Back on screen: clocks that ran out while the app was away are settled (spec "If I go quiet"). One observer
+        // per engine, removed at `shutDown`.
+        foregroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in self?.quietPass() }
     }
 
     /// Apple peer-to-peer and Wi-Fi networks: both make iOS ask for Local Network.
@@ -1905,22 +1912,25 @@ final class Engine: ObservableObject {
     /// `voice`: a voice note's frames (`Voice`), with `Voice.placeholder` as the text; groups only, never LoRa (too big).
     @discardableResult func send(_ text: String, isPublic: Bool = false, photo: Data? = nil, group: String? = nil, replyTo: Message? = nil,
                                  fifth: Data? = nil, at: Int64? = nil, voice: Data? = nil) -> Bool {
+        lastWritten = .nothing
         guard !stopped else { return true } // shut down (a group was left, or everything erased): nothing is written any more
         if voice != nil && isPublic { return true } // never on the Public channel (spec "Voice notes")
         let target = group.flatMap { $0.isEmpty ? nil : $0 } ?? activeCode
         let code = isPublic ? GroupCrypto.publicCode : target
         let k = keys(code), cr = k.group // cached; derived here only if the user writes within a second of switching
         if !isPublic && k.removed { return true } // the screen no longer offers this
-        if !isPublic && !k.joined { waitingToJoin[k.id, default: []].append((text, photo, voice)); return true } // sent once an admin lets this phone in
+        if !isPublic && !k.joined { waitingToJoin[k.id, default: []].append((text, photo, voice)); lastWritten = .held; return true } // sent once an admin lets this phone in
         work.async { self.introIfDue(k, writing: true) } // members can check this message only with this phone's key
         let id = Packet.newId(mailbox: cr.mailbox), ts = at ?? Int64(Date().timeIntervalSince1970 * 1000)
         let about: About? = isPublic ? nil : replyTo.flatMap { About.target(of: $0, group: k.code) }.map { .reply($0) } // never on the Public channel
         let fifth = isPublic || about != nil ? nil : fifth
-        // Finder (spec "Finder", F2): an own "needs help" check-in carries this start's link id, unless radio first leaves it out (F3).
+        // Finder (spec "Finder", F2): an own "needs help" check-in carries this start's link id, unless radio first leaves
+        // it out (F3), only while the trial switch is on (in release builds nobody can use it, so it isn't given away).
         let finder = fifth == nil && about == nil && photo == nil && voice == nil
-            && FinderNote.writes(text: text, isPublic: isPublic, on: Self.finderOn, highRisk: HighRiskSetting.isOn()) ? FinderNote.field(linkId: linkId) : nil
+            && FinderNote.writes(text: text, isPublic: isPublic, on: Self.finderOn, highRisk: HighRiskSetting.isOn(), trial: Self.finderTrial) ? FinderNote.field(linkId: linkId) : nil
         guard let (c, mark, keyed) = sealOne(k, cr, isPublic: isPublic, id: id, ts: ts, text: text, photo: photo, about: about, fifth: fifth, voice: voice, finder: finder) else { return true }
         let p = Packet(id: id, ts: cr.hideTime(ts, c), ttl: Self.maxTtl, cipher: c)
+        lastWritten = .packet(id)
         idsLock.withLock { _ = mine.insert(id) }
         store.append(p)
         indexed(p, isPublic ? .isPublic : .group)
@@ -1942,15 +1952,23 @@ final class Engine: ObservableObject {
     /// `group`: a saved group other than the one on screen. True if it was taken. Main thread.
     @discardableResult
     func checkIn(_ c: CheckIn, needs: Set<Need> = [], people: Int? = nil, group: String? = nil, haptic: Bool = true, done: (() -> Void)? = nil) -> Bool {
+        checkIn(c, needs: needs, people: people, group: group, haptic: haptic, written: { _ in done?() })
+    }
+
+    /// The same, telling `written` what became of the check-in (`Written`): an answer from an alert waits until its
+    /// packet left this phone (Notifier). False, and `written` is never called, if it wasn't taken. Main thread.
+    @discardableResult
+    func checkIn(_ c: CheckIn, needs: Set<Need> = [], people: Int? = nil, group: String? = nil, haptic: Bool = true, written: @escaping (Written) -> Void) -> Bool {
         guard !stopped, checkInSending == nil else { return false }
         checkInSending = c
         if haptic { UINotificationFeedbackGenerator().notificationOccurred(c == .safe ? .success : .warning) }
         let battery = Self.batteryPercent
         LocationService.shared.forCheckIn { [weak self] spot in
-            guard let self else { return }
+            guard let self else { return written(.nothing) }
             self.send(c.text(battery: battery, spot: spot, needs: needs, people: people), group: group)
+            let w = self.lastWritten
             self.checkInSending = nil
-            done?()
+            written(w)
         }
         return true
     }
@@ -2084,7 +2102,9 @@ final class Engine: ObservableObject {
 
     private static let historyLock = NSLock()
     private static var historyKeyHeld: Data? // historyLock; forgotten by "Erase everything" (`forgetHistoryKey`)
-    private static var historyKey: Data {
+    /// The key of this phone's copies of messages, in the Keychain (this phone only, readable after the first unlock).
+    /// It also seals the check-in clock records and the day book (`QuietFile`, `DayBookFile`, `SealedFile`). Any thread.
+    static var historyKey: Data {
         historyLock.withLock {
             if let k = historyKeyHeld { return k }
             if let k = Vault.get("history"), k.count == 32 { historyKeyHeld = k; return k }
@@ -2555,6 +2575,7 @@ extension Engine {
     /// `keeping`: the leave note's packet, which stays as a packet this phone only carries (rule LW3).
     func shutDown(leaving code: String? = nil, keeping note: String? = nil, then done: @escaping (Left?) -> Void) {
         stopLock.withLock { stopFlag = true }
+        if let o = foregroundObserver { NotificationCenter.default.removeObserver(o); foregroundObserver = nil }
         DispatchQueue.global(qos: .userInitiated).async { // not the main thread: `work` asks it for things while it runs
             self.nostr.stopAndWait(); self.wifi.stopAndWait(); self.mc.stopAndWait()
             self.ble.stopAndWait(); self.lora.stopAndWait(); self.meshcore.stopAndWait()
@@ -2884,10 +2905,11 @@ extension Engine {
         return k.quiet.state(member, now: now)
     }
 
-    /// Who confirmed this phone's own clock in `code`'s group, from the clock message's delivery receipts kept in its
-    /// record (so the list outlives the message when the group's timer deletes it), never from the member list: only
-    /// phones that got the clock can tell anyone. Only people who are members now: whoever left or was removed since
-    /// forgot the group. Main thread.
+    /// Who confirmed this phone's own clock in `code`'s group ("Reached", rule Q14), from the clock message's delivery
+    /// receipts kept in its record (so the list outlives the message when the group's timer deletes it), never from the
+    /// member list: only phones that got the clock can tell anyone. A receipt shows that the message reached that phone,
+    /// not that it keeps the clock (an older version confirms it too). Only people who are members now: whoever left or
+    /// was removed since forgot the group. Main thread.
     func quietKeepers(_ code: String?) -> [String] {
         guard let k = held(code), !k.isPublic, let c = k.quiet.clock(k.me), let cur = k.ring.currentOrNil else { return [] }
         let leaving = k.leaving
@@ -2897,7 +2919,8 @@ extension Engine {
         }
     }
 
-    /// A checked receipt in `k`'s group: if it names this phone's own clock message, its sender keeps the clock. Any thread.
+    /// A checked receipt in `k`'s group: if it names this phone's own clock message, the message reached its sender's
+    /// phone ("Reached"). That says nothing about whether that phone keeps the clock. Any thread.
     private func quietReceipt(_ k: Keys, _ r: Message) {
         guard !k.isPublic, let mine = k.quiet.clock(k.me) else { return }
         guard Receipt.entries(in: r.text).contains(where: { $0.id == mine.id }) else { return }
@@ -3075,14 +3098,16 @@ enum DebugLog {
 extension Engine {
     /// "Let my group find this phone": on unless the user turned it off. High-risk mode overrides it where it is read.
     static var finderOn: Bool { UserDefaults.standard.object(forKey: FinderNote.settingKey) as? Bool ?? true }
-    /// The trial switch: the Finder screen is shown only while it is on (spec "Finder", screens).
+    /// The trial switch: the Finder screen, the settings switch, the note in "I need help" and the re-send exist only
+    /// while it is on (spec "Finder"; off in release builds until the real-phone tests pass).
     static var finderTrial: Bool { UserDefaults.standard.bool(forKey: FinderNote.trialKey) }
 
-    /// Rule F6: once per start, an own "I need help" in a group, under a day old and not followed by "I'm safe", goes
-    /// out again (same needs and head count, fresh battery and position, this start's link id), at most once in 10
-    /// minutes per group. Main thread.
+    /// Rule F6: once per start, with the trial switch on, an own "I need help" in a group, under a day old and not
+    /// followed by "I'm safe", goes out again (same needs and head count, fresh battery and position, this start's link
+    /// id), at most once in 10 minutes per group, and never while a clock message of this phone's own as new as it is
+    /// held in the group: the re-send would cancel that clock on every phone (rule Q4). Main thread.
     func finderResendIfDue() {
-        guard !stopped else { return }
+        guard !stopped, Self.finderTrial else { return }
         let now = Self.nowMs(), d = UserDefaults.standard
         var latest: [String: Message] = [:]
         for m in allMessages where !m.isPublic && m.sender == deviceId && CheckIn.of(m.text) != nil {
@@ -3092,10 +3117,13 @@ extension Engine {
         let due = latest.values.filter { m in
             let key = "finderResent." + GroupTag.of(m.group ?? "") // a tag stands for the group: codes never sit in preferences
             return FinderNote.resends(lastOwn: (CheckIn.of(m.text)!, m.ts), lastResend: (d.object(forKey: key) as? Double).map { Int64($0) },
-                                      now: now, on: Self.finderOn, highRisk: HighRiskSetting.isOn())
+                                      now: now, on: Self.finderOn, highRisk: HighRiskSetting.isOn(), trial: Self.finderTrial, ownClock: ownClockTs(m.group))
         }.sorted { $0.ts > $1.ts }
         func next(_ rest: ArraySlice<Message>) {
             guard let m = rest.first else { return }
+            // Asked again just before it goes: a clock started while another group's re-send waited for its position.
+            guard FinderNote.resends(lastOwn: (.help, m.ts), lastResend: nil, now: now, on: Self.finderOn, highRisk: HighRiskSetting.isOn(),
+                                     trial: Self.finderTrial, ownClock: ownClockTs(m.group)) else { return next(rest.dropFirst()) }
             d.set(Double(now), forKey: "finderResent." + GroupTag.of(m.group ?? ""))
             #if DEBUG
             DebugLog.write("finder: sending \"I need help\" again with this start's link id")
@@ -3103,6 +3131,16 @@ extension Engine {
             checkIn(.help, needs: CheckIn.needs(in: m.text), people: CheckIn.people(in: m.text), group: m.group) { next(rest.dropFirst()) }
         }
         next(due[...])
+    }
+
+    /// The `ts` of the newest clock message of this phone's own held in `code`'s group, a start or a stop (spec "If I go
+    /// quiet"): from the group's clock record, which outlives the message, or an own clock message still shown. Nil if
+    /// none. Main thread.
+    private func ownClockTs(_ code: String?) -> Int64? {
+        let kept = held(code).flatMap { k in k.isPublic ? nil : k.quiet.clock(k.me)?.ts }
+        let shown = allMessages.filter { !$0.isPublic && $0.group == code && $0.sender == deviceId }
+            .compactMap { m -> Int64? in if case .clock? = m.notice { return m.ts } else { return nil } }.max()
+        return [kept, shown].compactMap { $0 }.max()
     }
 
     /// How this phone is linked to the phone with link id `node` (rule F7): over Bluetooth LE, only another way, or not.

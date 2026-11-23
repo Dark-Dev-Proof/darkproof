@@ -42,16 +42,27 @@ final class FinderTests: XCTestCase {
         XCTAssertEqual(FinderNote.cost, 11)
     }
 
-    /// F2: only own "needs help" check-ins in a group, with the switch on and high-risk mode off.
+    /// F2: only own "needs help" check-ins in a group, with the trial switch on, the switch on and high-risk mode off.
     func testWhoWritesIt() {
         let help = CheckIn.help.text(battery: 15)
-        XCTAssertTrue(FinderNote.writes(text: help, isPublic: false, on: true, highRisk: false))
-        XCTAssertFalse(FinderNote.writes(text: help, isPublic: true, on: true, highRisk: false), "never on the Public channel")
-        XCTAssertFalse(FinderNote.writes(text: help, isPublic: false, on: false, highRisk: false), "the switch is off")
-        XCTAssertFalse(FinderNote.writes(text: help, isPublic: false, on: true, highRisk: true), "high-risk mode, whatever the switch says")
+        XCTAssertTrue(FinderNote.writes(text: help, isPublic: false, on: true, highRisk: false, trial: true))
+        XCTAssertFalse(FinderNote.writes(text: help, isPublic: true, on: true, highRisk: false, trial: true), "never on the Public channel")
+        XCTAssertFalse(FinderNote.writes(text: help, isPublic: false, on: false, highRisk: false, trial: true), "the switch is off")
+        XCTAssertFalse(FinderNote.writes(text: help, isPublic: false, on: true, highRisk: true, trial: true), "high-risk mode, whatever the switch says")
         for text in [CheckIn.safe.text(battery: 15), "👤 Grandma needs help", "❓ Marco, are you safe?", "I'm with Marco"] {
-            XCTAssertFalse(FinderNote.writes(text: text, isPublic: false, on: true, highRisk: false), text)
+            XCTAssertFalse(FinderNote.writes(text: text, isPublic: false, on: true, highRisk: false, trial: true), text)
         }
+    }
+
+    /// Decision B (fix round 2026-11-23): while the trial switch is off, as in release builds, "I need help" carries no
+    /// link id, whatever the settings switch says (it is hidden then): nobody can use the note, so nobody gives it away.
+    func testNoNoteWhileTheTrialIsOff() {
+        let help = CheckIn.help.text(battery: 15)
+        for on in [true, false] {
+            XCTAssertFalse(FinderNote.writes(text: help, isPublic: false, on: on, highRisk: false, trial: false), "settings switch \(on)")
+        }
+        // Reading is unchanged: a note another phone wrote is still taken.
+        XCTAssertEqual(FinderNote.read(field: FinderNote.field(linkId: "a1b2c3d4e5f6"), text: help), "a1b2c3d4e5f6")
     }
 
     /// `kind: finder-fit`: the sizes are the real packet's, checked by sealing it both ways.
@@ -93,16 +104,49 @@ final class FinderTests: XCTestCase {
     /// F6: once after a restart, for a help under a day old and not followed by "I'm safe", at most every 10 minutes.
     func testSendingAgainAfterARestart() {
         let now = t0 + 2 * hour
-        XCTAssertTrue(FinderNote.resends(lastOwn: (.help, t0), lastResend: nil, now: now, on: true, highRisk: false))
-        XCTAssertFalse(FinderNote.resends(lastOwn: (.safe, t0), lastResend: nil, now: now, on: true, highRisk: false), "followed by I'm safe")
-        XCTAssertFalse(FinderNote.resends(lastOwn: nil, lastResend: nil, now: now, on: true, highRisk: false))
-        XCTAssertFalse(FinderNote.resends(lastOwn: (.help, now - 24 * hour), lastResend: nil, now: now, on: true, highRisk: false), "a day old")
-        XCTAssertTrue(FinderNote.resends(lastOwn: (.help, now - 24 * hour + 1), lastResend: nil, now: now, on: true, highRisk: false))
-        XCTAssertFalse(FinderNote.resends(lastOwn: (.help, t0), lastResend: now - 10 * minute + 1, now: now, on: true, highRisk: false), "within 10 minutes")
-        XCTAssertTrue(FinderNote.resends(lastOwn: (.help, t0), lastResend: now - 10 * minute, now: now, on: true, highRisk: false))
-        XCTAssertFalse(FinderNote.resends(lastOwn: (.help, t0), lastResend: nil, now: now, on: false, highRisk: false), "switch off")
-        XCTAssertFalse(FinderNote.resends(lastOwn: (.help, t0), lastResend: nil, now: now, on: true, highRisk: true), "high-risk mode")
-        XCTAssertFalse(FinderNote.resends(lastOwn: (.help, now + minute), lastResend: nil, now: now, on: true, highRisk: false), "dated ahead of this phone's clock")
+        func resends(_ own: (kind: CheckIn, ts: Int64)?, last: Int64? = nil, on: Bool = true, highRisk: Bool = false) -> Bool {
+            FinderNote.resends(lastOwn: own, lastResend: last, now: now, on: on, highRisk: highRisk, trial: true, ownClock: nil)
+        }
+        XCTAssertTrue(resends((.help, t0)))
+        XCTAssertFalse(resends((.safe, t0)), "followed by I'm safe")
+        XCTAssertFalse(resends(nil))
+        XCTAssertFalse(resends((.help, now - 24 * hour)), "a day old")
+        XCTAssertTrue(resends((.help, now - 24 * hour + 1)))
+        XCTAssertFalse(resends((.help, t0), last: now - 10 * minute + 1), "within 10 minutes")
+        XCTAssertTrue(resends((.help, t0), last: now - 10 * minute))
+        XCTAssertFalse(resends((.help, t0), on: false), "switch off")
+        XCTAssertFalse(resends((.help, t0), highRisk: true), "high-risk mode")
+        XCTAssertFalse(resends((.help, now + minute)), "dated ahead of this phone's clock")
+    }
+
+    /// Decision B: no re-send while the trial switch is off (release builds): it would carry no note, and only alert again.
+    func testNoResendWhileTheTrialIsOff() {
+        XCTAssertFalse(FinderNote.resends(lastOwn: (.help, t0), lastResend: nil, now: t0 + hour, on: true, highRisk: false, trial: false, ownClock: nil))
+    }
+
+    /// Item 3 (fix round 2026-11-23): Anna asks for help at 10:00, starts an 8-hour clock at 10:30; the app restarts at
+    /// 11:00. A re-sent "I need help" would be dated 11:00, after the clock message, and cancel her clock on every phone
+    /// (rule Q4), which her own help call didn't. So no re-send while a clock message of her own as new as the help
+    /// call is held, a start or a stop; an older clock (one the help call already cancelled) changes nothing.
+    func testTheResendNeverCancelsANewerOwnClock() {
+        let help = t0, clock = t0 + 30 * minute, restart = t0 + hour
+        // What the re-send would do to the clock: cancel it, where the help call didn't.
+        var book = QuietBook()
+        book.take(member: anna, id: "c1", mark: "m1", ts: clock, deadline: clock + 8 * hour, spot: nil, now: clock, highRisk: false)
+        book.checkIn(member: anna, ts: help, now: clock, highRisk: false)
+        XCTAssertTrue(book.armed(anna), "the help call came first: the clock runs")
+        var resent = book
+        resent.checkIn(member: anna, ts: restart, now: restart, highRisk: false)
+        XCTAssertFalse(resent.armed(anna), "a re-send dated after the clock message would stop it")
+        // So it isn't sent.
+        func resends(ownClock: Int64?) -> Bool {
+            FinderNote.resends(lastOwn: (.help, help), lastResend: nil, now: restart, on: true, highRisk: false, trial: true, ownClock: ownClock)
+        }
+        XCTAssertFalse(resends(ownClock: book.clock(anna)?.ts), "a newer own clock is held")
+        XCTAssertFalse(resends(ownClock: help), "a clock message as old as the help call: Q4 needs a greater ts, so the help call didn't cancel it")
+        XCTAssertFalse(resends(ownClock: clock + minute), "a stop is a clock message too")
+        XCTAssertTrue(resends(ownClock: help - minute), "a clock from before the help call: the help call cancelled it already")
+        XCTAssertTrue(resends(ownClock: nil), "no own clock held")
     }
 
     // MARK: - Bands

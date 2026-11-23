@@ -254,8 +254,8 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
                     self.notSent("“I'm safe” wasn't sent: the group that asked isn't on this phone any more. Open DarkProof to answer.")
                     return done()
                 }
-                guard let e = Mesh.shared.engine else { return done() }
-                e.checkIn(.safe, group: code, done: done)
+                guard let e = Mesh.shared.engine else { self.notSent(SafeAnswer.line(.notSent, .safe)!); return done() }
+                self.answer(.safe, e, group: code, done: done)
             case "help":
                 Nav.shared.open(group: code, tab: .people)
                 guard answer != .gone else { // never to another group than the one that asked
@@ -263,12 +263,63 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
                     return done()
                 }
                 guard let e = Mesh.shared.engine else { return done() }
-                e.checkIn(.help, group: code, done: done)
+                self.answer(.help, e, group: code, done: done)
             default:
                 Nav.shared.open(group: code, tab: tab, everyone: false)
                 done()
             }
         }
+    }
+
+    /// An answer given under an alert ("Are you safe?", the check-in clock's reminder). iOS may suspend DarkProof as soon
+    /// as `done` is called, and "I'm safe" from a locked phone's alert runs it in the background: the check-in would
+    /// stop the clock on this phone while it still waits here, and the group's phones would alert at the deadline. So
+    /// `done` is called only once a phone, a radio or a relay took the check-in, or after `SafeAnswer.waitSeconds`
+    /// (`CheckInWait`). If it didn't leave by then, or wasn't written, the user is told so (`notSent`, or a toast while
+    /// DarkProof is on screen, where alerts don't show). Main thread.
+    private func answer(_ c: CheckIn, _ e: Engine, group: String?, done: @escaping () -> Void) {
+        CheckInWait.send(c, e, group: group) { o in
+            if let line = SafeAnswer.line(o, c) {
+                if UIApplication.shared.applicationState == .active && !AppLock.shared.isLocked { Nav.shared.toast(line) } else { self.notSent(line) }
+            }
+            #if DEBUG
+            DebugLog.write("answer from an alert: \(o)") // for the tests' log: how it ended, never what or where
+            #endif
+            done()
+        }
+    }
+}
+
+/// A check-in given without opening DarkProof: an alert's answer (Notifier), or Siri, the Action button and Shortcuts
+/// (Shortcuts.swift). Writes it, then reports how it ended (`SafeAnswer.Outcome`): once a phone, a radio or a relay took
+/// it, after `SafeAnswer.waitSeconds` if none did, or at once if it wasn't written. iOS may suspend DarkProof meanwhile,
+/// so a background task holds the app until then; if iOS's own time runs out first, it ended as waiting. `then` runs
+/// once, on the main thread. Main thread.
+enum CheckInWait {
+    static func send(_ c: CheckIn, _ e: Engine, group: String?, then: @escaping (SafeAnswer.Outcome) -> Void) {
+        var hold = UIBackgroundTaskIdentifier.invalid, over = false
+        func finish(_ o: SafeAnswer.Outcome) {
+            guard !over else { return }
+            over = true
+            then(o)
+            if hold != .invalid { UIApplication.shared.endBackgroundTask(hold); hold = .invalid }
+        }
+        hold = UIApplication.shared.beginBackgroundTask(withName: "check-in") { finish(.waiting) }
+        let taken = e.checkIn(c, group: group) { written in
+            switch written {
+            case .nothing: finish(.notSent)
+            case .held: finish(.waiting) // kept until an admin lets this phone in
+            case .packet(let id):
+                let start = Date()
+                func check() {
+                    guard !over else { return }
+                    if let o = SafeAnswer.outcome(handedOff: e.handedOff.contains(id), elapsed: Date().timeIntervalSince(start)) { return finish(o) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { check() }
+                }
+                check()
+            }
+        }
+        if !taken { finish(.notSent) } // another check-in is still being written, or DarkProof stopped
     }
 }
 
