@@ -200,8 +200,8 @@ object FinderMath {
 
 /**
  * Re-sending "I need help" after a restart (decision 3): the old note names a link id that is gone, so once per start,
- * if this phone's newest own check-in in a group is "I need help", under 24 hours old, no own clock message newer than
- * it is held there, and the last re-send there was 10 minutes ago or more, it goes again with a fresh battery level and
+ * if this phone's newest own check-in in a group is "I need help", under 24 hours old, no own clock message dated at or
+ * after it is held there, and the last re-send there was 10 minutes ago or more, it goes again with a fresh battery level and
  * the new link id. Only while the note is written ([FinderPrefs.writes], the trial switch among it).
  */
 object FinderResend {
@@ -212,7 +212,7 @@ object FinderResend {
 
     /**
      * [newest]: this phone's newest own check-in in the group and its time; [lastResend]: 0 for never. [ownClockAfter]: an
-     * own clock message dated after that check-in is held in the group (its message, or the clock's record): no re-send
+     * own clock message dated at or after that check-in is held in the group ([clockAfter]) (its message, or the clock's record): no re-send
      * then, since a check-in dated after a clock message stops that clock on every phone (rule Q4), and a re-send nobody
      * chose must never stop the sender's own newer clock (final review 2026-11-23, item 3).
      */
@@ -222,6 +222,13 @@ object FinderResend {
         if (age < 0 || age >= MAX_AGE_MS) return false
         return lastResend > now || now - lastResend >= EVERY_MS // a clock set back must not hold it off for long
     }
+
+    /**
+     * Whether this phone's own newest clock ([ownClock]: the `ts` of its clock message or record, null for none) holds a
+     * re-send of the help call dated [helpTs] back ([due]'s `ownClockAfter`): at or after it, as the spec says (F6) and
+     * the iPhone does. A clock message with the same millisecond as the call counts too (re-check N6). Pure: tested.
+     */
+    fun clockAfter(ownClock: Long?, helpTs: Long): Boolean = ownClock != null && ownClock >= helpTs
 
     /** The text of the re-sent check-in: the same needs and head count as [old], a fresh battery level and position. */
     fun text(old: String, battery: Int?, spot: Spot?): String = CheckIn.HELP.text(battery, spot, CheckIn.needs(old), CheckIn.people(old))

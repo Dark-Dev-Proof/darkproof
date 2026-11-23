@@ -225,6 +225,19 @@ class FinderTest {
         assertFalse(book.armed(anna))
     }
 
+    /**
+     * Re-check N6: the spec (F6) says a clock "at or after" the help call holds the re-send, and the iPhone checks
+     * `clock >= own.ts`. A clock message with the same millisecond as the call now holds it on Android too.
+     */
+    @Test fun aClockOfTheSameMillisecondHoldsTheResend() {
+        val ten = 1_800_000_000_000L
+        assertTrue("same millisecond", FinderResend.clockAfter(ten, ten))
+        assertTrue(FinderResend.clockAfter(ten + 1, ten))
+        assertFalse("an older clock doesn't", FinderResend.clockAfter(ten - 1, ten))
+        assertFalse("no clock", FinderResend.clockAfter(null, ten))
+        assertFalse(FinderResend.due(CheckIn.HELP, ten, ten + 3_600_000L, 0, ownClockAfter = FinderResend.clockAfter(ten, ten)))
+    }
+
     // MARK: - The band logic (vectors finder-bands)
 
     private fun bands(vararg r: Int?) = FinderMath.trace(r.mapIndexed { i, d -> i.toLong() to d }).map { it.band }

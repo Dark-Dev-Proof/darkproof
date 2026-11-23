@@ -37,6 +37,13 @@ object HighRisk {
     private fun prefs(c: Context) = c.getSharedPreferences("mesh", 0)
     fun on(c: Context) = prefs(c).getBoolean("highRisk", false)
     fun set(c: Context, on: Boolean) = prefs(c).edit().putBoolean("highRisk", on).apply()
+
+    /**
+     * The sheet's "Says less." line (re-check screens 7, the same words on the iPhone): receipts leave out how a message
+     * arrived, and Find by Bluetooth stops too, named only where it is offered ([finder]: the Finder trial on, on a phone).
+     */
+    fun saysLess(finder: Boolean) =
+        if (finder) "No Find by Bluetooth, and receipts don't say how a message arrived." else "Receipts don't say how a message arrived."
 }
 
 /**
@@ -169,8 +176,9 @@ fun HighRiskSheet(s: AppState, a: MainActivity, close: () -> Unit) {
                 Point(R.drawable.ic_visibility_off, "Shows less.", "No names or message text in alerts or the app switcher.")
             }
             Point(R.drawable.ic_schedule, "Keeps less.", "Messages in your groups leave this ${Here.device} 1 day after they arrive.")
-            // Finder stops too, and receipts leave out how a message arrived (design review L6). A computer has no Finder.
-            if (Here.bluetooth) Point(R.drawable.ic_route, "Says less.", "No Finder, and receipts don't say how a message arrived.")
+            // Receipts leave out how a message arrived (design review L6), and Find by Bluetooth stops where it is offered:
+            // only with the Finder trial on, on a phone (re-check screens 7).
+            Point(R.drawable.ic_route, "Says less.", HighRisk.saysLess(FinderPrefs.offered(remember { FinderPrefs.trial(a) })))
             if (!Here.lock) Txt("On a ${Here.device} DarkProof has no lock and shows no alerts yet, so here it only keeps less.", 14, color = Theme.dim)
             why?.let { Txt(it, 15, FontWeight.SemiBold) }
             PrimaryButton("Yes, switch it on") {
@@ -475,5 +483,5 @@ fun EmptyScreen(lines: List<String>, done: () -> Unit) {
 /** After an erase that couldn't remove everything, and only then: what is left to do. On the erase page and on the welcome screen. */
 @Composable
 fun NotAllErased() {
-    if (Wipe.notAll) Txt("${LeaveWords.NOT_ALL}. ${LeaveWords.notAllLine(Here.device)}", 15, FontWeight.SemiBold, Theme.help, align = TextAlign.Center)
+    if (Wipe.notAll) Txt("${LeaveWords.NOT_ALL}. ${LeaveWords.notAllLine(Here.device)}", 15, FontWeight.SemiBold, Theme.text, align = TextAlign.Center) // white, as the iPhone: red is for help (re-check screens 8)
 }

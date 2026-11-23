@@ -171,18 +171,15 @@ object VoiceAudio {
         return Decoded(pcm, errors, rate, channels)
     }
 
-    /** The last few notes decoded, by message id: shown notes draw their picture from it, and playing one needs no second decode. */
-    private val decoded = object : LinkedHashMap<String, ShortArray>(8, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ShortArray>?) = size > 4
-    }
+    /**
+     * The last few notes decoded, by message id: shown notes draw their picture from it, and playing one needs no second
+     * decode. A decode that ends after it was emptied ([stopPlaying], [forget]) isn't kept ([TurnKept]).
+     */
+    private val decoded = TurnKept<ShortArray>(4)
 
     /** The sound of a note, decoded once (off the main thread), or null if it can't be played. */
-    fun pcm(id: String, frames: ByteArray): ShortArray? {
-        synchronized(decoded) { decoded[id] }?.let { return it }
-        val ps = Voice.split(frames) ?: return null
-        val d = runCatching { decode(ps) }.getOrNull()?.takeIf { it.pcm.isNotEmpty() && it.channels == 1 && it.rate == Voice.SAMPLE_RATE } ?: return null
-        synchronized(decoded) { decoded[id] = d.pcm }
-        return d.pcm
+    fun pcm(id: String, frames: ByteArray): ShortArray? = decoded.get(id) {
+        Voice.split(frames)?.let { ps -> runCatching { decode(ps) }.getOrNull()?.takeIf { it.pcm.isNotEmpty() && it.channels == 1 && it.rate == Voice.SAMPLE_RATE }?.pcm }
     }
 
     /** The bubbles' levels of many notes, so a note scrolled back into view isn't decoded again (Android review, finding 12). */
@@ -190,6 +187,12 @@ object VoiceAudio {
 
     /** The bubble's 20 levels, or null if the note can't be decoded here. Blocks: call it off the main thread. */
     fun levels(id: String, frames: ByteArray): FloatArray? = levelsKept.get(id) { pcm(id, frames)?.let { Voice.levels(it) } }
+
+    /**
+     * A group was left, or everything is being erased (re-check screens 4): the decoded sound and the bubbles' levels of
+     * every note go, with message ids, and a decode still running keeps nothing when it ends. Any thread.
+     */
+    fun forget() { decoded.clear(); levelsKept.clear() }
 
     // MARK: - Playing: one note at a time
 
@@ -285,7 +288,7 @@ object VoiceAudio {
     fun stopPlaying() {
         halt()
         paused.clear()
-        synchronized(decoded) { decoded.clear() }
+        decoded.clear()
     }
 
     // MARK: - Speed: the bubble's chip, one choice for the whole app

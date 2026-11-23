@@ -175,8 +175,8 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
             if (!Here.wide) { // a wide window names the chat above it and switches channels at its side
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // The group's timer shows next to the reach line only while one is set.
-                    // Online through the relays with no phone in range: it says so, as the iPhone does (design review L5).
-                    val reach = remember(tick, phones) { ChatReach.line(phones, MeshEngine.nostr?.connected ?: 0, Tor.enabled(ctx)) }
+                    // Online through the relays, or a radio, with no phone in range: it says so in the iPhone's words (design review L5).
+                    val reach = remember(tick, phones) { Links.now().let { l -> ChatReach.line(phones, l.relays, l.radio) } }
                     Box(Modifier.weight(1f)) { ScreenTitle(g.name, reach, timer = timer?.takeIf { it > 0 }?.let(GroupTimer::label)) }
                     if (!everyone) RoundIcon(R.drawable.ic_shield, desc = "Group security") { open(Sheet.Security) }
                 }
@@ -330,12 +330,12 @@ private fun AddTray(photo: () -> Unit, voice: (() -> Unit)?, safeSent: Int, safe
 fun AskEveryone(g: SavedGroup, close: () -> Unit) {
     val ctx = LocalContext.current
     Confirm("Ask if everyone is safe?", "Everyone in ${g.name} gets “Is everyone safe?” with one-tap answers.", "Ask",
-        onYes = { close(); if (meshReady(ctx)) { Thread { MeshEngine.send(AreYouSafe().text) }.start(); Toast.makeText(ctx, asked(g.name), Toast.LENGTH_LONG).show() } },
+        onYes = { close(); if (meshReady(ctx)) { Thread { MeshEngine.send(AreYouSafe().text) }.start(); Toast.makeText(ctx, asked(null), Toast.LENGTH_LONG).show() } },
         onNo = close)
 }
 
-/** The toast after "Ask": "Asked My group", or with nothing in reach that it waits on this device (design review L5). */
-fun asked(to: String) = ChatReach.asked(to, Links.now().any)
+/** The toast after "Ask": "Sent the question to Marco", or with nothing in reach that it waits for a phone ([ChatReach.asked]). [to]: null for the whole group. */
+fun asked(to: String?) = ChatReach.asked(to, Links.now().any)
 
 /**
  * What a message row needs for replies and reactions (spec "Replies and reactions"): its [quote] if it is a reply, the

@@ -20,6 +20,8 @@ object VoiceAudio {
     fun cycleSpeed(c: Context) {}
     fun stopPlaying() {}
     fun levels(id: String, frames: ByteArray): FloatArray? = null
+    /** A group was left: nothing is decoded here, so nothing is held to forget. */
+    fun forget() {}
 
     sealed class Result {
         class Ready(val frames: ByteArray, val seconds: Int) : Result()

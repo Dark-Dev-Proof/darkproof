@@ -256,20 +256,34 @@ class VoiceTake(val cap: Int) {
 }
 
 /**
+ * What was worked out from the last [max] notes, by message id (the decoded sound, the bubbles' levels). [clear] empties it
+ * and counts a turn, as the iPhone's `cacheTurn` does: what a decode that was still running brings back afterwards is
+ * handed to its caller but not kept, so nothing of a group that was left or a phone that was erased comes back
+ * (re-check screens 4). Any thread.
+ */
+open class TurnKept<V : Any>(private val max: Int) {
+    private val kept = object : LinkedHashMap<String, V>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, V>?) = size > max
+    }
+    private var turn = 0 // guarded by kept
+
+    /** [id]'s kept value, else what [make] works out (null: it can't be worked out, and nothing is kept). */
+    fun get(id: String, make: () -> V?): V? {
+        val began = synchronized(kept) { kept[id]?.let { return it }; turn }
+        val made = make() ?: return null
+        synchronized(kept) { if (turn == began) kept[id] = made }
+        return made
+    }
+
+    /** Forgets everything kept, and what is being worked out right now. */
+    fun clear() = synchronized(kept) { kept.clear(); turn++ }
+
+    val size: Int get() = synchronized(kept) { kept.size }
+}
+
+/**
  * The bubbles' 20 levels by message id, for the last [max] notes (Android review, finding 12): small enough to keep for
  * many, so a note scrolled out of view and back isn't decoded again. A note that couldn't be decoded isn't kept: it is
  * tried again the next time it shows. Levels are a picture of loudness, not the sound. Any thread.
  */
-class VoiceLevels(private val max: Int = 200) {
-    private val kept = object : LinkedHashMap<String, FloatArray>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, FloatArray>?) = size > max
-    }
-    /** [id]'s levels: kept ones, else what [make] works out (null: it can't be decoded, and nothing is kept). */
-    fun get(id: String, make: () -> FloatArray?): FloatArray? {
-        synchronized(kept) { kept[id] }?.let { return it }
-        val made = make() ?: return null
-        synchronized(kept) { kept[id] = made }
-        return made
-    }
-    val size: Int get() = synchronized(kept) { kept.size }
-}
+class VoiceLevels(max: Int = 200) : TurnKept<FloatArray>(max)

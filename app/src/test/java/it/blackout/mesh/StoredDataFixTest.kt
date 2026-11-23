@@ -132,4 +132,44 @@ class StoredDataFixTest {
         val theirs = alertFor(other, ben, "00000000000000aa", t0 + hour)
         assertEquals(listOf(theirs), QuietRang.handle(listOf(coming, theirs), mapOf(other to bensClock(t0)), t0 + 60_000).left)
     }
+
+    /**
+     * Re-check N2: Android ended the app, the alarm rings at Ben's deadline, and the Keystore fails for a moment, so the
+     * sealed clocks don't open. Before, every alert read as "its group is gone" and was dropped. Now all of it is armed
+     * again, the one due now and the one still to come, and the next ring posts it once the key opens.
+     */
+    @Test fun aRingThatCantOpenTheClocksArmsEverythingAgain() {
+        val due = alertFor(group, ben, "00000000000000aa", t0 + hour)
+        val coming = alertFor("ffeeddccbbaa99887766554433221100", ben, "00000000000000bb", t0 + 3 * hour)
+        val now = t0 + hour + 1_000
+        assertEquals("nothing is dropped as gone", listOf(due, coming), QuietRang.again(listOf(due, coming), now))
+        // What the store does without the key: no group's clocks read, so the old path dropped both.
+        assertTrue(QuietRang.handle(listOf(due, coming), emptyMap(), now).let { it.post.isEmpty() && it.left.isEmpty() })
+        // A few minutes later the key opens: the alert due then is posted, from its record.
+        val later = now + QuietRang.AGAIN_MS
+        val r = QuietRang.handle(QuietRang.again(listOf(due), now), mapOf(group to bensClock(t0)), later)
+        assertEquals(listOf(due), r.post)
+        assertTrue("a few minutes, not at once", QuietRang.AGAIN_MS in 60_000L..10 * 60_000L)
+        // A key that stays unreadable doesn't wake the phone for ever: an alert 12 hours past its time goes, as it would anyway.
+        assertEquals(listOf(due), QuietRang.again(listOf(due), t0 + hour + QuietClock.LATE_MS))
+        assertEquals(emptyList<QuietAlert>(), QuietRang.again(listOf(due), t0 + hour + QuietClock.LATE_MS + 1))
+    }
+
+    /**
+     * Re-check N3: the receiver found no group in use. The alarm goes only when no group is saved at all (an erase ended)
+     * or the saved groups read and none is left (every group was left); saved groups that can't be read right now (the
+     * Keystore failed for a moment) arm it again, never cancel it for good.
+     */
+    @Test fun theAlarmGoesOnlyWhenNoGroupIsSaved() {
+        assertEquals(QuietRang.Gate.RING, QuietRang.gate(group = true, saved = true, readable = true))
+        assertEquals(QuietRang.Gate.CANCEL, QuietRang.gate(group = false, saved = false, readable = true))
+        assertEquals(QuietRang.Gate.CANCEL, QuietRang.gate(group = false, saved = true, readable = true))
+        assertEquals(QuietRang.Gate.AGAIN, QuietRang.gate(group = false, saved = true, readable = false))
+    }
+
+    /** Re-check N4: the words the window and Home show when the store can't be opened (the desktop shows them: QuietStoreEngineTest). */
+    @Test fun aStoreFromANewerVersionIsSaidInWords() {
+        assertEquals("The saved messages were written by a newer version of DarkProof (store 10, this version reads 9). Install the newer version again.", StoreTooNew.text(10, 9))
+        assertEquals("Can't open the saved messages", StoreTooNew.words(IllegalStateException("disk I/O error")))
+    }
 }
