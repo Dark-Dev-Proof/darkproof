@@ -334,4 +334,40 @@ final class VoiceTests: XCTestCase {
                                about: .reply(named), voice: o.message.voice, iv: Hex.decode(v["iv"]!)) { _ in Hex.decode(v["signature"]!) }
         XCTAssertEqual(Hex.encode(again), v["cipher"]); XCTAssertEqual(String(g.hideTime(ts, again)), v["wire_ts"])
     }
+
+    // MARK: - Seek, speed and the record lock (the screens; the same cases as Android's VoiceNotesTest)
+
+    func testTheSpeedChipGoesRoundAndIsKeptOnlyIfKnown() {
+        XCTAssertEqual(Voice.nextSpeed(1), 1.5); XCTAssertEqual(Voice.nextSpeed(1.5), 2); XCTAssertEqual(Voice.nextSpeed(2), 1)
+        XCTAssertEqual(Voice.nextSpeed(3), 1) // from an unknown speed, back to 1×
+        XCTAssertEqual(Voice.speed(of: 0), 1); XCTAssertEqual(Voice.speed(of: 1.25), 1); XCTAssertEqual(Voice.speed(of: 2), 2)
+        XCTAssertEqual(Voice.speeds.map(Voice.speedLabel), ["1×", "1.5×", "2×"])
+        XCTAssertEqual(Voice.speeds.map(Voice.speedSpoken), ["Playback speed, normal", "Playback speed, 1.5 times", "Playback speed, 2 times"])
+    }
+
+    func testAFingerOnTheBarsSeeksAndAScreenReaderStepsByTenths() {
+        XCTAssertEqual(Voice.seekAt(-5, width: 100), 0); XCTAssertEqual(Voice.seekAt(25, width: 100), 0.25); XCTAssertEqual(Voice.seekAt(140, width: 100), 1)
+        XCTAssertEqual(Voice.seekAt(10, width: 0), 0)
+        XCTAssertEqual(Voice.stepped(0, forward: true), 0.1); XCTAssertEqual(Voice.stepped(0, forward: false), 0); XCTAssertEqual(Voice.stepped(1, forward: true), 1)
+        XCTAssertEqual(Voice.stepped(0.43, forward: true), 0.5); XCTAssertEqual(Voice.stepped(0.43, forward: false), 0.3)
+        var at = 0.0; for _ in 0..<12 { at = Voice.stepped(at, forward: true) }; XCTAssertEqual(at, 1)
+        XCTAssertEqual(Voice.positionSpoken(0, count: 350), "0 of 7 seconds")
+        XCTAssertEqual(Voice.positionSpoken(0.43, count: 350), "3 of 7 seconds")
+        XCTAssertEqual(Voice.positionSpoken(1, count: 340), "7 of 7 seconds") // 6.8 s shown as 7: the end says the whole length
+        XCTAssertEqual(Voice.positionSpoken(1, count: 50), "1 of 1 second")
+    }
+
+    func testSlidingUpLocksSlidingAwayCancels() {
+        let w = 52.0, h = 52.0
+        XCTAssertEqual(Voice.slide(x: 26, y: 26, width: w, height: h), .hold)
+        XCTAssertEqual(Voice.slide(x: 26, y: -71, width: w, height: h), .hold)
+        XCTAssertEqual(Voice.slide(x: 26, y: -72, width: w, height: h), .lock)
+        XCTAssertEqual(Voice.slide(x: -35, y: -80, width: w, height: h), .lock) // a thumb drifts sideways on its way up
+        XCTAssertEqual(Voice.slide(x: -41, y: -80, width: w, height: h), .cancel)
+        XCTAssertEqual(Voice.slide(x: -25, y: 10, width: w, height: h), .cancel)
+        XCTAssertEqual(Voice.slide(x: w + 25, y: 10, width: w, height: h), .cancel)
+        XCTAssertEqual(Voice.slide(x: 26, y: h + 25, width: w, height: h), .cancel)
+        XCTAssertEqual(Voice.slide(x: -24, y: h + 24, width: w, height: h), .hold)
+        XCTAssertEqual(Voice.lift(y: 10), 0); XCTAssertEqual(Voice.lift(y: -36), 0.5); XCTAssertEqual(Voice.lift(y: -200), 1)
+    }
 }

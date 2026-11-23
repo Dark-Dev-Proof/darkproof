@@ -17,7 +17,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/> <!-- restart the mesh after the phone restarts -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC"/> <!-- "Lock DarkProof", only if it is turned on -->
     <uses-permission android:name="android.permission.VIBRATE"/> <!-- help alerts while the app is open -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO"/> <!-- voice notes: only while the mic button is held, asked for at the first hold; never in the background -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/> <!-- voice notes: only from the press of the mic button until the note is sent or cancelled (held, or locked hands-free), asked for at the first hold; never in the background -->
     <!-- Nothing goes into a backup or a phone-to-phone transfer: group codes and messages stay on this phone. -->
     <!-- usesCleartextTraffic="false": nothing leaves the app unencrypted over HTTP or WebSocket. Debug builds allow it to 127.0.0.1 only, for the mock relay (src/debug). -->
     <!-- android:name: Startup runs first at every start, to finish an "Erase everything" that was begun (Erase.kt). -->

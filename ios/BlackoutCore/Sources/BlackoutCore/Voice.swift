@@ -180,4 +180,54 @@ public enum Voice {
         guard let top = rms.max(), top > 0 else { return Array(repeating: 0, count: bars) }
         return rms.map { min(1, max(0, $0 / top)) }
     }
+
+    // MARK: - Playing and recording on screen (seek, speed, record lock): this phone only, nothing here is sent
+
+    /// The speeds the bubble's chip goes through, in order. One choice for the whole app, kept on this phone.
+    public static let speeds: [Float] = [1, 1.5, 2]
+
+    /// A kept speed, or 1 if it isn't one of `speeds` (nothing kept yet).
+    public static func speed(of kept: Float) -> Float { speeds.contains(kept) ? kept : 1 }
+
+    /// The speed after `s` when the chip is tapped: 1×, 1.5×, 2×, then 1× again.
+    public static func nextSpeed(_ s: Float) -> Float { speeds[((speeds.firstIndex(of: s) ?? -1) + 1) % speeds.count] }
+
+    /// The chip: "1×", "1.5×", "2×".
+    public static func speedLabel(_ s: Float) -> String { (s == s.rounded() ? String(Int(s)) : String(s)) + "×" }
+
+    /// What a screen reader says for the chip: "Playback speed, normal", "Playback speed, 1.5 times".
+    public static func speedSpoken(_ s: Float) -> String { "Playback speed, " + (s == 1 ? "normal" : String(speedLabel(s).dropLast()) + " times") }
+
+    /// Where a finger at `x` on bars `width` wide puts the note: 0 (its start) to 1 (its end).
+    public static func seekAt(_ x: Double, width: Double) -> Double { width <= 0 ? 0 : min(1, max(0, x / width)) }
+
+    /// A screen reader's adjust gesture on the bars moves the note by a tenth, to the nearest tenth.
+    public static func stepped(_ at: Double, forward: Bool) -> Double { Double(min(10, max(0, Int((at * 10).rounded()) + (forward ? 1 : -1)))) / 10 }
+
+    /// What a screen reader says for where a note of `count` packets is at `at` (0 to 1): "3 of 7 seconds".
+    public static func positionSpoken(_ at: Double, count: Int) -> String {
+        let total = seconds(count)
+        let now = (Int(min(1, max(0, at)) * Double(durationMs(count))) + 500) / 1000
+        return "\(min(now, total)) of \(total) second\(total == 1 ? "" : "s")"
+    }
+
+    /// How far above the mic button's top edge the finger slides to lock a recording (points on iPhone, dp on Android).
+    public static let lockReach: Double = 72
+    /// How far beside or below the mic button the finger may go before the recording is cancelled; beside it once the
+    /// finger is above it, a little more.
+    public static let cancelMargin: Double = 24
+    public static let cancelMarginAbove: Double = 40
+
+    /// What the finger on the mic does to a recording.
+    public enum Slide: Equatable { case hold, lock, cancel }
+
+    /// `Slide` for a finger at `x`, `y` (from the button's top left corner) on a mic button `width` by `height`.
+    public static func slide(x: Double, y: Double, width: Double, height: Double) -> Slide {
+        let side = y < 0 ? cancelMarginAbove : cancelMargin
+        if x < -side || x > width + side || y > height + cancelMargin { return .cancel }
+        return -y >= lockReach ? .lock : .hold
+    }
+
+    /// How near the finger is to the lock, 0 to 1, for the lock's picture.
+    public static func lift(y: Double) -> Double { min(1, max(0, -y / lockReach)) }
 }

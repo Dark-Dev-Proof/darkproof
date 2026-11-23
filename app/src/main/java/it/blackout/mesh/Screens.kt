@@ -234,12 +234,12 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
                     }.start()
                 }
             }
-            if (recording) RecordingStrip(voice.rec, Modifier.weight(1f))
+            if (recording) RecordingStrip(voice, Modifier.weight(1f))
             else TextBox(draft, { s.drafts[channel] = it.take(1000) }, if (everyone) "Message everyone" else "Message ${g.name}", singleLine = false,
                 keyboard = KeyboardOptions(KeyboardCapitalization.Sentences), modifier = Modifier.weight(1f).focusRequester(focusDraft), shape = RoundedCornerShape(26.dp),
                 onEnter = if (Here.wide) send else null) // at a computer's keyboard, Enter sends
             // An empty box in a group: the send button is the mic (hold to record). Never on Everyone, never where it can't record.
-            if (recording || (!everyone && VoiceAudio.canRecord && draft.isBlank())) MicButton(voice.rec, voice.begin, voice.end)
+            if (recording || (!everyone && VoiceAudio.canRecord && draft.isBlank())) MicButton(voice)
             else RoundIcon(R.drawable.ic_arrow_upward, 52.dp, tint = if (draft.isBlank()) Theme.dim else Color.Black,
                 bg = if (draft.isBlank()) Theme.tile else Color.White, desc = "Send", onClick = send)
         }

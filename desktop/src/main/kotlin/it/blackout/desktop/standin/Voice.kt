@@ -14,6 +14,10 @@ object VoiceAudio {
     val playing: String? get() = null
     val progress: Float get() = 0f
     fun toggle(id: String, frames: ByteArray, failed: () -> Unit) = failed()
+    fun position(id: String) = 0f
+    fun seek(id: String, to: Float) {}
+    fun speed(c: Context) = 1f
+    fun cycleSpeed(c: Context) {}
     fun stopPlaying() {}
     fun levels(id: String, frames: ByteArray): FloatArray? = null
 

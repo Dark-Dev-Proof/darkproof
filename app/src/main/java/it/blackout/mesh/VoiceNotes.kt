@@ -175,4 +175,56 @@ object Voice {
         val top = rms.maxOrNull()?.takeIf { it > 0f } ?: return FloatArray(bars)
         return FloatArray(bars) { (rms[it] / top).coerceIn(0f, 1f) }
     }
+
+    // MARK: - Playing and recording on screen (seek, speed, record lock): this phone only, nothing here is sent
+
+    /** The speeds the bubble's chip goes through, in order. One choice for the whole app, kept on this phone. */
+    val SPEEDS = floatArrayOf(1f, 1.5f, 2f)
+
+    /** A kept speed, or 1 if it isn't one of [SPEEDS] (nothing kept yet). */
+    fun speedOf(kept: Float): Float = SPEEDS.firstOrNull { it == kept } ?: 1f
+
+    /** The speed after [s] when the chip is tapped: 1×, 1.5×, 2×, then 1× again. */
+    fun nextSpeed(s: Float): Float = SPEEDS[(SPEEDS.indexOfFirst { it == s } + 1) % SPEEDS.size]
+
+    /** The chip: "1×", "1.5×", "2×". */
+    fun speedLabel(s: Float): String = (if (s == s.toInt().toFloat()) s.toInt().toString() else s.toString()) + "×"
+
+    /** What a screen reader says for the chip: "Playback speed, normal", "Playback speed, 1.5 times". */
+    fun speedSpoken(s: Float): String = "Playback speed, " + if (s == 1f) "normal" else speedLabel(s).dropLast(1) + " times"
+
+    /** Where a finger at [x] on bars [width] wide puts the note: 0 (its start) to 1 (its end). */
+    fun seekAt(x: Float, width: Float): Float = if (width <= 0f) 0f else (x / width).coerceIn(0f, 1f)
+
+    /** A screen reader's adjust gesture on the bars moves the note by a tenth, to the nearest tenth. */
+    fun stepped(at: Float, forward: Boolean): Float = (Math.round(at * 10) + if (forward) 1 else -1).coerceIn(0, 10) / 10f
+
+    /** What a screen reader says for where a note of [count] packets is at [at] (0 to 1): "3 of 7 seconds". */
+    fun positionSpoken(at: Float, count: Int): String {
+        val total = seconds(count)
+        val now = ((at.coerceIn(0f, 1f) * durationMs(count)).toInt() + 500) / 1000
+        return "${minOf(now, total)} of $total second${if (total == 1) "" else "s"}"
+    }
+
+    /** How far above the mic button's top edge the finger slides to lock a recording (dp on Android, points on iPhone). */
+    const val LOCK_REACH = 72
+    /** How far beside or below the mic button the finger may go before the recording is cancelled; beside it once the finger is above it, a little more. */
+    const val CANCEL_MARGIN = 24
+    const val CANCEL_MARGIN_ABOVE = 40
+
+    /** What the finger on the mic does to a recording. */
+    enum class Slide { HOLD, LOCK, CANCEL }
+
+    /** [Slide] for a finger at [x], [y] (from the button's top left corner) on a mic button [w] by [h]; [dp]: pixels per dp. */
+    fun slide(x: Float, y: Float, w: Float, h: Float, dp: Float = 1f): Slide {
+        val side = (if (y < 0f) CANCEL_MARGIN_ABOVE else CANCEL_MARGIN) * dp
+        return when {
+            x < -side || x > w + side || y > h + CANCEL_MARGIN * dp -> Slide.CANCEL
+            -y >= LOCK_REACH * dp -> Slide.LOCK
+            else -> Slide.HOLD
+        }
+    }
+
+    /** How near the finger is to the lock, 0 to 1, for the lock's picture. */
+    fun lift(y: Float, dp: Float = 1f): Float = (-y / (LOCK_REACH * dp)).coerceIn(0f, 1f)
 }
