@@ -186,40 +186,19 @@ data class Pin(val title: String, val spot: Spot, val ts: Long, val color: Strin
  * How pins look on the map, drawn here as pictures so the map needs nothing from the internet for them (no sprite, no
  * font): a charcoal disc with a white glyph and a coloured ring, like the iPhone's MapView.swift, and for nearby pins
  * merged together, a charcoal bubble with the count. Each picture has a name that says everything needed to draw it
- * again, so the map can ask for it again at any time.
+ * again ([PinArt], MapPins.kt, shared with the desktop's tests), so the map can ask for it again at any time.
  */
-object PinArt {
-    const val PIN = "dp-pin|"
-    const val CLUSTER = "dp-cluster-"
+object PinPictures {
     private const val SIZE = 38f   // dp, as the iPhone's pins (points)
     private const val RING = 2.5f
     private const val GLYPH = 20f
     private const val CHARCOAL = 0xFF212121.toInt() // Theme.tile
 
-    /** The picture name of [p]. */
-    fun nameOf(p: Pin): String = PIN + (p.icon ?: 0) + "|" + p.color + "|" + (if (p.icon == null) initial(p.title) else "")
-
-    /** The first letter of a name as one drawn character (an emoji or accented letter stays whole), "?" for none. */
-    fun initial(name: String): String {
-        val t = name.trim()
-        if (t.isEmpty()) return "?"
-        val b = java.text.BreakIterator.getCharacterInstance().apply { setText(t) }
-        val end = b.next().takeIf { it != java.text.BreakIterator.DONE } ?: t.length
-        return t.substring(0, end).uppercase()
-    }
-
-    /** What a bubble of [n] pins says: the number, shortened from a thousand on. */
-    fun count(n: Int): String = when {
-        n < 1_000 -> "$n"
-        n < 10_000 -> "${n / 1_000}.${n % 1_000 / 100}k"
-        else -> "${n / 1_000}k"
-    }
-
     /** The picture for [name], or null when the name is not one of ours (the map style's own icons). */
     fun image(ctx: Context, name: String): Bitmap? = runCatching {
         when {
-            name.startsWith(CLUSTER) -> name.removePrefix(CLUSTER).toIntOrNull()?.let { cluster(ctx, it) }
-            name.startsWith(PIN) -> name.removePrefix(PIN).split("|", limit = 3).takeIf { it.size == 3 }?.let { (icon, ring, letter) ->
+            name.startsWith(PinArt.CLUSTER) -> name.removePrefix(PinArt.CLUSTER).toIntOrNull()?.let { cluster(ctx, it) }
+            name.startsWith(PinArt.PIN) -> name.removePrefix(PinArt.PIN).split("|", limit = 3).takeIf { it.size == 3 }?.let { (icon, ring, letter) ->
                 pin(ctx, icon.toIntOrNull()?.takeIf { it != 0 }, android.graphics.Color.parseColor(ring), letter)
             }
             else -> null
@@ -243,7 +222,7 @@ object PinArt {
 
     private fun cluster(ctx: Context, n: Int): Bitmap {
         val d = ctx.resources.displayMetrics.density
-        val label = count(n)
+        val label = PinArt.count(n)
         val paint = textPaint(15 * d)
         val disc = max(40 * d, paint.measureText(label) + 24 * d); val halo = 5 * d
         val s = ceil(disc + 2 * halo).toInt()
@@ -294,7 +273,7 @@ fun StreetMap(pins: List<Pin>, me: Spot?, modifier: Modifier, open: (Sheet) -> U
             getMapAsync { m ->
                 m.uiSettings.isRotateGesturesEnabled = false
                 // Count bubbles, and any pin picture the map dropped while unused, are drawn when the map asks for them.
-                addOnStyleImageMissingListener { name -> m.style?.let { st -> PinArt.image(ctx, name)?.let { st.addImage(name, it) } } }
+                addOnStyleImageMissingListener { name -> m.style?.let { st -> PinPictures.image(ctx, name)?.let { st.addImage(name, it) } } }
                 m.setStyle(Style.Builder().fromUri(OfflineMap.STYLE)) { style ->
                     style.addSource(GeoJsonSource(SRC_PINS, GeoJsonOptions().withCluster(true).withClusterMaxZoom(14).withClusterRadius(50)))
                     style.addSource(GeoJsonSource(SRC_HELP))
@@ -351,7 +330,7 @@ fun StreetMap(pins: List<Pin>, me: Spot?, modifier: Modifier, open: (Sheet) -> U
         val st = map?.style ?: return@LaunchedEffect
         fun features(list: List<Pin>) = FeatureCollection.fromFeatures(list.map { p ->
             val name = PinArt.nameOf(p)
-            if (added.add(name)) PinArt.image(ctx, name)?.let { st.addImage(name, it) }
+            if (added.add(name)) PinPictures.image(ctx, name)?.let { st.addImage(name, it) }
             Feature.fromGeometry(Point.fromLngLat(p.spot.lon, p.spot.lat)).apply {
                 addStringProperty("title", p.title); addNumberProperty("ts", p.ts); addStringProperty("icon", name)
             }

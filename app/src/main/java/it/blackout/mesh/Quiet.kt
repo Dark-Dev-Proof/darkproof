@@ -31,8 +31,8 @@ import kotlinx.coroutines.delay
 
 /**
  * This phone's check-in clock in [g]. The group's phones that get the clock message keep it; if no check-in from this phone
- * reaches one of them by the deadline, it tells its owner. Who keeps it comes from the clock message's delivery receipts,
- * never the member list.
+ * reaches one of them by the deadline, it can alert its owner. Whose phones it reached comes from the clock message's
+ * delivery receipts, never the member list, and a receipt doesn't show that a phone keeps the clock (decision A).
  */
 @Composable
 fun QuietSheet(s: AppState, g: SavedGroup, close: () -> Unit) {
@@ -64,6 +64,7 @@ fun QuietSheet(s: AppState, g: SavedGroup, close: () -> Unit) {
 
     SheetPage(QuietWords.TITLE, close) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Txt(QuietWords.SUBTITLE, 14, FontWeight.SemiBold, Theme.dim) // the name the cards and alerts use (design review L3)
             Txt(QuietWords.LEAD, 19, FontWeight.Bold)
             Txt(QuietWords.SUB, 15, color = Theme.dim)
         }
@@ -71,7 +72,10 @@ fun QuietSheet(s: AppState, g: SavedGroup, close: () -> Unit) {
         if (own != null) {
             val (c, state) = own
             if (state is QuietBook.State.RanOut) Txt(QuietWords.ranOut(clock(ctx, state.deadline)), 15, FontWeight.SemiBold)
-            Txt(QuietWords.kept(remember(s.tick) { MeshEngine.quietKeepers(g.code) }), 15, color = Theme.dim, modifier = Modifier.fillMaxWidth(), align = TextAlign.Center)
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Txt(QuietWords.reached(remember(s.tick) { MeshEngine.quietKeepers(g.code) }), 15, color = Theme.dim, align = TextAlign.Center)
+                Txt(QuietWords.OLDER, 13, color = Theme.faint, align = TextAlign.Center) // right under whose phones it reached (design review H1)
+            }
             // A check-in stops the clock everywhere it reaches (rule Q4).
             PrimaryButton(QuietWords.SAFE, enabled = !busy, icon = R.drawable.ic_verified_user) { quietSafe(ctx, s, g) }
             SecondaryButton(QuietWords.ADD_MORE, enabled = !busy) { val old = c.deadline; send({ QuietClock.added(old, it) }, share && withSpot, QuietWords::added) }
@@ -87,8 +91,8 @@ fun QuietSheet(s: AppState, g: SavedGroup, close: () -> Unit) {
                 val m = minutes
                 send({ QuietClock.deadline(m, it) }, share && withSpot, QuietWords::sent)
             } else Txt(QuietWords.cantWrite(g.name, Here.device), 15, FontWeight.SemiBold) // rule QW2: never held until this phone is let in
+            Txt(QuietWords.OLDER, 13, color = Theme.faint)
         }
-        Txt(QuietWords.OLDER, 13, color = Theme.faint)
     }
 }
 
@@ -177,10 +181,12 @@ fun HomeQuietRow(s: AppState, g: SavedGroup, open: () -> Unit) {
 
 /**
  * A clock message in the chat: what this phone will do about it, in words that claim no more than it knows. [name]: null
- * for this phone's own, else as rule Q13 has it. A device without alerts (a computer) promises nothing about telling.
+ * for this phone's own, else as rule Q13 has it. [keeping]: this device holds this very clock, armed ([QuietBook.keeps]);
+ * if not, the card says so and promises nothing (review item 9). A device without alerts (a computer) promises nothing
+ * about telling; a phone whose alerts are off for DarkProof ([alertsOff]) says it shows here instead (design review M1).
  */
 @Composable
-fun QuietCard(m: Message, deadline: Long, name: String?, time: String) {
+fun QuietCard(m: Message, deadline: Long, name: String?, time: String, keeping: Boolean, alertsOff: Boolean) {
     val ctx = LocalContext.current
     Column(Modifier.fillMaxWidth().background(Theme.tile, RoundedCornerShape(24.dp)).padding(horizontal = 18.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -191,8 +197,8 @@ fun QuietCard(m: Message, deadline: Long, name: String?, time: String) {
             Spacer(Modifier.width(8.dp))
             Txt(time, 14, color = Theme.dim)
         }
-        if (deadline != 0L && (name == null || Here.notifications)) {
-            val sub = QuietWords.startedSub(name, clock(ctx, deadline)) + if (name != null) " " + QuietWords.CAN_BE_LATE else ""
+        // late: Android's alarms are inexact (a computer posts none, so it never gets that far).
+        if (deadline != 0L) QuietWords.cardLine(name, clock(ctx, deadline), keeping, Here.notifications, alertsOff, Here.device, late = true)?.let { sub ->
             Txt(sub, 15, color = Theme.dim, modifier = Modifier.padding(start = 38.dp))
         }
         QuietClock.spot(m.text)?.let { Box(Modifier.padding(start = 38.dp)) { PlusCodeLabel(it, 13) } }

@@ -88,7 +88,9 @@ fun VoiceNoteRow(m: Message, onWhite: Boolean, preview: Boolean, hold: () -> Uni
     val at = drag ?: VoiceAudio.position(m.id)
     val live = !preview && !failed
     val fill = if (onWhite) Color.Black.copy(alpha = 0.10f) else Color.White.copy(alpha = 0.13f)
-    Column(Modifier.padding(start = 10.dp, end = 12.dp, top = 9.dp, bottom = 9.dp)) {
+    // The row is 48 dp tall for touch (the bars, the speed chip) and drawn as before: 2 dp above and below it instead of 9,
+    // so the bubble keeps its height (design review L2).
+    Column(Modifier.padding(start = 10.dp, end = 12.dp, top = 2.dp, bottom = 2.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.semantics(mergeDescendants = true) {
                 contentDescription = Voice.spoken(secs)
@@ -114,14 +116,14 @@ fun VoiceNoteRow(m: Message, onWhite: Boolean, preview: Boolean, hold: () -> Uni
             Spacer(Modifier.width(8.dp))
             SpeedChip(ink, fill, enabled = live)
         }
-        if (failed) Txt("Can't play this voice note.", 13, color = ink.copy(alpha = 0.6f), modifier = Modifier.padding(start = 4.dp, top = 4.dp))
+        if (failed) Txt("Can't play this voice note.", 13, color = ink.copy(alpha = 0.6f), modifier = Modifier.padding(start = 4.dp, bottom = 7.dp))
     }
 }
 
-/** 20 bars, 2.5 dp wide, up to 18 dp tall; those already played are drawn full, the rest dimmer (board `.wv`). 34 dp of touch. */
+/** 20 bars, 2.5 dp wide, up to 18 dp tall; those already played are drawn full, the rest dimmer (board `.wv`). 48 dp of touch. */
 @Composable
 private fun Bars(levels: FloatArray?, progress: Float, ink: Color, modifier: Modifier = Modifier) =
-    Row(modifier.height(34.dp), horizontalArrangement = Arrangement.spacedBy(2.5.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier.height(48.dp), horizontalArrangement = Arrangement.spacedBy(2.5.dp), verticalAlignment = Alignment.CenterVertically) {
         for (i in 0 until 20) {
             val l = levels?.getOrNull(i) ?: 0f
             val played = progress > 0f && (i + 0.5f) / 20f <= progress
@@ -153,7 +155,7 @@ private fun SpeedChip(ink: Color, fill: Color, enabled: Boolean) {
     val ctx = LocalContext.current
     val s = VoiceAudio.speed(ctx)
     val shape = RoundedCornerShape(13.dp)
-    Box(Modifier.heightIn(min = 34.dp).clip(shape).tap(Press(shape = shape, buzz = Buzz.Tick), enabled = enabled, label = "Change") { VoiceAudio.cycleSpeed(ctx) }
+    Box(Modifier.heightIn(min = 48.dp).clip(shape).tap(Press(shape = shape, buzz = Buzz.Tick), enabled = enabled, label = "Change") { VoiceAudio.cycleSpeed(ctx) }
         .semantics { contentDescription = Voice.speedSpoken(s) }, contentAlignment = Alignment.Center) {
         Box(Modifier.widthIn(min = 38.dp).height(26.dp).background(fill, shape).padding(horizontal = 8.dp), contentAlignment = Alignment.Center) {
             Txt(Voice.speedLabel(s), 13, FontWeight.SemiBold, ink, maxLines = 1)
@@ -176,7 +178,9 @@ fun RecordingStrip(v: VoiceComposer, modifier: Modifier = Modifier) {
     var ms by remember { mutableLongStateOf(0L) }
     LaunchedEffect(rec.on) { while (rec.on) { ms = VoiceAudio.recordedMs(); delay(100) } }
     val secs = (ms / 1000).toInt().coerceAtMost(10)
-    val blink by produceState(1f, rec.on) { var on = true; while (true) { delay(500); on = !on; value = if (on) 1f else 0.3f } }
+    // The dot blinks, except in calm mode: then it stays lit (design review L7).
+    val calm = Motion.calm
+    val blink by produceState(1f, rec.on, calm) { value = 1f; if (calm) return@produceState; var on = true; while (true) { delay(500); on = !on; value = if (on) 1f else 0.3f } }
     val dot = @Composable {
         Box(Modifier.size(10.dp).background(Theme.help.copy(alpha = if (rec.full) 1f else blink), CircleShape))
         Spacer(Modifier.width(10.dp))
@@ -186,8 +190,8 @@ fun RecordingStrip(v: VoiceComposer, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.semantics(mergeDescendants = true) { contentDescription = "Recording hands-free, ${Voice.label(secs)}" }, verticalAlignment = Alignment.CenterVertically) { dot() }
         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-            val pill = RoundedCornerShape(22.dp)
-            Box(Modifier.heightIn(min = 44.dp).clip(pill).tap(Press(shape = pill)) { v.end(false) }.semantics { contentDescription = "Cancel voice note" }
+            val pill = RoundedCornerShape(24.dp)
+            Box(Modifier.heightIn(min = 48.dp).clip(pill).tap(Press(shape = pill)) { v.end(false) }.semantics { contentDescription = "Cancel voice note" }
                 .padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
                 Txt("Cancel", 15, FontWeight.SemiBold, maxLines = 1)
             }
@@ -310,6 +314,10 @@ fun rememberVoiceComposer(s: AppState, replying: () -> Message?, sent: () -> Uni
     var risk by remember { mutableStateOf(false) }     // high-risk mode, once before the first recording
     val toast = { t: String -> Toast.makeText(ctx, t, Toast.LENGTH_SHORT).show() }
     val ask = VoiceAudio.rememberMicAsk { ok -> if (ok) toast("Hold the mic to record") }
+    // The composer below is made once, so it reads these as they are now, not as they were then: a reply started or
+    // cancelled after the chat was composed is what the note answers (review: must-fix 4).
+    val replyingNow by rememberUpdatedState(replying)
+    val sentNow by rememberUpdatedState(sent)
     if (why) Confirm("Use the microphone?", "To record a voice note for your group, from when you press the mic button until the note is sent or cancelled. Nothing is recorded at any other time.", "Continue",
         onYes = { why = false; VoiceAudio.notedMicAsked(ctx); ask() }, onNo = { why = false })
     if (off) Confirm("The microphone is off", "DarkProof can't use the microphone. Turn it on in Settings to record voice notes.", "Open Settings",
@@ -335,12 +343,12 @@ fun rememberVoiceComposer(s: AppState, replying: () -> Message?, sent: () -> Uni
                 rec.on = false; rec.locked = false
                 if (!keep) { VoiceAudio.cancelRecording(); toast("Voice note cancelled") }
                 else {
-                    val to = replying()
+                    val to = replyingNow()
                     Thread {
                         val r = VoiceAudio.finishRecording()
                         android.os.Handler(android.os.Looper.getMainLooper()).post {
                             when (r) {
-                                is VoiceAudio.Result.Ready -> { sent(); Thread { MeshEngine.send(Voice.PLACEHOLDER, voice = r.frames, replyTo = to) }.start() }
+                                is VoiceAudio.Result.Ready -> { sentNow(); Thread { MeshEngine.send(Voice.PLACEHOLDER, voice = r.frames, replyTo = to) }.start() }
                                 VoiceAudio.Result.TooShort -> toast("Hold the mic to record")
                                 is VoiceAudio.Result.CantRecord -> { DebugTools.log("voice note not sent: ${r.why}"); toast("This phone can't record voice notes.") }
                             }

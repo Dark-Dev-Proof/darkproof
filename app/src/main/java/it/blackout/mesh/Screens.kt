@@ -63,6 +63,7 @@ import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusEvent
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -174,7 +175,9 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
             if (!Here.wide) { // a wide window names the chat above it and switches channels at its side
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // The group's timer shows next to the reach line only while one is set.
-                    Box(Modifier.weight(1f)) { ScreenTitle(g.name, if (phones == 1) "1 phone in range" else "$phones phones in range", timer = timer?.takeIf { it > 0 }?.let(GroupTimer::label)) }
+                    // Online through the relays with no phone in range: it says so, as the iPhone does (design review L5).
+                    val reach = remember(tick, phones) { ChatReach.line(phones, MeshEngine.nostr?.connected ?: 0, Tor.enabled(ctx)) }
+                    Box(Modifier.weight(1f)) { ScreenTitle(g.name, reach, timer = timer?.takeIf { it > 0 }?.let(GroupTimer::label)) }
                     if (!everyone) RoundIcon(R.drawable.ic_shield, desc = "Group security") { open(Sheet.Security) }
                 }
                 PillSwitch(g.name, "Everyone", everyone) { s.everyone = it }
@@ -211,8 +214,8 @@ fun ChatTab(s: AppState, g: SavedGroup, messages: List<Message>, phones: Int, op
                 Column(Modifier.fillMaxWidth().padding(top = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Txt(if (leaves) "No messages here now" else "No messages yet", 20, FontWeight.Bold)
                     Txt(if (everyone) "Messages here reach everyone, nearby or online."
-                        else if (leaves) "What you write reaches everyone in ${g.name} who is in range, or later when they are."
-                        else if (Here.tabBar) "Say hi, or tap I'm safe on Home." else "Say hi, or tap I'm safe.", 15, color = Theme.dim, align = TextAlign.Center)
+                        else if (leaves) "What you write reaches everyone in ${g.name} who is in reach, or later when they are."
+                        else "Write the first one. It reaches everyone in ${g.name} who is in reach, or later when they are.", 15, color = Theme.dim, align = TextAlign.Center) // the iPhone's words (design review L5)
                 }
             }
         }
@@ -260,9 +263,15 @@ private fun rowExtras(m: Message, s: AppState, everyone: Boolean, shown: Map<Str
     val quote = remember(m, shown, held) { if (everyone) null else quoteOf(m, shown, held, MeshEngine.deviceId) }
     val chips = remember(tick, moderated, m) { if (m.public) emptyList() else MeshEngine.chips(m) }
     val canAnswer = remember(tick, m) { !m.public && MeshEngine.canAnswer(m) }
+    // Someone else's check-in clock: whether this device keeps that very clock (review item 9).
+    val keepsClock = remember(tick, m) {
+        val d = (m.notice as? Notice.Clock)?.deadline
+        d != null && !m.public && m.sender != MeshEngine.deviceId && QuietBook.keeps(MeshEngine.quietState(m.group, m.sender), d, m.verified)
+    }
     return RowExtras(quote, chips, canAnswer, flash,
         react = { e -> Thread { MeshEngine.react(m, e) }.start() }, reply = reply, jump = jump,
-        journey = { if (!m.public && m.sender == MeshEngine.deviceId) open(Sheet.Journey(m.id)) }, finder = finder)
+        journey = { if (!m.public && m.sender == MeshEngine.deviceId) open(Sheet.Journey(m.id)) }, finder = finder,
+        keepsClock = keepsClock, alertsOff = s.notificationsOff)
 }
 
 /**
@@ -305,7 +314,7 @@ private fun AddTray(photo: () -> Unit, voice: (() -> Unit)?, safeSent: Int, safe
         voice?.let { v -> { m: Modifier -> CircleAction(R.drawable.ic_mic, "Voice note", m, onClick = v) } },
         { m -> CircleAction(R.drawable.ic_verified_user, "I'm safe", m, Theme.safe, moment, onClick = safe) },
         { m -> CircleAction(R.drawable.ic_sos, "I need help", m, Theme.help, onClick = help) },
-        { m -> CircleAction(R.drawable.ic_notifications, "Ask if safe", m, onClick = ask) },
+        { m -> CircleAction(R.drawable.ic_message_circle_question, "Ask if safe", m, onClick = ask) },
         { m -> CircleAction(R.drawable.ic_schedule, "Timer", m, onClick = timer) },
     )
     Column(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -321,9 +330,12 @@ private fun AddTray(photo: () -> Unit, voice: (() -> Unit)?, safeSent: Int, safe
 fun AskEveryone(g: SavedGroup, close: () -> Unit) {
     val ctx = LocalContext.current
     Confirm("Ask if everyone is safe?", "Everyone in ${g.name} gets “Is everyone safe?” with one-tap answers.", "Ask",
-        onYes = { close(); if (meshReady(ctx)) { Thread { MeshEngine.send(AreYouSafe().text) }.start(); Toast.makeText(ctx, "Asked ${g.name}", Toast.LENGTH_SHORT).show() } },
+        onYes = { close(); if (meshReady(ctx)) { Thread { MeshEngine.send(AreYouSafe().text) }.start(); Toast.makeText(ctx, asked(g.name), Toast.LENGTH_LONG).show() } },
         onNo = close)
 }
+
+/** The toast after "Ask": "Asked My group", or with nothing in reach that it waits on this device (design review L5). */
+fun asked(to: String) = ChatReach.asked(to, Links.now().any)
 
 /**
  * What a message row needs for replies and reactions (spec "Replies and reactions"): its [quote] if it is a reply, the
@@ -333,7 +345,11 @@ fun AskEveryone(g: SavedGroup, close: () -> Unit) {
 private class RowExtras(val quote: QuoteLine?, val chips: List<Reactions.Chip>, val canAnswer: Boolean, val flash: Boolean,
                         val react: (String) -> Unit, val reply: () -> Unit, val jump: (String) -> Unit, val journey: () -> Unit,
                         /** The sender's latest check-in, a help check-in whose phone can be found by Bluetooth: "Find by Bluetooth" under it (trial). */
-                        val finder: Boolean = false)
+                        val finder: Boolean = false,
+                        /** Someone else's check-in clock that this device keeps, armed ([QuietBook.keeps]). */
+                        val keepsClock: Boolean = false,
+                        /** Alerts are off for DarkProof on this phone: a kept clock's card says it shows here instead. */
+                        val alertsOff: Boolean = false)
 
 /**
  * One message: a check-in, a report about someone, an "are you safe?" question (with one-tap answers when it is for
@@ -358,15 +374,19 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
     var menu by remember { mutableStateOf(false) }
     var held by remember { mutableStateOf(false) }
     var confirmBlock by remember { mutableStateOf(false) }
+    var rowFocused by remember { mutableStateOf(false) } // the row itself has the keyboard's focus, not something inside it
     val openMenu = { Buzz.play(Buzz.Hold); if (m.public) menu = true else held = true }
     val hold = Modifier
-        // A computer: the menu key or Shift+F10 (and Enter) on a message opens what holding it opens.
+        // A computer: the menu key or Shift+F10 on a message, or on anything inside it, opens what holding it opens. Enter
+        // and Space do so only on the row itself: on a button inside it (the answers, a reaction, the quote, a photo) they
+        // press that button.
         .onPreviewKeyEvent { e ->
             val k = e.key
-            val asks = k == Key.Enter || k == Key.NumPadEnter || k == Key.Spacebar || k == Key.Menu || (k == Key.F10 && e.isShiftPressed)
+            val asks = k == Key.Menu || (k == Key.F10 && e.isShiftPressed) || (rowFocused && (k == Key.Enter || k == Key.NumPadEnter || k == Key.Spacebar))
             if (asks && e.type == KeyEventType.KeyDown) openMenu()
             asks
         }
+        .onFocusEvent { rowFocused = it.isFocused }
         // A mouse: the right button opens it too.
         .pointerInput(m.id) { awaitPointerEventScope { while (true) { val e = awaitPointerEvent(); if (e.type == PointerEventType.Press && e.buttons.isSecondaryPressed) { e.changes.forEach { it.consume() }; openMenu() } } } }
         .combinedClickable(interactionSource = null, indication = MessagePress, onLongClick = openMenu, onClick = {}, onLongClickLabel = "Message options")
@@ -392,7 +412,7 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
         if (card) x.quote?.let { q -> QuoteView(q, Modifier.padding(bottom = 4.dp).background(Theme.card, RoundedCornerShape(14.dp)).padding(horizontal = 12.dp, vertical = 8.dp), tap = if (preview) null else ({ q.row?.let(x.jump) }), hold = if (preview) null else openMenu) }
         when {
             quiet != null -> {
-                QuietCard(m, quiet, if (me) null else MeshEngine.quietName(m.group, m.sender) ?: m.name, time)
+                QuietCard(m, quiet, if (me) null else MeshEngine.quietName(m.group, m.sender) ?: m.name, time, keeping = me || x.keepsClock, alertsOff = x.alertsOff)
                 if (!preview) { Chips(x); if (me) Status(delivery, null, x.journey) }
             }
             check != null -> {
@@ -444,7 +464,7 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
                 Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Theme.card).padding(horizontal = 18.dp, vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Ic(R.drawable.ic_notifications, Theme.text, 26.dp)
+                        Ic(R.drawable.ic_message_circle_question, Theme.text, 26.dp)
                         Spacer(Modifier.width(14.dp))
                         Txt("${if (me) "You" else m.name} asked: ${m.text.removePrefix("❓ ")}", 17, FontWeight.SemiBold, modifier = Modifier.weight(1f))
                         Txt(time, 15, color = Theme.dim)
@@ -508,9 +528,10 @@ private fun MessageRow(m: Message, firstOfRun: Boolean, delivery: Delivery?, myN
             if (x.canAnswer) add(HoldItem("Reply", R.drawable.ic_reply) { close(); x.reply() })
             if (copyable.isNotEmpty()) add(HoldItem("Copy", R.drawable.ic_content_copy) { close(); copyText(ctx, "Message", copyable) })
             if (me) add(HoldItem("How it got there", R.drawable.ic_route) { close(); x.journey() })
-            // Last and red: what there was before for someone else's message. My own group messages have no local removal.
+            // Last: what there was before for someone else's message, Block in red. Hiding deletes nothing, so it isn't red
+            // (design review L4). My own group messages have no local removal.
             if (!me && Blocks.canBlock(m, MeshEngine.deviceId)) add(HoldItem("Block ${m.name}", R.drawable.ic_block, danger = true) { close(); confirmBlock = true })
-            else if (!me) add(HoldItem("Hide this message", R.drawable.ic_visibility_off, danger = true) { close(); hide() })
+            else if (!me) add(HoldItem("Hide this message", R.drawable.ic_visibility_off) { close(); hide() })
         }
         HoldOverlay(me && !card, if (x.canAnswer) ({ e -> close(); Buzz.play(Buzz.Tap); x.react(e) }) else null, items, close) {
             Column(horizontalAlignment = if (me && !card) Alignment.End else Alignment.Start) { body(true) }
@@ -772,7 +793,7 @@ fun PeopleTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<Messag
         }
         mine?.let { m -> Txt("Your last check-in: ${if (CheckIn.of(m.text) == CheckIn.HELP) "need help" else "safe"}, ${ago(m.ts)}.", 15, color = Theme.dim) }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            SecondaryButton("Ask everyone", Modifier.weight(1f), icon = R.drawable.ic_notifications) { askAll = true }
+            SecondaryButton("Ask everyone", Modifier.weight(1f), icon = R.drawable.ic_message_circle_question) { askAll = true }
             SecondaryButton("Check in for…", Modifier.weight(1f), icon = R.drawable.ic_group) { open(Sheet.Vouch) }
         }
         if (people.isEmpty()) Card {

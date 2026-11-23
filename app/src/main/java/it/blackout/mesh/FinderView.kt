@@ -77,9 +77,11 @@ private fun LiveFinder(p: Person, link: String, withThem: () -> Unit) {
     val inbox = remember { java.util.concurrent.atomic.AtomicReference<Int?>(null) } // the latest reading, from the Bluetooth thread
     var shown by remember { mutableStateOf(FinderWords.shown(p.name, FinderReach.NONE, FinderRole.NONE, null)) }
     var debug by remember { mutableStateOf<String?>(null) }
-    DisposableEffect(link) {
+    // Readings only while the app is on screen: with the sheet open behind Home, the scan and the reads stop, and start
+    // again when DarkProof comes back (Android review, finding 4).
+    WhileOnScreen(link) {
         if (fake == null) MeshEngine.ble?.startRssi(link) { inbox.set(it) }
-        onDispose { if (fake == null) MeshEngine.ble?.stopRssi() }
+        ({ if (fake == null) MeshEngine.ble?.stopRssi() })
     }
     // Once a second, whatever came in: this is the readings' clock, not an animation.
     LaunchedEffect(link) {

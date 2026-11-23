@@ -16,6 +16,22 @@ object Cut {
         if (s.length <= max) s else s.take(max.coerceAtLeast(0)).let { if (it.isNotEmpty() && it.last().isHighSurrogate()) it.dropLast(1) else it }
 }
 
+/** What the chat's header and the "Ask" toasts say about what can carry a message right now (design review L5). */
+object ChatReach {
+    /** The line under the chat's title: phones in reach first (and "online" when relays are linked too), else the relays. As the iPhone's. */
+    fun line(phones: Int, relays: Int, tor: Boolean): String = when {
+        phones > 0 -> (if (phones == 1) "1 phone in reach" else "$phones phones in reach") + if (relays > 0) " · online" else ""
+        relays > 0 -> if (tor) "Online through Tor" else "Online"
+        else -> "0 phones in reach"
+    }
+
+    /** What a toast says when nothing can carry a message now: it waits on this device. */
+    const val SAVED = "Saved. It goes out when a phone or the internet is in reach."
+
+    /** After "Ask": "Asked My group" only when something can carry it now ([inReach]). */
+    fun asked(to: String, inReach: Boolean) = if (inReach) "Asked $to" else SAVED
+}
+
 /** How long a message alert stays (spec "Alerts"). */
 object AlertLife {
     const val WEEK_MS = 7 * 24 * 3_600_000L

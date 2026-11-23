@@ -277,7 +277,7 @@ object FinderWords {
     fun card(name: String) = "$name needs help"
     /** The button, and the plain group message it sends (decision 6): no `✅` or `🆘`, so it is never taken for a check-in. */
     fun withThem(name: String) = "I'm with $name"
-    fun desktop(name: String) = "Finder needs a phone's Bluetooth. Search from DarkProof on a phone near $name."
+    fun desktop(name: String) = "$BUTTON works only on a phone. Search from DarkProof on a phone near $name."
     fun ended(name: String, safe: Boolean) = if (safe) "$name is safe" else "$name's phone can't be found by Bluetooth right now. A new “I need help” from $name makes it findable again."
 
     /** The line under a band's word (spec "What the screens say"); Not in reach's is "Keep moving." with the rest in the note. */
@@ -299,7 +299,7 @@ object FinderWords {
     /** The screen at one moment, from how the phones are linked ([reach]), how the signal is read ([role]) and the step. */
     fun shown(name: String, reach: FinderReach, role: FinderRole, step: FinderMath.Step?): Shown = when {
         reach == FinderReach.NONE -> Shown("Not in reach", "Keep moving.",
-            "Finder works only when this phone and $name's are linked by Bluetooth. If $name's phone restarted after asking, it can't be recognised until it sends a new check-in.", 0, 0, false)
+            "$BUTTON works only when this phone and $name's are linked by Bluetooth. If $name's phone restarted after asking, it can't be recognised until it sends a new check-in.", 0, 0, false)
         reach == FinderReach.OTHER -> Shown("Linked", "Not over Bluetooth",
             "Linked to $name's phone, but not over Bluetooth, so the signal can't be measured.", 0, 0, false)
         role == FinderRole.FAILED -> Shown("Linked", "Can't measure",

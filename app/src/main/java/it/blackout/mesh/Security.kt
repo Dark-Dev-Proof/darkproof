@@ -67,7 +67,7 @@ object SecurityWords {
     fun keyOldEnough(since: Long, now: Long, min: Long) = now - since >= min
 
     /** "Messages disappear": the usual rule, and in high-risk mode this device's own, counted from when a message arrives. */
-    fun disappear(highRisk: Boolean, device: String) = if (highRisk) "After one to two weeks. On this $device, 1 day after they arrive." else "After one to two weeks"
+    fun disappear(highRisk: Boolean, device: String) = if (highRisk) "After 1 to 2 weeks. On this $device, 1 day after they arrive." else "After 1 to 2 weeks"
 
     /**
      * The line above a group's chat: who reads it, and how long it stays. [timer]: the group's timer for disappearing
@@ -87,6 +87,9 @@ class SecurityLine(val key: String, @DrawableRes val icon: Int, val title: Strin
                    val explain: String? = null)
 
 object GroupSecurity {
+    /** The Tor line's name: the Connections switch's own. */
+    const val TOR = "Connect through Tor"
+
     /**
      * The lines for group [g], from what the engine knows right now. Six of them; while this phone is still asking to
      * join, or was removed, it knows neither the members nor a key in use, so those two lines are left out (the page shows
@@ -108,11 +111,11 @@ object GroupSecurity {
                 flagged = SecurityWords.keyOld(since, now), button = "New key".takeIf { !justChanged && MeshEngine.canMakeKey(code) }),
             // Every new key of a group is sealed to each member with ML-KEM-768 next to P-256: the engine makes none without (MeshEngine.makeRekey, Hybrid).
             SecurityLine("pq", R.drawable.ic_lock, "Quantum-safe keys", "On, always"),
-            // By the app's two switches: with Tor on, the relay links go through Tor or not at all.
+            // By the app's two switches: with Tor on, the relay links go through Tor or not at all. Named as in Connections (design review L3).
             when {
-                !internet -> SecurityLine("tor", R.drawable.ic_public, "Internet through Tor", "The internet is off", ok = false) // nothing goes out, so nothing to praise
-                Tor.enabled(c) -> SecurityLine("tor", R.drawable.ic_public, "Internet through Tor", "On")
-                else -> SecurityLine("tor", R.drawable.ic_public, "Internet through Tor", "Off", flagged = true, button = "Switch on")
+                !internet -> SecurityLine("tor", R.drawable.ic_public, TOR, "The internet is off", ok = false) // nothing goes out, so nothing to praise
+                Tor.enabled(c) -> SecurityLine("tor", R.drawable.ic_public, TOR, "On")
+                else -> SecurityLine("tor", R.drawable.ic_public, TOR, "Off", flagged = true, button = "Switch on")
             },
             // The group's timer as this phone knows it (spec "Disappearing messages"). While one is set the line explains
             // what it does and doesn't do; an admin changes it from here too.
@@ -258,11 +261,11 @@ fun TimerSheet(s: AppState, a: MainActivity, g: SavedGroup, close: () -> Unit) {
                 (GroupTimer.CHOICES + 0).forEach { seconds ->
                     val label = if (seconds == 0) "Off" else GroupTimer.label(seconds)
                     Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).tap(RowPress, enabled = making == null, role = Role.RadioButton,
-                        label = if (seconds == 0) "Off, one to two weeks" else label) { choose(seconds) }
+                        label = if (seconds == 0) "Off, 1 to 2 weeks" else label) { choose(seconds) }
                         .semantics { selected = t.seconds == seconds }.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                             Txt(label, 17, FontWeight.SemiBold)
-                            if (seconds == 0) Txt("One to two weeks", 14, color = Theme.dim)
+                            if (seconds == 0) Txt("1 to 2 weeks", 14, color = Theme.dim)
                         }
                         when {
                             making == seconds -> Txt("…", 17, FontWeight.Bold)
@@ -271,11 +274,12 @@ fun TimerSheet(s: AppState, a: MainActivity, g: SavedGroup, close: () -> Unit) {
                     }
                 }
             }
+            Txt(GroupTimer.TAKES_HELP, 14, color = Theme.dim) // under the choices (owner's decision D)
             val now = t.seconds
             if (now != null && now > 0 && now !in GroupTimer.CHOICES) Txt("Now ${GroupTimer.label(now)}.", 15, FontWeight.SemiBold) // set by another version: none of the rows has the check
             else if (now == null) Txt("Not known on this ${Here.device} yet.", 15, FontWeight.SemiBold)
             if (failed) Txt("Not changed. This ${Here.device} doesn't have every member's keys yet. Try again when more phones are in reach.", 15, FontWeight.SemiBold)
-            Txt("Counted from when a message reaches each phone. A new value starts deleting after 10 minutes. Phones on older DarkProof versions keep messages one to two weeks.", 14, color = Theme.dim)
+            Txt("Counted from when a message reaches each phone. A new value starts deleting after 10 minutes. Phones on older DarkProof versions keep messages 1 to 2 weeks.", 14, color = Theme.dim)
         } else {
             Txt(GroupTimer.sheetLine(t.seconds, Here.device), 17)
             Txt(if (MeshEngine.removed(g.code) || MeshEngine.joining(g.code)) "This ${Here.device} isn't in ${g.name} now." else "Only admins can change this.", 15, color = Theme.dim)

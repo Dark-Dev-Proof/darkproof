@@ -63,19 +63,20 @@ class TimerEngineTest {
                 s.await("this computer to be in it") { MeshEngine.isAdmin(code, MeshEngine.deviceId) }
                 val groupId = MeshEngine.groupId(code)!!
                 assertEquals("a group made here starts with the timer off, and knows it", 0, MeshEngine.timer(code).seconds)
-                assertTrue(s.has("They disappear after one to two weeks."))
+                assertTrue(s.has("They disappear after 1 to 2 weeks."))
 
                 // The admin chooses a value from the "+" tray.
                 s.tap("Add something"); s.tap("Timer")
                 s.await("the timer sheet") { s.has("Messages disappear after") }
-                assertTrue(s.says("1 hour") && s.says("8 hours") && s.says("1 day") && s.says("1 week") && s.says("Off") && s.says("One to two weeks"))
+                assertTrue(s.says("1 hour") && s.says("8 hours") && s.says("1 day") && s.says("1 week") && s.says("Off") && s.says("1 to 2 weeks"))
                 assertTrue(s.has("A new value starts deleting after 10 minutes."))
+                assertTrue("under the choices (owner's decision D)", s.says("This includes \"I need help\" calls and the positions sent with them."))
                 s.tap("1 hour")
                 RealEngine.await("the new key that carries it") { MeshEngine.timer(code).seconds == 3_600 }
                 s.await("the sheet to close") { !s.has("Messages disappear after") }
                 assertEquals("you", MeshEngine.timer(code).by)
                 s.await("the chat to say it") { s.has("You set messages to disappear after 1 hour") }
-                assertTrue("the composer note", s.has("They disappear 1 hour after they reach each phone."))
+                assertTrue("the composer note", s.has("This computer deletes them 1 hour after they arrive. So do phones on the latest DarkProof."))
                 assertTrue("the header's value", s.says("1 hour"))
                 System.getenv("TIMER_PNG")?.let { s.png(it) }
                 GroupSecurity.lines(c, Groups.current(c)!!).first { it.key == "gone" }.let { l ->

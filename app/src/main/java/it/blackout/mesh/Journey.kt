@@ -83,7 +83,8 @@ object Journey {
     }
 
     const val SEALED = "Sealed the whole way"
-    const val CARRIED = "Carried by other phones on the way. They can't read it, and nobody sees whose they are."
+    /** A phone linked to a carrier, or a relay without Tor, can see an address: what is true is that nothing DarkProof writes names a carrier (design review M5). */
+    const val CARRIED = "Carried by other phones on the way. They can't read it, and DarkProof never notes whose they are."
     /** How long a packet is passed on ([MeshRouter], spec "Forwarding rules"). */
     private const val PASSED_ON_MS = 7 * 24 * 3_600_000L
 

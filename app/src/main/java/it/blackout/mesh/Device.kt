@@ -107,6 +107,14 @@ fun calmNow(c: Context): Boolean =
         c.getSystemService(android.os.PowerManager::class.java)?.isPowerSaveMode == true ||
         MeshEngine.batterySaver(c)
 
+/** Why calm mode is on, in words a person knows from their phone and from Settings, or null when it is off (design review M7). */
+fun calmWhy(c: Context): String? = when {
+    android.provider.Settings.Global.getFloat(c.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f -> "Off while animations are removed on this phone"
+    c.getSystemService(android.os.PowerManager::class.java)?.isPowerSaveMode == true -> "Paused while the phone saves power"
+    MeshEngine.batterySaver(c) -> "Paused by Battery saver"
+    else -> null
+}
+
 /** Keeps the screen on while this is on screen (Finder: the searcher walks with the phone in hand). */
 @Composable
 fun KeepScreenOn() {

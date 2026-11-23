@@ -88,7 +88,7 @@ class FinderEngineTest {
                 s.await("Find by Bluetooth under Ben's card") { s.says("Find by Bluetooth") }
                 s.png("build/finder/screen-chat.png")
                 s.tap("Find by Bluetooth")
-                s.await("the Finder screen") { s.has("Finding Ben") && s.has("Finder needs a phone's Bluetooth") }
+                s.await("the Finder screen") { s.has("Finding Ben") && s.has("Find by Bluetooth works only on a phone") }
                 assertTrue(s.has("Ben needs help"))
                 assertFalse("no button that can't work on a computer", s.has("I'm with Ben"))
                 assertFalse(s.has("Not in reach"))
@@ -98,7 +98,7 @@ class FinderEngineTest {
                 val safe = benWrites(ben, cr, CheckIn.SAFE.text(80), null)
                 assertTrue(MeshEngine.router!!.receive("nostr", safe))
                 RealEngine.await("Ben's I'm safe") { MeshEngine.snapshotAll().any { it.id == safe.id } }
-                s.await("the screen to say Ben is safe") { s.has("Finding Ben") && s.has("Ben is safe") && !s.has("Finder needs a phone's Bluetooth") }
+                s.await("the screen to say Ben is safe") { s.has("Finding Ben") && s.has("Ben is safe") && !s.has("Find by Bluetooth works only on a phone") }
                 assertNull(Person.all(MeshEngine.snapshotAll().filter { it.group == g }, MeshEngine.deviceId).first { it.id == ben.id }.finder)
                 s.png("build/finder/screen-safe.png")
                 s.tap("Close"); s.settle()

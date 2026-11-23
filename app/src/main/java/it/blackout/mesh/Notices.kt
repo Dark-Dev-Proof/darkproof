@@ -62,15 +62,19 @@ object GroupTimer {
     // What the screens say. [device]: "phone", or "computer" on the desktop app (Here.device), where it means this device.
 
     /**
-     * Under the chat's title: "They disappear 1 day after they reach each phone." [highRisk]: this device is in high-risk
-     * mode, whose day counts unless the group's timer is shorter.
+     * Under the chat's title: "This phone deletes them 1 day after they arrive. So do phones on the latest DarkProof." It
+     * says what this device does and what phones on the latest version do, never more (design review M3). [highRisk]:
+     * this device is in high-risk mode, whose day counts unless the group's timer is shorter.
      */
     fun chatLine(seconds: Int?, highRisk: Boolean = false, device: String = "phone"): String {
         val timed = seconds != null && seconds > 0
         if (highRisk && !(timed && seconds!! <= KeepLess.KEEP_MS / 1000)) return "High-risk mode: they leave this $device 1 day after they arrive."
-        if (!timed) return "They disappear after one to two weeks."
-        return "They disappear ${label(seconds!!)} after they reach each phone."
+        if (!timed) return "They disappear after 1 to 2 weeks."
+        return deletes(seconds!!, device)
     }
+
+    /** "This phone deletes them 1 hour after they arrive. So do phones on the latest DarkProof." */
+    private fun deletes(seconds: Int, device: String) = "This $device deletes them ${label(seconds)} after they arrive. So do phones on the latest DarkProof."
 
     /**
      * The "Messages disappear" row of Group security. [by]: who set it, as the reader sees them ("Anna", "you"), if this
@@ -78,8 +82,8 @@ object GroupTimer {
      */
     fun securityLine(seconds: Int?, by: String?, highRisk: Boolean, device: String = "phone"): String {
         val day = " On this $device, 1 day after they arrive."
-        if (seconds == null) return "Not known yet. Until an admin's key brings it, this $device keeps messages one to two weeks." + (if (highRisk) day else "")
-        if (seconds <= 0) return "After one to two weeks" + (if (highRisk) ".$day" else "")
+        if (seconds == null) return "Not known yet. Until an admin's key brings it, this $device keeps messages 1 to 2 weeks." + (if (highRisk) day else "")
+        if (seconds <= 0) return "After 1 to 2 weeks" + (if (highRisk) ".$day" else "")
         val line = "After ${label(seconds)}" + (by?.let { ", set by $it" } ?: "")
         return if (highRisk && seconds > KeepLess.KEEP_MS / 1000) "$line.$day" else line
     }
@@ -90,11 +94,14 @@ object GroupTimer {
         return if (seconds == 0) "$who switched the timer off. Messages disappear after 1 to 2 weeks." else "$who set messages to disappear after ${label(seconds)}"
     }
 
-    /** What someone who can't change it reads in the timer sheet. */
+    /** What someone who can't change it reads in the timer sheet: what this device does, as in the chat ([chatLine]). */
     fun sheetLine(seconds: Int?, device: String = "phone"): String {
-        if (seconds == null) return "Not known on this $device yet. Until an admin's key brings it, messages stay one to two weeks."
-        return if (seconds > 0) "Messages disappear ${label(seconds)} after they reach each phone." else "Messages disappear after one to two weeks."
+        if (seconds == null) return "Not known on this $device yet. Until an admin's key brings it, messages stay 1 to 2 weeks."
+        return if (seconds > 0) "This $device deletes messages ${label(seconds)} after they arrive. So do phones on the latest DarkProof." else "Messages disappear after 1 to 2 weeks."
     }
+
+    /** Under the timer's choices (owner's decision D): the timer takes help calls with it too, and the positions in them. */
+    const val TAKES_HELP = "This includes \"I need help\" calls and the positions sent with them."
 
     /** What tapping the row explains. */
     fun explainer(seconds: Int): String {
@@ -300,7 +307,8 @@ class QuietBook {
      * hex, [About.Target]), its `ts`, its deadline (0: a stop), where they were (none in high-risk mode on this phone, or
      * once cancelled), when this phone took it, whether its alert was posted ([alerted]; for this phone's own clock: its
      * reminder) or handed to the backup alarm ([scheduled]), and for this phone's own clock who confirmed it ([keepers],
-     * delivery receipts, first confirmation first: ids only, kept here so "Kept by" outlives the message).
+     * delivery receipts, first confirmation first: ids only, kept here so "Reached" outlives the message; a receipt says
+     * only that the message reached that phone, not that it keeps the clock).
      */
     data class Clock(val member: String, val id: String, val mark: String, val ts: Long, val deadline: Long, val spot: Spot?, val learned: Long,
                      val alerted: Boolean = false, val scheduled: Boolean = false, val keepers: List<String> = emptyList()) {
@@ -400,7 +408,7 @@ class QuietBook {
     }
 
     /**
-     * Rule Q14: who keeps this phone's own clock ([me]), as "Kept by" names them: of the phones that confirmed it, only
+     * Rule Q14: whose phones this phone's own clock ([me]) reached, as "Reached" names them: of the phones that confirmed it, only
      * those of people who are members now ([member]: listed in the current epoch and not left with a note), since whoever
      * left or was removed since forgot the group (review round 2b M7).
      */
@@ -466,6 +474,18 @@ class QuietBook {
         /** True while something dated [ts] is still kept (rule Q10). */
         fun keeps(ts: Long, now: Long, highRisk: Boolean) = now - ts < (if (highRisk) KEEP_HIGH_RISK_MS else KEEP_MS)
 
+        /**
+         * Whether this device keeps the clock a chat card shows (review item 9): the card's message checked ([verified]), and
+         * [state], what this device holds of that member's clock, is armed (running or run out) with the card's very
+         * [deadline]. A newer clock, a check-in after it, a record that has gone, or a clock never taken (rule Q1) all mean
+         * no, and the card then promises nothing.
+         */
+        fun keeps(state: State?, deadline: Long, verified: Boolean): Boolean = verified && deadline != 0L && when (state) {
+            is State.Running -> state.deadline == deadline
+            is State.RanOut -> state.deadline == deadline
+            else -> false
+        }
+
         /** From what [saved] wrote. A line that doesn't read is left out. */
         fun parse(saved: List<String>): QuietBook = QuietBook().also { b ->
             for (line in saved) {
@@ -491,7 +511,9 @@ class QuietBook {
  */
 object QuietWords {
     const val TITLE = "If I go quiet"
-    const val LEAD = "If you don't check in on time, the phones that got your clock tell their owners."
+    /** Under the title: the name the cards, the alerts and People use (design review L3). */
+    const val SUBTITLE = "A check-in clock"
+    const val LEAD = "If you don't check in on time, the phones that got your clock can alert their owners."
     const val SUB = "It still works when your phone is off or gone. Only phones that got the clock can tell anyone."
     const val ADD_WHERE = "Add where I am"
     const val ADD_WHERE_SUB = "Where you are now goes with the clock"
@@ -510,26 +532,47 @@ object QuietWords {
     fun checkInBy(time: String) = "Check in by $time"
     fun ends(time: String) = "Ends $time"
     fun ranOutShort(time: String) = "Ran out at $time"
-    fun ranOut(time: String) = "Your clock ran out at $time. Phones that kept it tell their owners."
-    /** Who confirmed the clock message (delivery receipts), never the member list: only phones that got it can tell anyone. */
-    fun kept(names: List<String>) = when (names.size) {
-        0 -> "Not confirmed by any phone yet. If no phone has it, nobody is told."
-        1 -> "Kept by ${names[0]} so far"
-        2 -> "Kept by ${names[0]} and ${names[1]} so far"
-        else -> "Kept by ${names[0]}, ${names[1]} and ${names.size - 2} more so far"
+    fun ranOut(time: String) = "Your clock ran out at $time. Phones that have it can alert their owners."
+    /**
+     * Whose phones the clock message reached (delivery receipts), never the member list (decision A): a receipt says that a
+     * phone got the message, nothing more. A phone on an older DarkProof, a computer or a phone with alerts off sends one
+     * too, so this never says those phones keep the clock or will alert anyone.
+     */
+    fun reached(names: List<String>) = when (names.size) {
+        0 -> "Not confirmed by any phone yet. Until a phone has it, nobody can be alerted."
+        1 -> "Reached ${names[0]}'s phone so far"
+        2 -> "Reached ${names[0]}'s and ${names[1]}'s phones so far"
+        else -> "Reached ${names[0]}'s, ${names[1]}'s and ${names.size - 2} more phones so far"
     }
     fun cantWrite(group: String, device: String = "phone") = "This $device isn't let in, so it can't send a clock to $group."
 
     // Toasts. [waiting]: no phone, radio or relay is in reach, so it waits on this phone.
-    fun sent(waiting: Boolean) = if (waiting) "The clock waits for a phone in range" else "Clock sent to your group"
-    fun added(waiting: Boolean) = if (waiting) "30 minutes added. It waits for a phone in range" else "30 minutes added"
-    fun safeSent(waiting: Boolean) = if (waiting) "“I'm safe” waits for a phone in range. The clock stopped here." else "“I'm safe” sent. The clock stopped."
-    fun stopped(waiting: Boolean) = if (waiting) "Clock stopped. The message waits for a phone in range" else "Clock stopped"
+    fun sent(waiting: Boolean) = if (waiting) "The clock waits for a phone in reach" else "Clock sent to your group"
+    fun added(waiting: Boolean) = if (waiting) "30 minutes added. It waits for a phone in reach" else "30 minutes added"
+    fun safeSent(waiting: Boolean) = if (waiting) "“I'm safe” waits for a phone in reach. The clock stopped here." else "“I'm safe” sent. The clock stopped."
+    fun stopped(waiting: Boolean) = if (waiting) "Clock stopped. The message waits for a phone in reach" else "Clock stopped"
 
     // The chat card. [name]: null for this phone's own.
     fun started(name: String?) = name?.let { "$it started a check-in clock" } ?: "You started a check-in clock"
     fun startedSub(name: String?, time: String) =
-        name?.let { "If no check-in from $it reaches this phone by $time, it tells you." } ?: "Ends $time. Phones that got it tell their owners if you don't check in."
+        name?.let { "If no check-in from $it reaches this phone by $time, it tells you." } ?: "Ends $time. Phones that got it can alert their owners if you don't check in."
+    /** Someone else's clock this phone keeps, on a phone whose alerts are off for DarkProof (design review M1). */
+    fun alertsOffSub(name: String, time: String) = "If no check-in from $name reaches this phone by $time, it shows here. Alerts are off for DarkProof."
+    /** Someone else's clock this device doesn't keep (not verified, rule Q1 failed, or no longer armed): no promise at all (review item 9). */
+    fun notKeeping(device: String = "phone") = "This $device isn't keeping this clock."
+
+    /**
+     * The line under a clock card, or null for none. [name]: null for this phone's own. [keeping]: this device holds this
+     * very clock, armed ([QuietBook.keeps]). [alerts]: this device can post alerts at all (a computer can't); [alertsOff]:
+     * they are off for DarkProof on it. [late]: Android's alarms are inexact, so an alert can come minutes late.
+     */
+    fun cardLine(name: String?, time: String, keeping: Boolean, alerts: Boolean, alertsOff: Boolean, device: String = "phone", late: Boolean = false): String? = when {
+        name == null -> startedSub(null, time)
+        !keeping -> notKeeping(device)
+        !alerts -> null // a computer promises nothing about telling
+        alertsOff -> alertsOffSub(name, time)
+        else -> startedSub(name, time) + if (late) " $CAN_BE_LATE" else ""
+    }
     fun stoppedLine(name: String?) = name?.let { "$it stopped the check-in clock" } ?: "You stopped your check-in clock"
 
     // People.
@@ -699,7 +742,10 @@ object LeaveWords {
     fun tellFirstSub(device: String = "phone") = "Asks their admins' phones to remove this $device and change the key"
     const val TELLING_TITLE = "Telling your groups…"
     const val ERASE_NOW = "Erase now"
-    fun empty(device: String = "phone") = "This $device is empty"
+    fun empty(device: String = "phone") = "DarkProof is empty on this $device"
+    /** The last screen's headline in place of [empty] when the erase couldn't remove everything (design review M4). */
+    const val NOT_ALL = "Not everything could be erased"
+    fun notAllLine(device: String = "phone") = "Delete DarkProof from this $device to remove the rest."
     /**
      * The final screen's line about the notes, or null when this device had no group. It names no group: the screen shows
      * right after an erase, on a device that may be taken at that moment. [groups]: the saved groups; [sent]: the notes sent

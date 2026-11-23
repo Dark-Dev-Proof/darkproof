@@ -113,8 +113,9 @@ enum class BgPalette(val label: String, val lo: Color, val hi: Color, val share:
 enum class BgSource(val label: String) { Clouds("Clouds"), Streak("Light streak"), Both("Both") }
 
 /**
- * One person's choice. [strength] is 0 to 100, a share of the most the texture may ever show: at 100 white writing on
- * the texture's brightest dot still has 7:1 contrast ([AsciiBackground.MIN_CONTRAST]).
+ * One person's choice. [strength] is 20 to 100 in Settings ([AsciiBackground.MIN_STRENGTH], the iPhone's range), a share
+ * of the most the texture may ever show: at 100 white writing on the texture's brightest dot still has 7:1 contrast
+ * ([AsciiBackground.MIN_CONTRAST]).
  */
 data class BgStyle(
     val on: Boolean = true, val glyphs: BgGlyphs = BgGlyphs.Classic, val density: BgDensity = BgDensity.Medium,
@@ -130,6 +131,10 @@ object AsciiBackground {
      * whose light sits just above the message box, behind the newest messages and their time lines.
      */
     val defaultStrength get() = if (Here.wide) 60 else 45
+    /** The least strength Settings offers: one range on both phones, the iPhone's 20 to 100 % (design review L1). */
+    const val MIN_STRENGTH = 20
+    /** A saved strength as Settings offers it: an older build's lower number reads as the least. */
+    fun strengthOf(saved: Int) = saved.coerceIn(MIN_STRENGTH, 100)
     /** How long a window has to keep its size before the texture is drawn again for it. */
     const val SETTLE_MS = 150L
     /** "Slow drift": at most this many pictures a second. */
@@ -156,7 +161,7 @@ object AsciiBackground {
                 density = BgDensity.entries.firstOrNull { it.name == p.getString("bg_density", null) } ?: d.density,
                 palette = BgPalette.entries.firstOrNull { it.name == p.getString("bg_palette", null) } ?: d.palette,
                 source = BgSource.entries.firstOrNull { it.name == p.getString("bg_source", null) } ?: d.source,
-                strength = p.getInt("bg_strength", d.strength).coerceIn(0, 100),
+                strength = strengthOf(p.getInt("bg_strength", d.strength)),
                 drift = p.getBoolean("bg_drift", d.drift),
             )
         }
@@ -488,7 +493,8 @@ fun BackgroundPage(c: Context) {
     fun set(n: BgStyle) = AsciiBackground.set(c, n)
     BgPreview(s)
     RowCard {
-        ToggleRow(R.drawable.ic_image, "Background texture", s.on, if (s.on) "Faint characters behind the screens" else "Plain black") { set(s.copy(on = it)) }
+        // The iPhone's words for the same switch (design review L1).
+        ToggleRow(R.drawable.ic_image, "Background", s.on, if (s.on) "Faint characters behind the screens" else "Pure black") { set(s.copy(on = it)) }
     }
     Column(Modifier.alpha(if (s.on) 1f else 0.4f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Card(padding = 18.dp) {
@@ -525,15 +531,17 @@ private fun <T> BgChoice(title: String, options: List<T>, chosen: T, label: (T) 
         Kicker(title)
         val i = options.indexOf(chosen).coerceAtLeast(0)
         val at by animateFloatAsState(i.toFloat(), Motion.slide(), label = "choice")
-        Row(Modifier.fillMaxWidth().background(Theme.tile, CircleShape).padding(4.dp).drawBehind {
+        // Each answer is 48 dp tall to touch, the track's whole height; the white pill is drawn 4 dp inside it, as before
+        // (design review L2).
+        Row(Modifier.fillMaxWidth().background(Theme.tile, CircleShape).padding(horizontal = 4.dp).drawBehind {
             val gap = 4.dp.toPx(); val w = (size.width - gap * (options.size - 1)) / options.size
-            val x = at * (w + gap)
-            drawRoundRect(Color.Black.copy(alpha = 0.35f), Offset(x, 1.dp.toPx()), Size(w, size.height), CornerRadius(size.height / 2)) // its small shadow
-            drawRoundRect(Color(0xFFFAFAFA), Offset(x, 0f), Size(w, size.height), CornerRadius(size.height / 2))
+            val x = at * (w + gap); val inset = 4.dp.toPx(); val h = size.height - 2 * inset
+            drawRoundRect(Color.Black.copy(alpha = 0.35f), Offset(x, inset + 1.dp.toPx()), Size(w, h), CornerRadius(h / 2)) // its small shadow
+            drawRoundRect(Color(0xFFFAFAFA), Offset(x, inset), Size(w, h), CornerRadius(h / 2))
         }.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             options.forEachIndexed { j, o ->
                 val on = j == i
-                Box(Modifier.weight(1f).heightIn(min = 40.dp).pointerHoverIcon(if (enabled) PointerIcon.Hand else PointerIcon.Default)
+                Box(Modifier.weight(1f).heightIn(min = 48.dp).pointerHoverIcon(if (enabled) PointerIcon.Hand else PointerIcon.Default)
                     .selectable(on, interactionSource = null, indication = Press(down = 0.96f, dim = 0f, lift = 0.04f, buzz = Buzz.None), enabled = enabled, role = Role.RadioButton) {
                         if (!on) { Buzz.play(Buzz.Tick); set(o) }
                     }, contentAlignment = Alignment.Center) {
@@ -544,7 +552,7 @@ private fun <T> BgChoice(title: String, options: List<T>, chosen: T, label: (T) 
     }
 }
 
-/** How strong the texture is: 0 to 100 % of the most that keeps writing readable (7:1 on its brightest dot). */
+/** How strong the texture is: 20 to 100 % of the most that keeps writing readable (7:1 on its brightest dot). */
 @Composable
 private fun BgStrength(s: BgStyle, enabled: Boolean, change: (Int) -> Unit, done: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -552,22 +560,26 @@ private fun BgStrength(s: BgStyle, enabled: Boolean, change: (Int) -> Unit, done
             Box(Modifier.weight(1f)) { Kicker("Strength") }
             Txt("${s.strength}%", 14, FontWeight.SemiBold, Theme.dim)
         }
-        Slider(s.strength.toFloat(), { change(it.roundToInt()) }, Modifier.fillMaxWidth(), enabled = enabled, valueRange = 0f..100f, onValueChangeFinished = done,
+        Slider(s.strength.toFloat(), { change(it.roundToInt()) }, Modifier.fillMaxWidth(), enabled = enabled, valueRange = AsciiBackground.MIN_STRENGTH.toFloat()..100f, onValueChangeFinished = done,
             colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color.White, inactiveTrackColor = Theme.tile,
                 disabledThumbColor = Theme.dim, disabledActiveTrackColor = Theme.dim, disabledInactiveTrackColor = Theme.tile))
-        Txt("Even at 100%, writing stays easy to read on it.", 13, color = Theme.dim)
+        Txt("Text stays readable at every strength.", 13, color = Theme.dim)
     }
 }
 
-/** "Slow drift": off by default, and not offered while calm mode or a battery saver is on. */
+/**
+ * "Slow drift": off by default, and not offered while the phone removes animations, saves power, or DarkProof's Battery
+ * saver is on. It names which, as the iPhone does, never "calm mode", a name no one has seen (design review M7).
+ */
 @Composable
 private fun DriftRow(s: BgStyle, enabled: Boolean, set: (Boolean) -> Unit) {
     val calm = Motion.calm
     val can = enabled && !calm
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     val detail = when {
-        calm -> if (Here.batterySaver) "Off while calm mode or a battery saver is on" else "Off while calm mode is on"
+        calm -> remember(calm) { calmWhy(ctx) } ?: "Off while animations are removed on this phone"
         Here.wide -> "The clouds move slowly while this window is in front"
-        else -> "The clouds move slowly while DarkProof is open. Uses a little more battery."
+        else -> "The clouds move slowly while DarkProof is open. Uses a little battery."
     }
     Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).pointerHoverIcon(if (can) PointerIcon.Hand else PointerIcon.Default)
         .toggleable(s.drift && !calm, interactionSource = null, indication = RowPress, enabled = can, role = Role.Switch) { Buzz.play(if (it) Buzz.On else Buzz.Off); set(it) }

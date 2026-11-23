@@ -405,7 +405,7 @@ private fun AlertBanner(al: Notifier.Alert, s: AppState, a: MainActivity, modifi
         .then(if (al.urgent) Modifier.border(1.dp, color.copy(alpha = 0.6f), shape) else Modifier) // red only for help
         .padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Ic(if (quiet) R.drawable.ic_schedule else if (al.ask) R.drawable.ic_notifications else if (al.urgent) R.drawable.ic_sos else R.drawable.ic_chat, color, 24.dp)
+            Ic(if (quiet) R.drawable.ic_schedule else if (al.ask) R.drawable.ic_message_circle_question else if (al.urgent) R.drawable.ic_sos else R.drawable.ic_chat, color, 24.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Txt(al.title, 17, FontWeight.Bold, color, maxLines = 2)
@@ -565,13 +565,13 @@ private fun HomeTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Txt("${links.phones}", 88, FontWeight.Black, lineHeight = 96)
                 Spacer(Modifier.width(14.dp))
-                Txt(if (links.phones == 1) "phone\nin range" else "phones\nin range", 26, FontWeight.Bold, Theme.dim, lineHeight = 28)
+                Txt(if (links.phones == 1) "phone\nin reach" else "phones\nin reach", 26, FontWeight.Bold, Theme.dim, lineHeight = 28) // "in reach" everywhere, as the iPhone (design review L3)
             }
             if (links.phones > 0) Txt("Your messages hop from phone to phone.", 15, color = Theme.dim)
             if (links.relays > 0) Txt("Online · your messages also travel over the internet (${links.relays} ${if (links.relays == 1) "relay" else "relays"}).", 15, color = Theme.dim)
             if (links.radio) Txt("LoRa radio linked · short messages also reach radios kilometers away.", 15, color = Theme.dim)
             if (!links.any) Txt(if (s.permissionsMissing) "Your messages wait on this ${Here.device}. DarkProof can look for phones once you allow Nearby devices."
-                else "Your messages wait on this ${Here.device} and go out as soon as a phone is in range. " +
+                else "Your messages wait on this ${Here.device} and go out as soon as a phone is in reach. " +
                     (if (Here.background) "DarkProof keeps looking, also when the app is closed." else "DarkProof looks for phones while it is open."), 15, color = Theme.dim)
             Spacer(Modifier.height(4.dp))
             LinkDials(s) { open(Sheet.Radio) }
@@ -593,7 +593,7 @@ private fun HomeTab(s: AppState, a: MainActivity, g: SavedGroup, messages: List<
         hours?.let { h -> batteryPercent(a)?.let { p -> Txt("Battery $p% · about $h h left at this rate.", 15, color = if (h <= 3) Theme.help else Theme.dim) } }
         ReadyCard(s, a, people.isNotEmpty())
         if (!links.any) Card {
-            Txt("No one in range yet", 20, FontWeight.Bold)
+            Txt("No one in reach yet", 20, FontWeight.Bold)
             Tip(R.drawable.ic_wifi, "Open DarkProof on both phones and stay within about 10–50 m. Walls cut the range: try outside or by a window.")
             Tip(R.drawable.ic_group, "Farther away? Messages hop through any phone with DarkProof in between. For kilometers, pair a LoRa radio.")
         }
@@ -842,7 +842,7 @@ private fun EverydayRows(s: AppState, a: MainActivity, highRisk: () -> Unit, ope
             ToggleRow(R.drawable.ic_lock, "Lock DarkProof", s.lockOn,
                 if (s.lockOn && noScreenLock) "This phone has no screen lock any more, so this lock can't protect DarkProof. Set one in the phone's settings."
                 else if (s.highRisk) "On because of high-risk mode"
-                else if (canLock) "Asks for your fingerprint, face or phone PIN when you open DarkProof. Hides message text in notifications and blocks screenshots. “I need help” still works while it's locked."
+                else if (canLock) "Asks for your fingerprint, face or phone PIN when you open DarkProof. Hides message text in alerts and blocks screenshots. “I need help” still works while it's locked."
                 else "Set a screen lock on this phone first.", if (s.lockOn && noScreenLock) Theme.help else Theme.dim) { on ->
                 if (s.highRisk) Toast.makeText(a, "On because of high-risk mode", Toast.LENGTH_LONG).show() // it can't be turned off while that is on
                 else if (canLock) AppLock.ask(a, if (on) "Turn on the lock" else "Turn off the lock") { a.setAppLock(on) }

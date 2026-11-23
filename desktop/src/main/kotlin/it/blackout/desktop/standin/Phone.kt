@@ -88,6 +88,9 @@ fun KeepScreenOn() {}
 /** Calm mode on a computer: not read from the system yet, so things move as on a phone with animations on. */
 fun calmNow(c: Context): Boolean = false
 
+/** Why calm mode is on: never, on a computer yet. */
+fun calmWhy(c: Context): String? = null
+
 /** The name an icon-only button already carries for screen readers, shown when the mouse rests on it. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

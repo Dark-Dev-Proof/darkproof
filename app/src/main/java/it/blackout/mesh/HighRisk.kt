@@ -169,6 +169,8 @@ fun HighRiskSheet(s: AppState, a: MainActivity, close: () -> Unit) {
                 Point(R.drawable.ic_visibility_off, "Shows less.", "No names or message text in alerts or the app switcher.")
             }
             Point(R.drawable.ic_schedule, "Keeps less.", "Messages in your groups leave this ${Here.device} 1 day after they arrive.")
+            // Finder stops too, and receipts leave out how a message arrived (design review L6). A computer has no Finder.
+            if (Here.bluetooth) Point(R.drawable.ic_route, "Says less.", "No Finder, and receipts don't say how a message arrived.")
             if (!Here.lock) Txt("On a ${Here.device} DarkProof has no lock and shows no alerts yet, so here it only keeps less.", 14, color = Theme.dim)
             why?.let { Txt(it, 15, FontWeight.SemiBold) }
             PrimaryButton("Yes, switch it on") {
@@ -443,25 +445,27 @@ fun EraseScreen(a: MainActivity, close: () -> Unit) {
             }
         }
     }
-    if (sure) Confirm("Erase everything?", what, "Erase", danger = true, onYes = { sure = false; erase() }, onNo = { sure = false })
+    if (sure) Confirm("Erase everything?", what, "Erase everything", danger = true, onYes = { sure = false; erase() }, onNo = { sure = false })
 }
 
 /**
- * After "Erase everything": the device is empty, and what became of the notes ([Wipe.erased]), counted, never by group
- * name ([LeaveWords.erased]). Held in memory only; "Continue" goes on to the welcome screen.
+ * After "Erase everything": DarkProof is empty on this device, and what became of the notes ([Wipe.erased]), counted,
+ * never by group name ([LeaveWords.erased]). When something was left behind the headline says so instead, and never
+ * "empty" (design review M4). Held in memory only; "Continue" goes on to the welcome screen.
  */
 @Composable
 fun EmptyScreen(lines: List<String>, done: () -> Unit) {
     val bars = WindowInsets.systemBars.asPaddingValues()
+    val notAll = Wipe.notAll
     androidx.compose.ui.window.Dialog({}, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxSize().background(Theme.bg).padding(bars).padding(horizontal = 24.dp, vertical = 20.dp)) {
             Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically)) {
-                Box(Modifier.size(104.dp).background(Theme.tile, CircleShape), contentAlignment = Alignment.Center) { Ic(R.drawable.ic_check, Theme.text, 46.dp) }
+                Box(Modifier.size(104.dp).background(Theme.tile, CircleShape), contentAlignment = Alignment.Center) { Ic(if (notAll) R.drawable.ic_delete else R.drawable.ic_check, Theme.text, 46.dp) }
                 Spacer(Modifier.height(6.dp))
-                Txt(LeaveWords.empty(Here.device), 28, FontWeight.Black, align = TextAlign.Center, lineHeight = 34)
+                Txt(if (notAll) LeaveWords.NOT_ALL else LeaveWords.empty(Here.device), 28, FontWeight.Black, align = TextAlign.Center, lineHeight = 34)
+                if (notAll) Txt(LeaveWords.notAllLine(Here.device), 16, FontWeight.SemiBold, align = TextAlign.Center, modifier = Modifier.widthIn(max = 360.dp))
                 for (l in lines) Txt(l, 16, color = Theme.dim, align = TextAlign.Center, modifier = Modifier.widthIn(max = 360.dp))
-                NotAllErased()
             }
             PrimaryButton("Continue", Modifier.widthIn(max = 520.dp).fillMaxWidth().align(Alignment.CenterHorizontally)) { done() }
         }
@@ -471,5 +475,5 @@ fun EmptyScreen(lines: List<String>, done: () -> Unit) {
 /** After an erase that couldn't remove everything, and only then: what is left to do. On the erase page and on the welcome screen. */
 @Composable
 fun NotAllErased() {
-    if (Wipe.notAll) Txt("Not everything could be erased. Delete DarkProof from this ${Here.device} to remove the rest.", 15, FontWeight.SemiBold, Theme.help, align = TextAlign.Center)
+    if (Wipe.notAll) Txt("${LeaveWords.NOT_ALL}. ${LeaveWords.notAllLine(Here.device)}", 15, FontWeight.SemiBold, Theme.help, align = TextAlign.Center)
 }

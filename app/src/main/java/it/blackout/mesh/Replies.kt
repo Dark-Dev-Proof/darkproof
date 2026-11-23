@@ -128,7 +128,8 @@ fun ReactionChips(chips: List<Reactions.Chip>, modifier: Modifier = Modifier, ta
 /** The strip above the composer while a reply is being written. [to]: "Marco", or "yourself". */
 @Composable
 fun ReplyStrip(to: String, text: String, modifier: Modifier = Modifier, cancel: () -> Unit) =
-    Row(modifier.fillMaxWidth().background(Theme.card, RoundedCornerShape(16.dp)).padding(start = 14.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
+    // The close button is 48 dp to touch (design review L2); the strip keeps its height, 1 dp above and below it instead of 3.
+    Row(modifier.fillMaxWidth().background(Theme.card, RoundedCornerShape(16.dp)).padding(start = 14.dp, end = 0.dp, top = 1.dp, bottom = 1.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Ic(R.drawable.ic_reply, Theme.dim, 16.dp)
         Spacer(Modifier.width(10.dp))
@@ -136,7 +137,7 @@ fun ReplyStrip(to: String, text: String, modifier: Modifier = Modifier, cancel: 
             Txt("Replying to $to", 14, FontWeight.SemiBold, maxLines = 1)
             if (text.isNotEmpty()) Txt(text, 13, color = Theme.dim, maxLines = 1)
         }
-        Box(Modifier.size(44.dp).tap(Press(down = 0.9f, buzz = Buzz.Tap), label = "Cancel the reply", onClick = cancel)
+        Box(Modifier.size(48.dp).tap(Press(down = 0.9f, buzz = Buzz.Tap), label = "Cancel the reply", onClick = cancel)
             .semantics { contentDescription = "Cancel the reply" }, contentAlignment = Alignment.Center) { Ic(R.drawable.ic_close, Theme.dim, 18.dp) }
     }
 

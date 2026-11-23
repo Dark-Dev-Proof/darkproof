@@ -77,6 +77,17 @@ class Screen(private val width: Int = 2040, private val height: Int = 1290, dens
     /** Taps what says [text] (exactly, else containing it); [nth] picks among several, from the top. */
     fun tap(text: String, nth: Int = 0) { tapAt(find(text, nth).boundsInWindow.center); settle() }
 
+    /** Moves the keyboard's focus to what says [text], or to the nearest thing around it that can take the focus, as Tab would. */
+    fun focus(text: String, nth: Int = 0) {
+        var n: SemanticsNode? = find(text, nth)
+        while (n != null && n.config.getOrNull(SemanticsActions.RequestFocus) == null) n = n.parent
+        val ask = n?.config?.getOrNull(SemanticsActions.RequestFocus)?.action ?: fail("nothing around \"$text\" can take the keyboard's focus").let { error("") }
+        ask(); settle()
+    }
+
+    /** What the thing that has the keyboard's focus says (its own words, not those of what is inside it). */
+    fun focused(): List<String> = nodes().filter { it.config.getOrNull(SemanticsProperties.Focused) == true }.flatMap(::words)
+
     /** Turns the mouse wheel over what says [text]: [lines] down, or up when negative. */
     fun wheel(text: String, lines: Int) {
         scene.sendPointerEvent(PointerEventType.Scroll, find(text).boundsInWindow.center, scrollDelta = Offset(0f, lines.toFloat()), type = PointerType.Mouse); settle()

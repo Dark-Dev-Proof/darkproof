@@ -168,7 +168,7 @@ class QuietVectorsTest {
         assertEquals(QuietClock.Effect.CheckIn, QuietClock.effect(Message("x", t0, ben, "Ben", "🆘 I need help", group = "g")))
     }
 
-    @Test fun keptByMembersOnly() { // M7, rule Q14
+    @Test fun reachedMembersOnly() { // M7, rule Q14; "Reached" since the Fable review's decision A
         val book = clockBook(member = anna)
         val id = book.clock(anna)!!.id
         assertTrue(book.addKeeper(anna, id, ben)); assertTrue(book.addKeeper(anna, id, "web-$cara"))
@@ -180,8 +180,12 @@ class QuietVectorsTest {
         val leaving = LeaveBook().apply { take(cara, t0, 5, t0) }
         assertEquals("only members now, not who left", listOf(ben), book.keptBy(anna) { it in setOf(anna, ben, cara) && !leaving.left(it) })
         assertEquals("nor who was removed", listOf(ben), book.keptBy(anna) { it in setOf(anna, ben) })
-        assertEquals("Not confirmed by any phone yet. If no phone has it, nobody is told.", QuietWords.kept(emptyList()))
-        assertEquals("Kept by Marco, Sara and 2 more so far", QuietWords.kept(listOf("Marco", "Sara", "Ben", "Cara")))
+        // A receipt says the message reached a phone, not that the phone keeps the clock (decision A): the spec's words.
+        assertEquals("Not confirmed by any phone yet. Until a phone has it, nobody can be alerted.", QuietWords.reached(emptyList()))
+        assertEquals("Reached Marco's phone so far", QuietWords.reached(listOf("Marco")))
+        assertEquals("Reached Marco's and Anna's phones so far", QuietWords.reached(listOf("Marco", "Anna")))
+        assertEquals("Reached Marco's, Anna's and 3 more phones so far", QuietWords.reached(listOf("Marco", "Anna", "Ben", "Cara", "Dan")))
+        for (n in 0..5) assertFalse("never \"kept\"", "kept" in QuietWords.reached(List(n) { "P$it" }).lowercase())
         // A newer clock of this phone starts its own list: receipts name that message.
         book.take(anna, "e608000000000202", "00000000000000bb", t0 + min, t0 + 61 * min, null, t0 + min, false)
         assertTrue(book.clock(anna)!!.keepers.isEmpty())
@@ -193,7 +197,9 @@ class QuietVectorsTest {
         assertEquals("Anna (not checked)", QuietWords.who("Anna", checked = false, shared = true, emoji = emoji))
         assertEquals("Anna · 🐶🐱🦁🐴", QuietWords.who("Anna", checked = true, shared = true, emoji = emoji))
         val words = listOf(QuietWords.alertTitle("Anna", false, "18:30"), QuietWords.alertBody("Anna", "17:30", true, "18:02"), QuietWords.started("Anna"),
-            QuietWords.startedSub("Anna", "18:30"), QuietWords.overdue("18:30"), QuietWords.banner("Anna", "My group"), QuietWords.HIDDEN_BODY, QuietWords.LEAD, QuietWords.SUB)
+            QuietWords.startedSub("Anna", "18:30"), QuietWords.overdue("18:30"), QuietWords.banner("Anna", "My group"), QuietWords.HIDDEN_BODY, QuietWords.LEAD, QuietWords.SUB,
+            QuietWords.startedSub(null, "18:30"), QuietWords.alertsOffSub("Anna", "18:30"), QuietWords.notKeeping(), QuietWords.ranOut("18:30"), QuietWords.reached(emptyList()),
+            QuietWords.reached(listOf("Marco", "Anna")), QuietWords.SUBTITLE, QuietWords.sent(true), QuietWords.safeSent(true))
         for (w in words) for (n in QuietWords.NEVER) assertFalse("\"$w\" says \"$n\"", w.lowercase().contains(n))
         assertEquals("No check-in from Anna has reached this phone since 17:30. Anna's phone may just be out of reach. Last position known: 18:02. This phone learned of it late.",
             QuietWords.alertBody("Anna", "17:30", true, "18:02"))
