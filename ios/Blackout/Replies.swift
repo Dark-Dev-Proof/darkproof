@@ -145,6 +145,113 @@ struct ReplyStrip: View {
     }
 }
 
+/// Swipe to reply: a group message dragged to the right past `threshold` starts a reply when it is let go, as the held
+/// menu's "Reply" does. A reply arrow comes in at the left as it moves, and the phone taps once when it passes the
+/// threshold. Only a drag that begins sideways and to the right is taken; a scroll stays a scroll. `reply` is nil where
+/// "Reply" isn't offered (Everyone, a message that can't be answered, a group that can't be written to): then nothing
+/// moves. VoiceOver gets the same as a "Reply" action, so the drag is never the only way.
+struct SwipeToReply: ViewModifier {
+    let reply: (() -> Void)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @GestureState private var touching = false // reset by SwiftUI when the touch ends or is cancelled
+    @State private var moved: CGFloat = 0      // how far the message is drawn to the right
+    @State private var across: Bool?           // decided at the start of each drag: sideways to the right (a reply) or not
+    @State private var armed = false           // past the threshold: letting go replies
+    static let threshold: CGFloat = 48
+
+    func body(content: Content) -> some View {
+        if let reply {
+            content
+                .offset(x: moved)
+                .background(alignment: .leading) { arrow }
+                .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .local)
+                    .updating($touching) { _, state, _ in state = true }
+                    .onChanged { g in
+                        let w = g.translation.width
+                        if across == nil { across = w > 0 && w > abs(g.translation.height) * 1.5 }
+                        guard across == true else { return }
+                        let way = max(0, w)
+                        // With the finger up to the threshold, then a little more slowly, and never more than half as far again.
+                        moved = way <= Self.threshold ? way : min(Self.threshold * 1.5, Self.threshold + (way - Self.threshold) * 0.35)
+                        let past = way >= Self.threshold
+                        if past != armed {
+                            armed = past
+                            if past { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+                        }
+                    })
+                // The touch is over, lifted or cancelled: past the threshold it replies, and the message goes back.
+                .onChange(of: touching) { _, now in
+                    guard !now else { return }
+                    if across == true && armed { reply() }
+                    across = nil; armed = false
+                    withAnimation(reduceMotion || Theme.lowPower ? nil : .spring(response: 0.3, dampingFraction: 1)) { moved = 0 }
+                }
+                .accessibilityAction(named: "Reply", reply)
+        } else {
+            content
+        }
+    }
+
+    private var arrow: some View {
+        let p = min(1, moved / Self.threshold)
+        return Image(systemName: "arrowshape.turn.up.left.fill").scaledFont(15, .semibold)
+            .foregroundStyle(armed ? Theme.text : Theme.dim)
+            .frame(width: 34, height: 34).background(Circle().fill(Theme.tile))
+            .scaleEffect(0.6 + 0.4 * p).opacity(p)
+            .padding(.leading, 4)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Which chat rows come in moving: a message that joins the list while the chat is on screen fades in and rises a little,
+/// once. What is there when the chat comes into view or switches channel simply shows. A plain object, not observed: the
+/// chat's body tells it what it shows (`note`), and asking it changes nothing on screen.
+final class Arrivals {
+    private var place = ""
+    private var known: Set<String> = []
+    private var played: Set<String> = []
+    private var wasShown = false
+
+    /// What the chat shows now, in which channel (`place`), and whether it is on screen.
+    func note(place: String, ids: [String], shown: Bool) {
+        if place != self.place {
+            self.place = place; known = Set(ids); played = []
+        } else if !shown || !wasShown {
+            known.formUnion(ids) // what came while the chat wasn't looked at is simply there when it is
+        }
+        wasShown = shown
+    }
+
+    /// Whether row `id` should still come in moving.
+    func isNew(_ id: String) -> Bool { !known.contains(id) && !played.contains(id) }
+    /// It has come in: when it is drawn again (scrolled back into view) it simply shows.
+    func played(_ id: String) { played.insert(id) }
+}
+
+/// A row coming in (`Arrivals`): from nothing to there in about a fifth of a second, rising 12 points, with no bounce.
+/// Not with Reduce Motion or in Low Power Mode.
+struct Arrival: ViewModifier {
+    let arrivals: Arrivals
+    let id: String
+    @State private var there: Bool
+
+    init(_ arrivals: Arrivals, id: String, still: Bool) {
+        self.arrivals = arrivals; self.id = id
+        _there = State(initialValue: still || !arrivals.isNew(id))
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(there ? 1 : 0)
+            .offset(y: there ? 0 : 12)
+            .onAppear {
+                guard !there else { return }
+                arrivals.played(id)
+                withAnimation(.easeOut(duration: 0.22)) { there = true }
+            }
+    }
+}
+
 /// Which of the user's own messages "How it got there" is open for.
 struct JourneyItem: Identifiable { let id: String }
 

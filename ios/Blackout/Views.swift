@@ -557,6 +557,8 @@ struct ChatView: View {
     @CurrentCode private var code
     @AppStorage("name") private var myName = ""
     @Environment(\.scenePhase) private var phase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var arrivals = Arrivals()        // which rows came while the chat was on screen: they fade and rise in
 
     private var toPublic: Bool { nav.chatEveryone }
     private var channel: String { toPublic ? Unread.everyone : code }
@@ -576,6 +578,13 @@ struct ChatView: View {
         return QuoteLine(name: nil, text: engine.hiddenTargets.contains(t.key) ? Quote.hidden : Quote.missing)
     }
 
+    /// Starts a reply to `m` (the held menu's "Reply", a swipe, VoiceOver's "Reply"): the strip above the composer, then the
+    /// cursor in the field `after` seconds later.
+    private func startReply(_ m: Message, after: Double = 0) {
+        replyingTo = m.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + after) { if replyingTo == m.id { typing = true } }
+    }
+
     private func react(_ m: Message, _ emoji: String) {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         engine.react(to: m, emoji)
@@ -592,10 +601,7 @@ struct ChatView: View {
                     }
                 }
                 .controlGroupStyle(.palette)
-                Button {
-                    replyingTo = m.id
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { if replyingTo == m.id { typing = true } } // once the menu has closed
-                } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                Button { startReply(m, after: 0.45) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") } // once the menu has closed
             }
             // A voice note has no text to copy (its text only says what it is).
             let text = m.voice != nil ? "" : m.photo == nil ? m.text : Photo.caption(m.text)
@@ -654,6 +660,9 @@ struct ChatView: View {
         // What a reply or a reaction in this chat can be about: this group's checked messages, by what names each (`About.Target`).
         let targets = toPublic ? [:] : About.targets(in: list, group: code)
         let blocked = toPublic ? [] : Set(Moderation.blocked.keys)
+        // A message that comes while the chat is on screen fades and rises in; not with Reduce Motion or in Low Power Mode.
+        let still = reduceMotion || Theme.lowPower
+        let _ = arrivals.note(place: "\(toPublic)|\(code)", ids: list.map(\.id), shown: nav.tab == .chat && phase == .active)
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 12) {
@@ -712,8 +721,10 @@ struct ChatView: View {
                                     Text(ChatTime.dayTitle(m.ts)).scaledFont(13, .semibold).foregroundStyle(Theme.dim)
                                         .padding(.horizontal, 12).padding(.vertical, 5).background(Theme.tile, in: Capsule())
                                         .padding(.vertical, 8).accessibilityAddTraits(.isHeader)
+                                        .modifier(Arrival(arrivals, id: m.id, still: still)) // a new day's first message brings its day
                                 }
                                 row(m, prev: prev, first: i == 0, targets: targets, blocked: blocked)
+                                    .modifier(Arrival(arrivals, id: m.id, still: still))
                             }
                             ForEach(Array(joins.filter { $0.ts > (list.last?.ts ?? .min) }.enumerated()), id: \.offset) { _, j in GroupLine(text: j.text) }
                             Color.clear.frame(height: 1).id("bottom")
@@ -911,6 +922,8 @@ struct ChatView: View {
         .background { // lit for a moment after a quote of it was tapped
             if flashed == m.id { RoundedRectangle(cornerRadius: 26, style: .continuous).fill(Theme.text.opacity(0.12)).padding(-6) }
         }
+        // Dragged to the right, a message that can be answered starts a reply (VoiceOver: the "Reply" action); same rule as the menu's Reply.
+        .modifier(SwipeToReply(reply: canAnswer ? { startReply(m) } : nil))
         .contextMenu { messageMenu(m, mine: mine, canAnswer: canAnswer) } // hold: react, reply, copy; then Block, Report on Everyone, Remove your place
         .id(m.id)
     }

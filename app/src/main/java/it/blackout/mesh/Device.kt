@@ -72,6 +72,7 @@ object Here {
     val tabBar = true         // the tabs float over the bottom of the screen, so each tab leaves room for them
     val wide = false          // a wide window with panes side by side: pages open in the middle of it, not as a sheet from below
     val keys = false          // a computer shows a ring where its keyboard is; a phone's finger needs none
+    val swipe = true          // a finger drags a group message to the right to answer it (SwipeToReply)
 }
 
 /** A short touch on the phone's motor for what the finger just did. The phone's own touch-feedback setting can turn it off; no permission. */
