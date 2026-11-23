@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import UserNotifications
 import BlackoutCore
 
 struct RootView: View {
@@ -8,7 +9,7 @@ struct RootView: View {
     @CurrentCode private var code
     @AppStorage("groupName") private var groupName = "My group"
     @ObservedObject private var mesh = Mesh.shared
-    @ObservedObject private var erased = EraseResult.shared // "This phone is empty", once, after "Erase everything"
+    @ObservedObject private var erased = EraseResult.shared // "DarkProof is empty on this phone", once, after "Erase everything"
     private var engine: Engine? { mesh.engine }
     @State private var invite: PendingInvite?   // from an invite link, before setup
     @State private var linkInvite: PendingInvite? // from an invite link, once in a group: asks before switching
@@ -32,7 +33,7 @@ struct RootView: View {
                 Theme.bg.ignoresSafeArea().onAppear { mesh.startIfSetUp() }
             }
         }
-        .overlay { if let lines = erased.lines, engine == nil { EmptyScreen(lines: lines) { erased.lines = nil } } }
+        .overlay { if let lines = erased.lines, engine == nil { EmptyScreen(lines: lines, left: erased.leftBehind) { erased.lines = nil; erased.leftBehind = false } } }
         .tint(Theme.text)
         .onAppear { if !code.isEmpty { AppLock.shared.phaseChanged(.active) } }
         .onChange(of: phase) { AppLock.shared.phaseChanged($0) }
@@ -429,19 +430,19 @@ struct HomeView: View {
                 switch r {
                 case .online:
                     Text("Online").scaledFont(64, .heavy).tracking(-2).foregroundStyle(Theme.text).padding(.vertical, 6)
-                    Text("Online · your messages also travel over the internet. No phone in range yet: they hop phone to phone once one is.")
+                    Text("Online · your messages also travel over the internet. No phone in reach yet: they hop phone to phone once one is.")
                         .scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
                 case .radio:
                     Text("LoRa").scaledFont(64, .heavy).tracking(-2).foregroundStyle(Theme.text).padding(.vertical, 6)
-                    Text("Short messages reach other radios kilometers away. No phone in range yet.")
+                    Text("Short messages reach other radios kilometers away. No phone in reach yet.")
                         .scaledFont(15).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
                 default:
                     HStack(alignment: .lastTextBaseline, spacing: 12) {
                         Text("\(engine.phones)").scaledFont(84, .heavy).tracking(-3).foregroundStyle(Theme.text)
-                        Text(engine.phones == 1 ? "phone\nin range" : "phones\nin range")
+                        Text(engine.phones == 1 ? "phone\nin reach" : "phones\nin reach")
                             .scaledFont(21, .bold).foregroundStyle(Theme.dim).padding(.bottom, 12)
                     }
-                    Text(r == .none ? "Keep DarkProof open. Your messages wait and go out as soon as a phone is in range." : linkSummary)
+                    Text(r == .none ? "Keep DarkProof open. Your messages wait and go out as soon as a phone is in reach." : linkSummary)
                         .scaledFont(15).foregroundStyle(Theme.dim).multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -568,6 +569,7 @@ struct ChatView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var voice = VoiceComposer() // the mic in the composer: recording, and the questions before it
     @ObservedObject private var loc = LocationService.shared
+    @ObservedObject private var notifier = Notifier.shared // whether alerts are allowed: a clock card says what this phone can do
     @AppStorage("groupName") private var groupName = "My group"
     @CurrentCode private var code
     @AppStorage("name") private var myName = ""
@@ -721,8 +723,8 @@ struct ChatView: View {
                 EmptyState(symbol: toPublic ? "megaphone.fill" : "bubble.left.and.bubble.right.fill",
                            title: leaves ? "No messages here now" : "No messages yet",
                            text: toPublic ? "Messages for everyone show up here, nearby or online, from any group."
-                                          : leaves ? "What you write reaches everyone in \(groupName) who is in range, or later when they are."
-                                                   : "Write the first one. It reaches everyone in \(groupName) who is in range, or later when they are.")
+                                          : leaves ? "What you write reaches everyone in \(groupName) who is in reach, or later when they are."
+                                                   : "Write the first one. It reaches everyone in \(groupName) who is in reach, or later when they are.")
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -815,6 +817,8 @@ struct ChatView: View {
         .onChange(of: toPublic) { _ in replyingTo = nil } // a reply belongs to the chat it was started in
         .onChange(of: code) { _ in replyingTo = nil }
         .modifier(VoiceHooks(voice: voice, place: "\(toPublic)|\(code)", shown: phase == .active && nav.tab == .chat, send: sendVoice))
+        .onAppear { notifier.refresh() } // alerts may have been turned off in the phone's Settings meanwhile
+        .onChange(of: phase) { _, p in if p == .active { notifier.refresh() } }
         .sheet(item: $journey) { JourneySheet(engine: engine, id: $0.id) }
         .sheet(item: $findingPlace) { FindSheet(place: $0.place, by: $0.by, ts: $0.ts) }
         .sheet(item: $viewing) { PhotoViewer(jpeg: $0.jpeg, caption: $0.caption, from: $0.from) }
@@ -830,7 +834,12 @@ struct ChatView: View {
                     if taken { safeSent += 1 }
                     if !taken || SafeSent.calm(reduceMotion) { showingTray = false; return }
                     trayLeaving = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + SafeSent.seconds) { showingTray = false; trayLeaving = false }
+                    // Only this tray closes: one swiped away and opened again meanwhile (or another "I'm safe") stays.
+                    let n = safeSent
+                    DispatchQueue.main.asyncAfter(deadline: .now() + SafeSent.seconds) {
+                        guard trayLeaving, safeSent == n else { return }
+                        showingTray = false; trayLeaving = false
+                    }
                 } else { trayChoice = c; showingTray = false }
             }
         }
@@ -896,7 +905,12 @@ struct ChatView: View {
             if let clock {
                 VStack(alignment: .trailing, spacing: 4) {
                     // Named as the alert names them (rule Q13): "Anna (not checked)", or with emoji where two share a name.
-                    QuietCard(deadline: clock, name: mine ? nil : (engine.quietName(m.group, m.sender) ?? m.name), time: time, spot: QuietClock.spot(in: m.text))
+                    // Item 9: another member's card promises an alert only if this phone keeps that clock (the message
+                    // checked, rule Q1 passed, newest, not cancelled), and says so when alerts are off for DarkProof.
+                    let keeping = mine || QuietBook.keeps(card: clock, verified: m.verified, state: engine.quietState(m.group, m.sender, now: Engine.quietNow()))
+                    let alertsOn = [.authorized, .provisional, .ephemeral].contains(notifier.status)
+                    QuietCard(deadline: clock, name: mine ? nil : (engine.quietName(m.group, m.sender) ?? m.name), time: time, spot: QuietClock.spot(in: m.text),
+                              keeping: keeping, alertsOn: alertsOn)
                     if let delivery { StatusLine(time: nil, delivery: delivery).padding(.horizontal, 6).onTapGesture(perform: showReaders) }
                 }
             } else if case .place(let place) = card {
@@ -954,6 +968,7 @@ struct ChatView: View {
 
     /// What was picked in the "+" tray, once the tray has closed: nothing else can open while it is still closing.
     private func afterTray() {
+        trayLeaving = false // the tray is gone, however it went: a delayed close is for it only
         guard let c = trayChoice else { return }
         trayChoice = nil
         switch c {

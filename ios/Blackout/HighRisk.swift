@@ -2,7 +2,9 @@ import SwiftUI
 import UserNotifications
 import BlackoutCore
 
-/// High-risk mode (Settings), for when this phone could be taken or searched. Three things, each done where it belongs:
+/// High-risk mode (Settings), for when this phone could be taken or searched. Four things, each done where it belongs
+/// (the sheet names a fourth, "Says less": no Finder note in "I need help" and no "how it arrived" in receipts, in the
+/// engine):
 /// - Locks every time: "Lock DarkProof" is on and can't be turned off, and it asks whenever the app was left, without
 ///   the minute (`AppLock`, `HighRiskLock`).
 /// - Shows less: alerts carry no name and no text, only that there is a new message or that someone needs help
@@ -80,9 +82,10 @@ struct HighRiskSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: 14) {
-                point("lock.fill", "Locks every time.", "Face ID or your passcode whenever you open DarkProof.")
+                point("lock.fill", "Locks every time.", "Face ID, Touch ID or your passcode whenever you open DarkProof.")
                 point("eye.slash.fill", "Shows less.", "No names or message text in alerts or the app switcher.")
                 point("timer", "Keeps less.", "Messages in your groups leave this phone 1 day after they arrive.")
+                point("antenna.radiowaves.left.and.right.slash", "Says less.", "No Finder, and receipts don't say how a message arrived.")
             }
             reason
             VStack(spacing: 4) {
@@ -129,13 +132,13 @@ struct HighRiskSheet: View {
     }
 
     @ViewBuilder private var reason: some View {
-        if let why {
-            Text(why).scaledFont(15, .semibold).foregroundStyle(Theme.help).fixedSize(horizontal: false, vertical: true)
+        if let why { // white, as on Android: red is only for help and for what destroys
+            Text(why).scaledFont(15, .semibold).foregroundStyle(Theme.text).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    /// One of the three things the mode does: its name in white, what it means in grey.
+    /// One of the things the mode does: its name in white, what it means in grey.
     private func point(_ icon: String, _ lead: String, _ rest: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: icon).scaledFont(16, .semibold).foregroundStyle(Theme.text)

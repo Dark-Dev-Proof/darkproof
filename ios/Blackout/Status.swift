@@ -6,7 +6,7 @@ import BlackoutCore
 extension Engine {
     enum Reach: Equatable { case phones(Int), online(Int), radio, none }
 
-    /// Phones in range come first; else the internet relays; else a LoRa radio; else nothing yet.
+    /// Phones in reach come first; else the internet relays; else a LoRa radio; else nothing yet.
     var reach: Reach {
         if phones > 0 { return .phones(phones) }
         if relaysLinked > 0 { return .online(relaysLinked) }
@@ -14,13 +14,13 @@ extension Engine {
         return .none
     }
 
-    /// Short line under a screen title: "2 phones in range", "Online · 4 relays", …
+    /// Short line under a screen title: "2 phones in reach", "Online · 4 relays", …
     var reachLine: String {
         switch reach {
-        case .phones(let n): return "\(n) \(n == 1 ? "phone" : "phones") in range" + (relaysLinked > 0 ? " · online" : "")
+        case .phones(let n): return "\(n) \(n == 1 ? "phone" : "phones") in reach" + (relaysLinked > 0 ? " · online" : "")
         case .online(let n): return "Online · \(n) \(n == 1 ? "relay" : "relays")"
         case .radio: return "LoRa radio linked"
-        case .none: return "No one in range right now"
+        case .none: return "No one in reach right now"
         }
     }
 

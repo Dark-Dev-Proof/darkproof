@@ -6,7 +6,7 @@ extension Engine {
     /// Nothing linked: own messages still on this phone come first, then what stops phones from finding each other.
     var reachStatus: (text: String, live: Bool) {
         switch reach {
-        case .phones(let n): return ("\(n) \(n == 1 ? "phone" : "phones") in range" + (relaysLinked > 0 ? " · online" : ""), true)
+        case .phones(let n): return ("\(n) \(n == 1 ? "phone" : "phones") in reach" + (relaysLinked > 0 ? " · online" : ""), true)
         case .online: return (throughTor == true ? "Online through Tor" : "Online", true)
         case .radio: return ("LoRa radio linked", true)
         case .none:

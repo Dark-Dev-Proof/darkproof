@@ -10,12 +10,15 @@ import BlackoutCore
 // - The microphone is used only from the press of the mic button until the note is sent or cancelled (on release, or
 //   with Send or Cancel once locked hands-free; at most 10 s), and only while the chat is on screen. The sound is kept
 //   in memory, encoded, and sealed like any message. Nothing is written to a file, nothing is transcribed. Decoded
-//   sound is held only while a note is shown or played.
+//   sound is held in memory for the last few notes shown or played, while the chat is on screen: leaving the chat or
+//   the group, the app going to the background and "Erase everything" forget it.
+// - A call, an alarm, another app's audio, or headphones or AirPods coming or going (`VoiceBreak`): a note playing
+//   pauses and keeps its place; a recording is cancelled with "Voice note cancelled", never sent with a gap.
 // - What the encoder writes is checked with the readers' rules before anything is sent (`Voice.forSending`, then
 //   `Voice.packets` of the field); a phone whose encoder writes packets readers refuse sends nothing and says "This phone
 //   can't record voice notes."
 // - Not knowable without a real iPhone: whether its encoder behaves like the Mac's (the Simulator uses the Mac's
-//   AudioToolbox), real microphone input, headsets and interruptions.
+//   AudioToolbox), real microphone input, and how iOS reports headsets and interruptions to the code above.
 
 /// Apple's Opus codec as the format uses it: 48 kHz, mono, 20 ms packets (960 frames), variable bitrate at 8000 bit/s.
 enum OpusCodec {
@@ -114,8 +117,17 @@ enum OpusCodec {
 final class VoiceAudio: ObservableObject {
     static let shared = VoiceAudio()
 
+    private init() { observeBreaks() }
+
     /// True if this phone can record a voice note: its Opus encoder exists.
     var canRecord: Bool { OpusCodec.canEncode }
+
+    /// A finger is moving a voice note's bars: the same touch must not also swipe the message to reply (`SwipeReply`).
+    /// Set on the bars' drag, cleared when it ends; not published, nothing redraws for it.
+    var scrubbing = false
+
+    /// Called when the phone's audio took a recording away (`VoiceBreak`): the composer clears its strip and says so.
+    var recordingLost: (() -> Void)?
 
     // MARK: - Playing: one note at a time
 
@@ -143,20 +155,29 @@ final class VoiceAudio: ObservableObject {
         init(pcm: [Float]) { self.pcm = pcm }
     }
 
-    /// The last few notes decoded, by message id: shown notes draw their picture from it, and playing one needs no second decode.
+    /// The last few notes decoded, by message id: shown notes draw their picture from it, and playing one needs no second
+    /// decode. Forgotten with `forgetDecoded` (the chat left, the app in the background, "Erase everything").
     private let cacheLock = NSLock()
-    private var cache: [(id: String, pcm: [Float])] = []
+    private var cache: [(id: String, pcm: [Float])] = [] // cacheLock
+    private var cacheTurn = 0                            // cacheLock: a decode that began before a forget doesn't fill it again
 
     /// The sound of a note, decoded once, or nil if it can't be played. Blocks: call it off the main thread.
     func pcm(id: String, frames: Data) -> [Float]? {
-        if let hit = cacheLock.withLock({ cache.first { $0.id == id }?.pcm }) { return hit }
+        let (hit, turn) = cacheLock.withLock { (cache.first { $0.id == id }?.pcm, cacheTurn) }
+        if let hit { return hit }
         guard let ps = Voice.split(frames), let d = OpusCodec.decode(ps) else { return nil }
         #if DEBUG
         DebugLog.write("voice decoded \(id): \(ps.count) packets -> \(d.raw) samples from the decoder, \(d.pcm.count) after the pre-skip (expected \(Voice.expectedSamples(ps.count))), errors \(d.errors)")
         #endif
-        cacheLock.withLock { cache.removeAll { $0.id == id }; cache.append((id, d.pcm)); if cache.count > 4 { cache.removeFirst() } }
+        cacheLock.withLock {
+            guard cacheTurn == turn else { return }
+            cache.removeAll { $0.id == id }; cache.append((id, d.pcm)); if cache.count > 4 { cache.removeFirst() }
+        }
         return d.pcm
     }
+
+    /// Drops every decoded note from memory (any thread).
+    func forgetDecoded() { cacheLock.withLock { cache = []; cacheTurn &+= 1 } }
 
     /// How far note `id` is (0 to 1): playing, paused, or moved there by a finger.
     func position(_ id: String) -> Double { playing == id ? progress : paused[id] ?? 0 }
@@ -211,7 +232,7 @@ final class VoiceAudio: ObservableObject {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio)
             try AVAudioSession.sharedInstance().setActive(true)
             try p.engine.start()
-        } catch { return false }
+        } catch { deactivate(); return false } // the user's music isn't left paused by a note that didn't start
         player = p
         let total = Double(pcm.count)
         p.timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self, weak p] _ in
@@ -255,14 +276,58 @@ final class VoiceAudio: ObservableObject {
         if progress != 0 { progress = 0 }
     }
 
-    /// Stops whatever note is playing and forgets where paused ones were (the chat was left, the app went to the
-    /// background, a recording started).
+    /// Stops whatever note is playing and forgets where paused ones were, and the decoded sound (the chat was left, the
+    /// app went to the background, a recording started).
     func stopPlaying() {
         halt()
         if !paused.isEmpty { paused = [:] }
+        forgetDecoded()
+        scrubbing = false
+    }
+
+    /// "Erase everything", leaving a group: nothing plays or records, and nothing decoded stays in memory.
+    func forgetAll() {
+        cancelRecording()
+        stopPlaying()
     }
 
     private func deactivate() { try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation) }
+
+    // MARK: - When the phone's audio is taken away
+
+    /// Calls, alarms, other apps' audio (interruptions), headphones and AirPods (route changes), and an audio engine
+    /// that stopped because the hardware changed under it. Main queue.
+    private func observeBreaks() {
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
+            guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt, let t = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            self?.broke(t == .began ? .interruptionBegan : .interruptionEnded)
+        }
+        nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { [weak self] n in
+            let reason = (n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt).flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+            switch reason {
+            case .oldDeviceUnavailable?: self?.broke(.deviceGone)
+            case .newDeviceAvailable?: self?.broke(.deviceAdded)
+            default: self?.broke(.otherRoute) // among them the category this app sets itself before playing or recording
+            }
+        }
+        nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] n in
+            guard let self, let e = n.object as? AVAudioEngine else { return }
+            if let p = self.player, p.engine === e { self.broke(.engineChanged(running: e.isRunning), playing: true, recording: false) }
+            else if let r = self.engine, r === e { self.broke(.engineChanged(running: e.isRunning), playing: false, recording: true) }
+        }
+    }
+
+    /// What `b` does (`VoiceBreakAction`): the note playing pauses and keeps its place; a recording is cancelled and the
+    /// composer told. `playing`, `recording`: only for an engine's own change, which concerns that engine alone.
+    private func broke(_ b: VoiceBreak, playing: Bool? = nil, recording: Bool? = nil) {
+        let a = VoiceBreakAction.of(b, playing: playing ?? (self.playing != nil), recording: recording ?? (self.recording || engine != nil || feeder != nil))
+        #if DEBUG
+        if a.pause || a.cancel { DebugLog.write("voice: \(b) -> \(a.pause ? "paused" : "")\(a.cancel ? "recording cancelled" : "")") }
+        #endif
+        if a.pause { pause() }
+        if a.cancel { cancelRecording(); recordingLost?() }
+    }
 
     // MARK: - Recording
 
@@ -449,6 +514,12 @@ final class VoiceComposer: ObservableObject {
         guard audio.startRecording(full: { [weak self] in self?.full = true; UINotificationFeedbackGenerator().notificationOccurred(.success) }) else {
             Nav.shared.toast("The microphone can't be used right now"); return false
         }
+        // A call, an alarm or a headset change took the microphone: the strip goes and the user is told, as for "Cancel".
+        audio.recordingLost = { [weak self] in
+            guard let self, self.on else { return }
+            self.on = false; self.locked = false; self.full = false
+            Nav.shared.toast("Voice note cancelled")
+        }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         full = false; locked = false; on = true
         return true
@@ -517,6 +588,7 @@ private struct HoldMic: View {
     @ObservedObject var voice: VoiceComposer
     @GestureState private var pressing = false // reset by SwiftUI when the touch ends or is cancelled
     @State private var down = false      // this touch has begun
+    @State private var touch = 0         // which touch it is: a cancel decided a moment later is for this one only
     @State private var started = false   // and started a recording
     @State private var cancelled = false // and slid away, or was lifted (handled)
     @State private var lift: Double = 0  // how near the finger is to the lock, for its picture
@@ -536,7 +608,7 @@ private struct HoldMic: View {
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .updating($pressing) { _, state, _ in state = true }
                 .onChanged { g in
-                    if !down { down = true; started = !voice.on && voice.begin(); return }
+                    if !down { down = true; touch &+= 1; started = !voice.on && voice.begin(); return }
                     guard started, !cancelled else { return }
                     let p = g.location
                     lift = Voice.lift(y: Double(p.y))
@@ -551,13 +623,20 @@ private struct HoldMic: View {
                     if started && !cancelled && !voice.locked { voice.end(keep: true) }
                     down = false; started = false; cancelled = false; lift = 0
                 })
-            // A touch that ends without `onEnded` was cancelled: what it recorded is dropped.
+            // A touch that ends without `onEnded` was cancelled: what it recorded is dropped. Decided one main-queue turn
+            // later, so that a lift's `onEnded` (which sends and clears `down`) has run first, whichever of the two
+            // SwiftUI delivers first: a normal lift is never read as a cancel.
             .onChange(of: pressing) { _, now in
                 guard !now, down else { return }
-                if started && !cancelled && !voice.locked { voice.end(keep: false) }
-                down = false; started = false; cancelled = false; lift = 0
+                let t = touch
+                DispatchQueue.main.async {
+                    guard down, touch == t else { return }
+                    if started && !cancelled && !voice.locked { voice.end(keep: false) }
+                    down = false; started = false; cancelled = false; lift = 0
+                }
             }
             .accessibilityLabel("Hold to record a voice note")
+            .accessibilityHint("Use the action Record hands-free")
             .accessibilityAction(named: "Record hands-free") { voice.handsFree() }
     }
 }
@@ -600,11 +679,13 @@ private struct LockedSendButton: View {
 /// instead. The time is what the microphone has given, so it stops at 0:10.
 struct RecordingStrip: View {
     @ObservedObject var voice: VoiceComposer
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.1)) { ctx in
             let secs = min(10, VoiceAudio.shared.recordedMs / 1000)
-            let blink = voice.full || Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
+            // The dot blinks once a second; steady with Reduce Motion.
+            let blink = voice.full || reduceMotion || Int(ctx.date.timeIntervalSinceReferenceDate * 2) % 2 == 0
             let time = HStack(spacing: 8) {
                 Circle().fill(Theme.help.opacity(blink ? 1 : 0.3)).frame(width: 10, height: 10)
                 Text(Voice.label(secs)).scaledFont(16, .semibold).monospacedDigit().foregroundStyle(Theme.text).fixedSize()
@@ -612,6 +693,7 @@ struct RecordingStrip: View {
             if voice.locked {
                 HStack(spacing: 8) {
                     time.accessibilityElement(children: .ignore).accessibilityLabel("Recording hands-free, \(Voice.label(secs))")
+                        .accessibilityAddTraits(.updatesFrequently)
                     Spacer(minLength: 2)
                     Button { voice.end(keep: false) } label: {
                         Text("Cancel").scaledFont(15, .semibold).foregroundStyle(Theme.text).lineLimit(1)
@@ -640,6 +722,7 @@ struct RecordingStrip: View {
                 .background(Theme.tile, in: Capsule())
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Recording, \(Voice.label(secs)). Slide away to cancel")
+                .accessibilityAddTraits(.updatesFrequently)
             }
         }
     }
@@ -673,9 +756,11 @@ struct VoiceNoteRow: View {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         audio.toggle(id: id, frames: frames) { failed = true; Nav.shared.toast("Can't play this voice note.") }
                     } label: {
+                        // A 34 pt circle as before, with 44 pt to touch around it (the layout keeps the 34).
                         Image(systemName: playing ? "pause.fill" : "play.fill").scaledFont(16, .bold).foregroundStyle(ink)
                             .frame(width: 34, height: 34)
                             .background(Circle().fill(fill))
+                            .frame(width: 44, height: 44).contentShape(Rectangle()).padding(-5)
                     }
                     .buttonStyle(.plain)
                     .disabled(failed)
@@ -689,9 +774,10 @@ struct VoiceNoteRow: View {
                     .frame(width: Self.barsWidth, height: 34) // 34 pt of touch
                     .contentShape(Rectangle())
                     .onTapGesture(coordinateSpace: .local) { p in if !failed { audio.seek(id: id, to: Voice.seekAt(Double(p.x), width: Double(Self.barsWidth))) } }
+                    // While a finger moves the bars, the message doesn't also swipe to reply (`VoiceAudio.scrubbing`).
                     .gesture(SidewaysDrag(
-                        moved: { x in if !failed { drag = Voice.seekAt(Double(x), width: Double(Self.barsWidth)) } },
-                        ended: { done in if done, let d = drag { audio.seek(id: id, to: d) }; drag = nil }))
+                        moved: { x in audio.scrubbing = true; if !failed { drag = Voice.seekAt(Double(x), width: Double(Self.barsWidth)) } },
+                        ended: { done in audio.scrubbing = false; if done, let d = drag { audio.seek(id: id, to: d) }; drag = nil }))
                     .accessibilityHidden(true)
                     Text(Voice.label(secs)).scaledFont(14, .semibold).monospacedDigit().foregroundStyle(ink)
                 }
@@ -710,6 +796,7 @@ struct VoiceNoteRow: View {
             }
             if failed { Text("Can't play this voice note.").scaledFont(13).foregroundStyle(ink.opacity(0.6)).padding(.leading, 4) }
         }
+        .onDisappear { if drag != nil { drag = nil; audio.scrubbing = false } } // scrolled away under the finger
         .task(id: id) {
             // The picture is drawn from the decoded sound, here, once; until then the bars lie flat.
             let (id, frames) = (id, frames)
@@ -732,7 +819,7 @@ private struct SpeedChip: View {
             Text(Voice.speedLabel(audio.speed)).scaledFont(13, .semibold).monospacedDigit().foregroundStyle(ink).lineLimit(1).fixedSize()
                 .padding(.horizontal, 8).frame(minWidth: 38, minHeight: 26)
                 .background(Capsule().fill(fill))
-                .frame(minHeight: 34).contentShape(Rectangle())
+                .frame(minHeight: 44).contentShape(Rectangle()).padding(.vertical, -5) // 44 pt to touch, laid out as 34
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Voice.speedSpoken(audio.speed))

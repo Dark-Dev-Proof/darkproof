@@ -427,7 +427,7 @@ struct ChoiceRow<T: Hashable>: View {
                 .frame(maxWidth: .infinity, minHeight: 40)
                 .padding(.horizontal, 6)
                 .background(Capsule().fill(on ? Color.white : Theme.tile))
-                .contentShape(Capsule())
+                .frame(minHeight: 44).contentShape(Rectangle()).padding(.vertical, -2) // 44 pt to touch, laid out as 40
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(title): \(label(o))")

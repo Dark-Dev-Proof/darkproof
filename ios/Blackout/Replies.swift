@@ -145,46 +145,41 @@ struct ReplyStrip: View {
     }
 }
 
-/// Swipe to reply: a group message dragged to the right past `threshold` starts a reply when it is let go, as the held
-/// menu's "Reply" does. A reply arrow comes in at the left as it moves, and the phone taps once when it passes the
-/// threshold. Only a drag that begins sideways and to the right is taken; a scroll stays a scroll. `reply` is nil where
-/// "Reply" isn't offered (Everyone, a message that can't be answered, a group that can't be written to): then nothing
-/// moves. VoiceOver gets the same as a "Reply" action, so the drag is never the only way.
+/// Swipe to reply: a group message dragged to the right past the threshold starts a reply when it is let go, as the held
+/// menu's "Reply" does (`SwipeReply` decides). A reply arrow comes in at the left as it moves, and the phone taps once
+/// when it passes the threshold. Only a drag that begins sideways and to the right is taken; a scroll stays a scroll, a
+/// finger moving a voice note's bars only moves the note (`VoiceAudio.scrubbing`), and a touch the system takes away
+/// (a call, an alert, a system gesture) never replies: only a lift does. `reply` is nil where "Reply" isn't offered
+/// (Everyone, a message that can't be answered, a group that can't be written to): then nothing moves. VoiceOver gets
+/// the same as a "Reply" action, so the drag is never the only way.
 struct SwipeToReply: ViewModifier {
     let reply: (() -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @GestureState private var touching = false // reset by SwiftUI when the touch ends or is cancelled
-    @State private var moved: CGFloat = 0      // how far the message is drawn to the right
-    @State private var across: Bool?           // decided at the start of each drag: sideways to the right (a reply) or not
-    @State private var armed = false           // past the threshold: letting go replies
-    static let threshold: CGFloat = 48
+    @State private var swipe = SwipeReply()     // this touch: sideways or not, past the threshold or not, how far drawn
+    static let threshold = CGFloat(SwipeReply.threshold)
 
     func body(content: Content) -> some View {
         if let reply {
             content
-                .offset(x: moved)
+                .offset(x: CGFloat(swipe.moved))
                 .background(alignment: .leading) { arrow }
                 .simultaneousGesture(DragGesture(minimumDistance: 12, coordinateSpace: .local)
                     .updating($touching) { _, state, _ in state = true }
                     .onChanged { g in
-                        let w = g.translation.width
-                        if across == nil { across = w > 0 && w > abs(g.translation.height) * 1.5 }
-                        guard across == true else { return }
-                        let way = max(0, w)
-                        // With the finger up to the threshold, then a little more slowly, and never more than half as far again.
-                        moved = way <= Self.threshold ? way : min(Self.threshold * 1.5, Self.threshold + (way - Self.threshold) * 0.35)
-                        let past = way >= Self.threshold
-                        if past != armed {
-                            armed = past
-                            if past { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-                        }
+                        let tap = swipe.drag(width: g.translation.width, height: g.translation.height, scrubbing: VoiceAudio.shared.scrubbing)
+                        if tap { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+                    }
+                    // Lifted: past the threshold it replies. Only here, so a cancelled touch never does.
+                    .onEnded { _ in
+                        let replies = withAnimation(back) { swipe.lifted() }
+                        if replies { reply() }
                     })
-                // The touch is over, lifted or cancelled: past the threshold it replies, and the message goes back.
+                // The touch is over, lifted or cancelled: the message goes back. One main-queue turn later, so that a
+                // lift's `onEnded` has replied first, whichever of the two SwiftUI delivers first.
                 .onChange(of: touching) { _, now in
                     guard !now else { return }
-                    if across == true && armed { reply() }
-                    across = nil; armed = false
-                    withAnimation(reduceMotion || Theme.lowPower ? nil : .spring(response: 0.3, dampingFraction: 1)) { moved = 0 }
+                    DispatchQueue.main.async { if swipe != SwipeReply() { withAnimation(back) { swipe.cancelled() } } }
                 }
                 .accessibilityAction(named: "Reply", reply)
         } else {
@@ -192,8 +187,10 @@ struct SwipeToReply: ViewModifier {
         }
     }
 
+    private var back: Animation? { reduceMotion || Theme.lowPower ? nil : .spring(response: 0.3, dampingFraction: 1) }
+
     private var arrow: some View {
-        let p = min(1, moved / Self.threshold)
+        let p = min(1, CGFloat(swipe.moved) / Self.threshold), armed = swipe.armed
         return Image(systemName: "arrowshape.turn.up.left.fill").scaledFont(15, .semibold)
             .foregroundStyle(armed ? Theme.text : Theme.dim)
             .frame(width: 34, height: 34).background(Circle().fill(Theme.tile))

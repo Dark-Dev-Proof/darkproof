@@ -165,6 +165,7 @@ enum Wipe {
         removeKeychain()
         removeFiles()
         Clipboard.clearIfOurs()
+        VoiceAudio.shared.forgetAll() // nothing plays or records, and no decoded voice note stays in memory
         Nav.shared.banner = nil; Nav.shared.sheet = nil
         OfflineMap.shared.cancel()
         let stopped = DispatchGroup()
@@ -180,15 +181,19 @@ enum Wipe {
         stopped.notify(queue: .main) {
             removeStored()
             forgetInMemory()
-            if let lines { EraseResult.shared.lines = lines }
             lastLeft = left()
+            // The final screen says what is true: "DarkProof is empty on this phone", or, with something left, "Not
+            // everything could be erased" and how to remove the rest, never both (`LeaveWords.finalTitle`).
+            EraseResult.shared.leftBehind = !lastLeft.isEmpty
+            if let lines { EraseResult.shared.lines = lines }
             #if DEBUG
             say("erase: " + (lastLeft.isEmpty ? "nothing left" : "left \(lastLeft)") + (UIApplication.shared.applicationState == .background ? " (finished in the background)" : ""))
             #endif
             resetMap()
             busy = false; eraseTookOver = false; takenOverNote = (false, false)
             // Said once, here: the marker is gone, so nothing tries again by itself and erases what is set up next.
-            if !lastLeft.isEmpty { Nav.shared.toast("Not everything could be erased. Delete DarkProof from this iPhone to remove the rest.") }
+            // With the final screen it says so; without one (an erase finished at the next start), a toast does.
+            if !lastLeft.isEmpty && lines == nil { Nav.shared.toast(LeaveWords.notAllErased + ". " + LeaveWords.deleteRest) }
             endTask()
         }
         return true
@@ -438,6 +443,7 @@ enum Wipe {
     static func leave(_ code: String, name: String, note: String? = nil, noteLeft: Bool? = nil) {
         guard !busy, !leavingBusy, !code.isEmpty else { return }
         leavingBusy = true
+        VoiceAudio.shared.forgetAll() // the group's voice notes: nothing plays, and nothing decoded stays in memory
         Nav.shared.sheet = nil; Nav.shared.banner = nil
         let stopping = Mesh.shared.stop(leaving: code, keeping: note) { left in
             let codes = left?.codes ?? [code]
@@ -558,4 +564,6 @@ final class Telling: ObservableObject {
 final class EraseResult: ObservableObject {
     static let shared = EraseResult()
     @Published var lines: [String]?
+    /// The check at the end found something still on the phone (`Wipe.left`).
+    @Published var leftBehind = false
 }

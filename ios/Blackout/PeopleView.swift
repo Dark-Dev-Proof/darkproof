@@ -293,8 +293,11 @@ struct PersonRow: View {
         .contentShape(Rectangle())
         .onTapGesture { if let open { open() } else if person.spot != nil { find() } }
         .accessibilityElement(children: .combine)
-        .accessibilityAction(named: "Find \(person.name)") { if person.spot != nil { find() } }
-        .accessibilityAction(named: "Check \(person.name)") { open?() }
+        // Only the actions that do something: no "Find" without a position, no "Check" on a report (it has no page).
+        .accessibilityActions {
+            if person.spot != nil { Button("Find \(person.name)") { find() } }
+            if let open { Button("Check \(person.name)") { open() } }
+        }
     }
 }
 
@@ -324,7 +327,7 @@ struct ConnectionHelp: View {
 
     var body: some View {
         Card {
-            Text("No one in range yet").scaledFont(20, .bold).foregroundStyle(Theme.text)
+            Text("No one in reach yet").scaledFont(20, .bold).foregroundStyle(Theme.text)
             tip("iphone.radiowaves.left.and.right",
                 "Open DarkProof on both phones and stay within about 10–50 m. Walls cut the range: try outside or by a window.")
             tip("wifi", "On the same Wi-Fi or hotspot, phones also connect with no internet.")
@@ -611,7 +614,7 @@ private struct CheckPersonSheet: View {
         Text("Ask \(name) to read these out. If \(name)'s phone shows the same sixteen, nobody is in between.")
             .scaledFont(15).foregroundStyle(Theme.dim).multilineTextAlignment(.center)
             .frame(maxWidth: .infinity).fixedSize(horizontal: false, vertical: true)
-        Text("They open Settings › Groups and read you “Your emoji”.")
+        Text("\(name) finds them in Settings › Groups, under “Your emoji”.")
             .scaledFont(13).foregroundStyle(Theme.faint).multilineTextAlignment(.center)
             .frame(maxWidth: .infinity).fixedSize(horizontal: false, vertical: true)
         Button("They match") { engine.markChecked(code, person.id, name, how: .emoji); done = .emoji }.buttonStyle(PrimaryButton())
