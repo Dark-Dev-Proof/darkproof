@@ -75,4 +75,37 @@ class BleProtocolTest {
         assertArrayEquals(hello.copyOfRange(5, hello.size) + ByteArray(40) { 3 } + ByteArray(40) { 4 }, rest.toByteArray())
         assertTrue(o.isEmpty); assertEquals(0, o.bytes)
     }
+
+    // Finder's signal reads and the link's one slot (rule F13; final review 2026-11-23).
+
+    @Test fun anAnswerFreesTheSlotOfItsRead() {
+        val r = BleProtocol.RssiSlot()
+        assertTrue(r.mayRead(1_000)); r.sent(1_000)
+        assertFalse("one read at a time", r.mayRead(1_500))
+        assertTrue(r.answered()); assertEquals(0L, r.outAt)
+        assertFalse("its timer finds nothing to free", r.timedOut(1_000, 3_000))
+        assertTrue(r.mayRead(2_000))
+    }
+
+    @Test fun aLateAnswerNeverFreesTheSlotOfANewerReadOrAWrite() {
+        val r = BleProtocol.RssiSlot()
+        r.sent(1_000)
+        assertTrue("no answer in 2 s: the slot is free again", r.timedOut(1_000, 1_000 + BleProtocol.RssiSlot.WAIT_MS))
+        // A write takes the slot now; then the late answer comes: it frees nothing.
+        assertFalse(r.answered())
+        // No other read went out while that answer could still come, so a newer read's slot is never taken by it.
+        assertTrue(r.mayRead(3_500)); r.sent(3_500)
+        assertTrue(r.answered())
+    }
+
+    @Test fun noReadGoesOutWhileALateAnswerMayStillCome() {
+        val r = BleProtocol.RssiSlot()
+        r.sent(1_000); assertTrue(r.timedOut(1_000, 3_000))
+        assertFalse("its answer could be taken for the next one's", r.mayRead(4_000))
+        assertFalse(r.mayRead(3_000 + BleProtocol.RssiSlot.LOST_MS - 1))
+        assertTrue("one that never comes doesn't stop the readings for good", r.mayRead(3_000 + BleProtocol.RssiSlot.LOST_MS))
+        r.sent(13_000)
+        assertFalse("a timer of the old read frees nothing", r.timedOut(1_000, 13_500))
+        assertEquals(13_000L, r.outAt)
+    }
 }

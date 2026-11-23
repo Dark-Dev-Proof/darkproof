@@ -55,6 +55,37 @@ class QuietAlarms(c: Context) : QuietOut {
 
         fun intent(c: Context, list: List<QuietAlert>): Intent = Intent(c, QuietAlarmReceiver::class.java).putExtra(EXTRA, pack(list))
         fun read(i: Intent): List<QuietAlert> = unpack(i.getStringArrayExtra(EXTRA))
+
+        /**
+         * The backup alarm goes, with what it carries (names, times, a group's code): when nothing is to come, at "Erase
+         * everything" ([Wipe.everything], both passes) and when a group is left with no engine running. Alarms outlive the
+         * app's process, so an erase that left it armed would keep those words in Android's memory until it rang, and its
+         * ringing would make a new store (final review 2026-11-23, item 5). Any thread.
+         */
+        fun cancel(c: Context) {
+            val am = c.getSystemService(AlarmManager::class.java) ?: return
+            PendingIntent.getBroadcast(c, REQUEST, Intent(c, QuietAlarmReceiver::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_NO_CREATE)?.let { am.cancel(it); it.cancel() }
+        }
+
+        /**
+         * "Lock DarkProof" (or high-risk mode) was turned on: every clock alert still showing is worded again without names,
+         * times or text ([QuietWords.HIDDEN_TITLE]), in place and without a sound, and a reminder loses its "I'm safe" (never
+         * with the lock on). Its time to go is kept. One that was swiped away stays away.
+         */
+        fun hideShowing(c: Context) {
+            val nm = c.getSystemService(NotificationManager::class.java) ?: return
+            val now = System.currentTimeMillis()
+            for (s in runCatching { nm.activeNotifications }.getOrNull().orEmpty()) {
+                if (s.tag != TAG) continue
+                val n = s.notification; val remind = n.category == Notification.CATEGORY_REMINDER
+                val body = if (remind) QuietWords.REMIND_HIDDEN else QuietWords.HIDDEN_BODY
+                val b = Notification.Builder(c, CHANNEL).setSmallIcon(R.drawable.ic_schedule).setContentTitle(QuietWords.HIDDEN_TITLE).setContentText(body)
+                    .setStyle(Notification.BigTextStyle().bigText(body)).setContentIntent(n.contentIntent).setAutoCancel(true)
+                    .setCategory(n.category).setOnlyAlertOnce(true)
+                if (n.timeoutAfter > 0) b.setTimeoutAfter((n.timeoutAfter - (now - s.postTime)).coerceAtLeast(1_000L))
+                runCatching { nm.notify(TAG, s.id, b.build()) }
+            }
+        }
     }
 
     /** An alert now: as the in-app banner while DarkProof is on screen and unlocked, else as a notification. Any thread. */
@@ -79,7 +110,7 @@ class QuietAlarms(c: Context) : QuietOut {
         // first, so that whoever holds a locked phone can't stop its clock. Before Android 12 a notification can't ask for
         // that itself: the button opens "If I go quiet", which a locked phone opens only after its unlock.
         if (a.remind && a.safe) {
-            val pi = if (Build.VERSION.SDK_INT >= 31) PendingIntent.getBroadcast(c, id, Intent(c, AnswerReceiver::class.java)
+            val pi = if (LockedSafe.buttonSends(Build.VERSION.SDK_INT)) PendingIntent.getBroadcast(c, id, Intent(c, AnswerReceiver::class.java)
                 .putExtra(Actions.EXTRA_GROUP, a.group).putExtra(AnswerReceiver.NOTIFICATION, id).putExtra(AnswerReceiver.TAG, TAG),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             else PendingIntent.getActivity(c, id + 1, Actions.intent(c, Actions.QUIET, a.group), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -102,11 +133,8 @@ class QuietAlarms(c: Context) : QuietOut {
      * every 9 minutes or so, can add to that). While the app sleeps, the running service's own timer doesn't run either.
      */
     override fun arm(coming: List<QuietAlert>) {
+        if (coming.isEmpty()) { cancel(c); return }
         val am = c.getSystemService(AlarmManager::class.java) ?: return
-        if (coming.isEmpty()) {
-            PendingIntent.getBroadcast(c, REQUEST, Intent(c, QuietAlarmReceiver::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_NO_CREATE)?.let { am.cancel(it); it.cancel() }
-            return
-        }
         val pi = PendingIntent.getBroadcast(c, REQUEST, intent(c, coming), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val now = System.currentTimeMillis()
         val first = coming.minOf { it.at } - MeshEngine.quietAhead // by the phone's own clock (debug builds can move the clock the rules use)
@@ -120,10 +148,14 @@ class QuietAlarms(c: Context) : QuietOut {
 /** The backup alarm of check-in clocks ([QuietAlarms]): what is due is posted, unless its record was cancelled; the rest is armed again. */
 class QuietAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
+        // An erase is under way: nothing is posted or made, and the alarm goes with what it carries.
+        if (MeshEngine.stopped) { QuietAlarms.cancel(c); return }
         val due = QuietAlarms.read(i)
         val pending = goAsync()
         Thread {
             try {
+                // No group saved (an erase ended, or every group was left): no channel and no store are made, the alarm goes.
+                if (Groups.code(c) == null) { QuietAlarms.cancel(c); return@Thread }
                 QuietAlarms.setUp(c)
                 val out = MeshEngine.quietOut ?: QuietAlarms(c)
                 val left = MeshEngine.quietAlarmRang(c, due, out)

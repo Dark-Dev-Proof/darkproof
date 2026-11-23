@@ -1,6 +1,7 @@
 package it.blackout.mesh
 
 import android.annotation.SuppressLint
+import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -36,8 +37,11 @@ class AnswerReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         val pending = goAsync()
         val id = i.getIntExtra(NOTIFICATION, 0)
-        // Not offered while "Lock DarkProof" is on ([Notifier]); one from before it was turned on isn't sent either.
-        if (AppLock.enabled(c)) {
+        // Not offered while "Lock DarkProof" is on ([Notifier]); one from before it was turned on isn't sent either. Before
+        // Android 12 the button opens the app instead ([LockedSafe.buttonSends]); one posted before that rule isn't sent
+        // from a locked phone either (rule Q8).
+        val locked = c.getSystemService(KeyguardManager::class.java)?.isDeviceLocked ?: true
+        if (LockedSafe.receiverRefuses(Build.VERSION.SDK_INT, AppLock.enabled(c), locked)) {
             Toast.makeText(c, "Open DarkProof and unlock it to say you're safe.", Toast.LENGTH_LONG).show()
             pending.finish(); return
         }
@@ -66,8 +70,16 @@ class SafeTile : TileService() {
         qsTile?.apply { state = Tile.STATE_INACTIVE; if (Build.VERSION.SDK_INT >= 29) subtitle = if (AppLock.enabled(this@SafeTile)) null else Groups.current(this@SafeTile)?.name; updateTile() }
     }
     override fun onClick() {
-        // With "Lock DarkProof" on, whoever holds the phone can't tell the group you're safe without unlocking.
-        if (!QuickCheckIn.ready(this) || AppLock.enabled(this)) { openApp(Intent(this, MainActivity::class.java)); return }
+        // With "Lock DarkProof" on, whoever holds the phone can't tell the group you're safe without unlocking DarkProof;
+        // with it off, not without unlocking the phone (rule Q8): the tile also shows on the lock screen.
+        when (LockedSafe.tile(QuickCheckIn.ready(this), AppLock.enabled(this), isLocked)) {
+            LockedSafe.Tap.OPEN_APP -> openApp(Intent(this, MainActivity::class.java))
+            LockedSafe.Tap.UNLOCK_FIRST -> unlockAndRun { sendSafe() } // runs only once the phone is unlocked
+            LockedSafe.Tap.SEND -> sendSafe()
+        }
+    }
+
+    private fun sendSafe() {
         QuickCheckIn.send(this, CheckIn.SAFE)
         qsTile?.apply { state = Tile.STATE_ACTIVE; if (Build.VERSION.SDK_INT >= 29) subtitle = "Sent"; updateTile() }
         Toast.makeText(this, "Sending “I'm safe” to ${Groups.current(this)?.name ?: "your group"}", Toast.LENGTH_SHORT).show()

@@ -12,6 +12,42 @@ object WaitingSafe {
     fun stillWanted(at: Long, now: Long): Boolean = now >= at && now - at <= MAX_WAIT_MS
 }
 
+/**
+ * Rule Q8 for every way "I'm safe" goes out without the app on screen (final review 2026-11-23, item 1): it stops the
+ * sender's check-in clock on every phone, so whoever holds a locked phone must not be able to send it. "I need help" is
+ * not held back: asking for help from a locked phone is meant to work.
+ */
+object LockedSafe {
+    /** What a tap on the "I'm safe" Quick Settings tile does. */
+    enum class Tap {
+        /** No group yet, or "Lock DarkProof" (or high-risk mode) is on: the app opens, behind its own unlock. */
+        OPEN_APP,
+        /** The phone is locked: Android asks for its unlock first ([android.service.quicksettings.TileService.unlockAndRun]), then it sends. */
+        UNLOCK_FIRST,
+        SEND,
+    }
+
+    /** [ready]: a group is saved; [appLock]: "Lock DarkProof" or high-risk mode; [locked]: the phone's lock screen shows. */
+    fun tile(ready: Boolean, appLock: Boolean, locked: Boolean): Tap = when {
+        !ready || appLock -> Tap.OPEN_APP
+        locked -> Tap.UNLOCK_FIRST
+        else -> Tap.SEND
+    }
+
+    /**
+     * Whether "I'm safe" under an "Are you safe?" alert or under this phone's own clock reminder sends by itself. From
+     * Android 12 ([sdk] 31) the button asks for the phone's unlock before it sends. Before that a notification button can't
+     * ask for it: the button opens the app instead, which a locked phone shows only after its unlock.
+     */
+    fun buttonSends(sdk: Int): Boolean = sdk >= 31
+
+    /**
+     * The receiver of that button refuses: with "Lock DarkProof" on ([appLock]), and before Android 12 while the phone is
+     * locked ([deviceLocked]), for a button posted before this rule (an alert from an older version stays on screen).
+     */
+    fun receiverRefuses(sdk: Int, appLock: Boolean, deviceLocked: Boolean): Boolean = appLock || (!buttonSends(sdk) && deviceLocked)
+}
+
 /** Where a one-tap answer under an "Are you safe?" alert goes. */
 sealed interface AnswerTo {
     /** [code]: the saved group's code now; null: the group in use (the alert named no group). */

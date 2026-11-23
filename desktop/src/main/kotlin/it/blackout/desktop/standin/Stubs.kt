@@ -117,5 +117,6 @@ object Notifier {
     var inApp: ((Alert) -> Unit)? = null
     data class Alert(val title: String, val body: String, val group: String?, val urgent: Boolean, val ask: Boolean, val messageId: String)
     fun forget(c: Context, ids: Collection<String>) {}
-    fun forgetAll(c: Context) {}
+    /** A group was left: its alerts would go (a phone's message alerts and that group's clock alerts, [quietIds]). None here. */
+    fun forgetGroup(c: Context, quietIds: Collection<String>) {}
 }

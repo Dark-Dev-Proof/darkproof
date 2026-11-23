@@ -61,7 +61,7 @@ class MainActivity : ComponentActivity() {
 
     fun setAppLock(on: Boolean) {
         AppLock.set(this, on); state.lockOn = on; applySecure()
-        if (on) getSystemService(NotificationManager::class.java).cancelAll() // alerts already showing still have their text
+        if (on) Notifier.hideShowing(this) // message alerts already showing still have their text; clock alerts are worded again without it
         MeshEngine.quietPass() // the check-in clocks' alarm is worded again, with or without names
     }
     fun lockNow() { state.locked = true; Notifier.onScreen = false; Notifier.inApp = null }

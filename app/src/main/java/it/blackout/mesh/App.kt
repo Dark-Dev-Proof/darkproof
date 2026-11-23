@@ -829,8 +829,9 @@ private fun EverydayRows(s: AppState, a: MainActivity, highRisk: () -> Unit, ope
                 if (noLocation) Theme.help else Theme.dim) { a.shareLocation(it) }
             if (noLocation) Box(Modifier.padding(start = 50.dp, bottom = 8.dp)) { GhostButton("Allow location") { a.askLocation() } }
         }
-        // Finder (decision 2): what "I need help" carries for the group's Bluetooth search. A computer has no Bluetooth links.
-        if (Here.bluetooth) ToggleRow(R.drawable.ic_bluetooth, "Let my group find this ${Here.device}", s.findable && !s.highRisk,
+        // Finder (decision 2): what "I need help" carries for the group's Bluetooth search. A computer has no Bluetooth links,
+        // and while the trial switch is off "I need help" carries nothing of it, so the row isn't shown (decision B, 2026-11-23).
+        if (FinderPrefs.offered(FinderPrefs.trial(a))) ToggleRow(R.drawable.ic_bluetooth, "Let my group find this ${Here.device}", s.findable && !s.highRisk,
             if (s.highRisk) "Off in high-risk mode." else "When you send “I need help”, your group can tell which nearby phone is yours until DarkProof restarts.") { on ->
             if (s.highRisk) Toast.makeText(a, "Off in high-risk mode", Toast.LENGTH_LONG).show() // the switch stays as it was for later
             else { s.findable = on; FinderPrefs.setFindable(a, on) }

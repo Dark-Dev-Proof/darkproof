@@ -161,4 +161,43 @@ object BleProtocol {
             return out
         }
     }
+
+    /**
+     * Finder's signal reads on one link (rule F13) and the link's one GATT slot (Android keeps one operation in flight per
+     * connection). A read holds the slot until its answer, or [WAIT_MS] if none comes. Android's answer doesn't say which
+     * read it answers, so after a read that got no answer in time no other read goes out on the link until that late answer
+     * has come, or [LOST_MS] has passed: a late answer never frees the slot while a newer read or a write holds it (final
+     * review 2026-11-23), and a read that is never answered doesn't stop the readings for good. Times are the phone's
+     * uptime clock. Not thread-safe: the Bluetooth thread drives it.
+     */
+    class RssiSlot {
+        /** When the read that holds the slot went out; 0 while no read holds it. */
+        var outAt = 0L; private set
+        private var lostAt = 0L // a read got no answer in time and its answer may still come; 0: none
+
+        /** Whether a read may go out now (the slot itself must be free too). */
+        fun mayRead(now: Long) = outAt == 0L && (lostAt == 0L || now - lostAt >= LOST_MS || now < lostAt)
+
+        /** A read went out at [now] and holds the slot. */
+        fun sent(now: Long) { outAt = now; lostAt = 0L }
+
+        /** [WAIT_MS] after the read sent at [at]: true if it still held the slot, which is free again now. */
+        fun timedOut(at: Long, now: Long): Boolean {
+            if (outAt != at || at == 0L) return false
+            outAt = 0L; lostAt = now
+            return true
+        }
+
+        /** An answer came: true if it answers the read that holds the slot (free it, use its reading); false for a late one, which frees nothing. */
+        fun answered(): Boolean {
+            if (outAt == 0L) { lostAt = 0L; return false }
+            outAt = 0L
+            return true
+        }
+
+        companion object {
+            const val WAIT_MS = 2_000L
+            const val LOST_MS = 10_000L
+        }
+    }
 }

@@ -16,14 +16,22 @@ public abstract class SQLiteOpenHelper {
     public abstract void onCreate(SQLiteDatabase db);
     public abstract void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion);
 
+    /** A file from a newer version: refused, as Android refuses it unless the helper says otherwise. */
+    public void onDowngrade(SQLiteDatabase db, int oldVersion, int newVersion) {
+        throw new SQLiteException("the saved data was written by a newer DarkProof (version " + oldVersion + ", this one reads " + newVersion + ")", null);
+    }
+
     public synchronized SQLiteDatabase getWritableDatabase() {
         if (db != null) return db;
         SQLiteDatabase d = SQLiteDatabase.open(file);
         int had = d.getVersion();
         if (had != version) {
-            if (had > version) { d.close(); throw new SQLiteException("the saved data was written by a newer DarkProof (version " + had + ", this one reads " + version + ")", null); }
+            boolean ok = false;
             d.beginTransaction();
-            try { if (had == 0) onCreate(d); else onUpgrade(d, had, version); d.setVersion(version); d.setTransactionSuccessful(); } finally { d.endTransaction(); }
+            try {
+                if (had == 0) onCreate(d); else if (had > version) onDowngrade(d, had, version); else onUpgrade(d, had, version);
+                d.setVersion(version); d.setTransactionSuccessful(); ok = true;
+            } finally { d.endTransaction(); if (!ok) d.close(); }
         }
         return db = d;
     }
