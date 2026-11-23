@@ -304,7 +304,7 @@ public struct QuietBook: Equatable, Sendable {
         /// Its alert waits with iOS for the deadline.
         public var scheduled: Bool
         /// For this phone's own clock: the members whose phones confirmed the clock message (delivery receipts), first
-        /// confirmation first. Kept here, not with the message, so "Kept by" outlives the message when the group's
+        /// confirmation first. Kept here, not with the message, so "Reached" outlives the message when the group's
         /// timer deletes it. Ids only; the screen names them, and leaves out who isn't a member now.
         public var keepers: [String] = []
         /// Rule Q3: the greater `ts`; equal, the greater packet id; equal, the greater mark. Arrival order doesn't matter.

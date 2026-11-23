@@ -411,7 +411,9 @@ Each group message has its own key, which a phone deletes once the message has b
   When the epoch is deleted, the copies sealed under it, their packets (which no longer open) and their messages on
   screen go at once, not at the next read of the store. A copy can be up to about 1 KiB longer than the largest packet
   (it adds the group and epoch ids, lengths, nonce and tag); a phone's store of copies reads back copies up to 1 KiB
-  over `maxCipher`, and a phone never seals a packet of its own over `maxCipher`.
+  over `maxCipher`, and a phone never seals a packet of its own over `maxCipher`. The same key also seals the phone's
+  check-in clock records (see "If I go quiet", Q10) and, on iPhone, the day book with the gone list (see "Forwarding
+  rules", high-risk mode).
 - **Alerts:** an alert shows a message's text, so it must not outlive the message. When a phone deletes a message, its
   alert goes too (iPhone: alerts are posted under the message id; Android: while the app runs). An alert also goes
   by itself: on Android a week after the message's date (a minute at least), on iPhone a week after it was posted.
@@ -1088,6 +1090,9 @@ epoch's (see "Current epoch"); for rivals with one number that is the winner's, 
   the phone's own message, who confirmed it and how it got there; reactions, which are messages;
   the group's receipts, counted the same way. Quotes of a message that went read "A message this phone doesn't have".
   Lines such as "Anna removed Marco" and the timer's own lines come from the epochs and stay.
+- **Calls for help go too.** People is built from the messages, so when an "I need help" check-in goes, its red row,
+  its position and "Find" go with it, as for any check-in. Only check-in clocks are kept apart from the messages (see
+  "If I go quiet", Q10). The timer sheet says so (see "Changing it").
 - **The packet is still carried.** Every phone that read a message has deleted its message key, so the packet it
   stored can't be opened there again: it stays in the store as one more packet the phone only carries, for the rest
   of its 7 days (see "Forwarding rules"), so that a member who was away still gets the message. A packet that a key
@@ -1126,6 +1131,8 @@ epoch's (see "Current epoch"); for rivals with one number that is the winner's, 
   the timer off. Messages disappear after 1 to 2 weeks."; where the phone didn't see who set it, "Messages disappear
   after 8 hours" or "The timer is off. Messages disappear after 1 to 2 weeks.". The chat's header shows the value
   ("1 day") while a timer is set, and nothing while it is off or not known.
+- **The timer sheet** says under its choices, the same on every platform: `This includes "I need help" calls and the
+  positions sent with them.`
 
 ### Phones without it
 
@@ -1155,6 +1162,8 @@ no new key format, nothing in how packets are sealed, signed or padded.
 - One form for leaving and for erasing: saying "erased" could tell the wrong reader that the phone was in danger. A
   reader ignores a `0x05` field whose second byte isn't `0x01` (a newer form), or whose length isn't 2, and reads the
   message as text.
+- **The text is not checked.** A reader goes by the field alone: `05 01` under any text is a note (L1 decides whether
+  it counts), and like every note it is never shown as a bubble (L6).
 - Only the member's own key signs under their id (see "Signatures"), so nobody can make someone else leave. A text
   alone (`👋 I left the group` without the field) is an ordinary message: anyone could type or forward it.
 - It goes up to the relays with the phone's own packets first, and on LoRa radios (it is small; unlike a reaction or
@@ -1173,6 +1182,10 @@ no new key format, nothing in how packets are sealed, signed or padded.
   that epoch won its number and doesn't list them. A number with no such epoch on the phone fails too: nothing there
   shows that it listed the sender. Packets older than 7 days are dropped, and an epoch is held at least
   7 days after a newer one replaced it, so a phone that held the epochs in between still holds them.
+  The clause about a removal that won has a cost: someone removed and later let in again **with the same key** has
+  their notes, and their check-in clocks and the check-ins that cancel them (see "If I go quiet", Q1), ignored on
+  this phone until it no longer holds that removal's epoch, a week or more after the epoch was replaced. Their
+  messages are shown as usual meanwhile.
 - **L2. The leaving record.** On a valid note the phone saves: group, member id, the note's `ts`, the number of the
   epoch it opened with, and when the phone took it. Later notes from the same member change nothing while the record
   lasts. It ends when the member is no longer in the current epoch, when the group is left, or 7 days after the phone
@@ -1237,10 +1250,12 @@ no new key format, nothing in how packets are sealed, signed or padded.
   goes when a phone comes into reach."
 - **Erase:** the switch "Tell my groups first", "Asks their admins' phones to remove this phone and change the key";
   after the hold "Telling your groups…" / "Waiting for a phone or relay to take the note." / the seconds left /
-  "Erase now". The last screen names no group (the phone may be taken at that moment): "This phone is empty", and
-  "The notes left this phone.", "1 of 2 notes didn't leave this phone in time.", for a single note "The note left
-  this phone." or "The note didn't leave this phone in time." (never "1 of 1 notes"), or, with the switch off or no
-  group this phone could write in, "Your groups were not told."
+  "Erase now". The last screen names no group (the phone may be taken at that moment): "DarkProof is empty on this
+  phone", and "The notes left this phone.", "1 of 2 notes didn't leave this phone in time.", for a single note "The
+  note left this phone." or "The note didn't leave this phone in time." (never "1 of 1 notes"), or, with the switch
+  off or no group this phone could write in, "Your groups were not told." When something could not be erased, the
+  headline is "Not everything could be erased" with "Delete DarkProof from this phone to remove the rest.", and the
+  screen never says "empty".
 - **Other phones:** while the member is listed, "Marco left the group" on an admin's phone and "Marco left. Waiting
   for an admin's phone to change the key." on anyone else's, at the note's time; once a removal took them out, the
   removal's line reads "Marco left the group" instead of "Anna removed Marco".
@@ -1277,7 +1292,8 @@ L4), `kind: leave-after` (what is shown from the leaver, L3).
 ## If I go quiet
 
 A member can start a **check-in clock**: if no check-in of theirs reaches a phone of the group by the deadline, that
-phone tells its owner. The group's phones keep the clock, so it still works when the member's phone is off or gone;
+phone alerts its owner, as far as the phone allows (see "Alerts, and what can't be guaranteed"). The group's phones
+keep the clock, so it still works when the member's phone is off or gone;
 only phones that got the clock message can tell anyone. Nothing else changes on the wire: no new packet type, nothing
 in how packets are sealed, signed, padded or keyed.
 
@@ -1318,7 +1334,8 @@ in how packets are sealed, signed, padded or keyed.
   check-in** reached this phone: an own check-in of that member (text starting with `✅` or `🆘`, see "Check-ins"), as
   in Q1, with a `ts` greater than the clock message's. Reports (`👤`), reactions, "Are you safe?" and other messages
   don't cancel. A `🆘` cancels the clock and alerts as help, as always. A stop cancels by Q3: it is the newer clock
-  message.
+  message. A `🆘` that a phone sends again by itself after a restart (see "Finder", F6) is dated then, so it would
+  cancel a clock its sender started after the first call: F6 sends none while such a clock message is held.
 - **Q5.** Learned before the deadline: the phone schedules one alert at the deadline by its own clock, and takes it
   back when a cancelling check-in or a newer clock message arrives while the app runs.
 - **Q6.** At the deadline, if still armed: one alert. People shows the member as overdue until a cancelling check-in
@@ -1328,19 +1345,36 @@ in how packets are sealed, signed, padded or keyed.
   once, with "This phone learned of it late."; later than that, no alert and nothing in People, only the chat card.
 - **Q8.** The sender's own phone never alerts its user about its own clock. For a clock of 20 minutes or more
   (`deadline - ts`) it reminds its user 10 minutes before the deadline, with "I'm safe" under the reminder unless
-  "Lock DarkProof" is on. On iPhone "I'm safe" under an alert (the reminder, "Are you safe?") asks for the phone's
-  unlock first: whoever holds a locked phone can't stop its clock from the lock screen.
+  "Lock DarkProof" is on.
+  **Nothing sends "I'm safe" from a locked phone.** Every way to send it without opening DarkProof asks for the
+  phone's unlock first, so whoever holds a locked phone can't stop its clock or answer "Are you safe?" for its owner:
+  on iPhone "I'm safe" under an alert (the reminder, "Are you safe?") and from Siri, the Action button or the
+  Shortcuts app; on Android "I'm safe" under an alert on every Android version (before Android 12, where an alert's
+  button can't ask for the unlock itself, it sends nothing while the phone is locked) and the Quick Settings tile.
+  "I need help" is not held back: it is meant to work from a locked phone.
+  **An answer under an alert counts as sent only once it left.** iOS may suspend DarkProof as soon as an alert's
+  answer is reported done, so the iPhone keeps the app running until a phone, a radio or a relay took the check-in,
+  at most 20 seconds after it was written (and no longer than iOS allows). If it didn't leave by then: "“I'm safe” is
+  waiting on this phone. Open DarkProof so it can go."
+  If it couldn't be written (another check-in was still being written): "“I'm safe” wasn't sent. Open DarkProof to
+  send it."
 - **Q9.** When the member is no longer in the current epoch because of a removal that didn't follow a valid leave
   note of theirs, their clock is dropped without an alert. A valid leave note, and the removal that follows it (L4),
   **don't end a clock**: it keeps running and alerts at its deadline as usual. Someone may erase or leave because they
   are in danger, the case the clock exists for. Only a cancelling check-in or a stop of theirs that counts (Q1) ends it.
+  A limit: a phone that gets the removal but never the leave note can't tell it from an ordinary removal, so it drops
+  the clock without an alert while phones that got the note keep it. Phones can then differ.
 - **Q10. The record.** Per group and member: the clock message's packet id and mark, `ts`, deadline, position (none in
   high-risk mode on this phone), when this phone took it, whether its alert was posted or handed to the system for the
   deadline; for the phone's own clock, who confirmed it (Q14); and the `ts` of their latest cancelling check-in. Saved
   apart from the messages, so the clock survives its message being deleted by the group's timer or high-risk mode, and
   app restarts; kept in the app's own storage, out of device backups (on iPhone a file excluded from backups, never the
-  preferences). The position goes once the group's timer would have deleted the clock message (counted from when the
-  phone took the clock), and at once in high-risk mode. A record is kept until `ts + 36 h`
+  preferences), and **sealed with the same key as this phone's copies of messages** (see "This phone's copy"; on
+  iPhone the whole file, on Android the columns that hold names, positions and text). It is readable from the phone's
+  first unlock on, so the alert can still be worked out while the app runs in the background or, on Android, is
+  closed. A record an older version kept plain is sealed when first read, and the plain copy deleted. The position
+  goes once the group's timer would have deleted the clock message (counted from when the phone took the clock), and
+  at once in high-risk mode. A record is kept until `ts + 36 h`
   (past the latest deadline, `ts + 24 h`, and the 12 hours after it), also once cancelled, without its position, so
   that a copy of an older clock read again can't arm it again. In high-risk mode it goes at `ts + 24 h`, never before
   the deadline. It goes at once when the member is dropped (Q9) and when the group is left. At every start the records
@@ -1358,9 +1392,12 @@ in how packets are sealed, signed, padded or keyed.
   about others"). A member not checked: "Anna (not checked)"; a checked one whose name another member has too: "Anna ·
   🐶🐱🦁🐴", the first four of their person emoji. A member who calls themselves "Anna" can't make the group read an
   alert as being about the real Anna.
-- **Q14. Kept by.** The sender's phone keeps, in its own clock's record, the members whose phones confirmed the clock
+- **Q14. Reached.** The sender's phone keeps, in its own clock's record, the members whose phones confirmed the clock
   message (delivery receipts), so the list outlives the message when the group's timer deletes it, and shows only those
-  who are members now (not someone who left or was removed since: their phone forgot the group).
+  who are members now (not someone who left or was removed since: their phone forgot the group). A receipt means only
+  that the message reached that phone, nothing more. It doesn't show that the phone keeps the clock: a phone on an
+  older version, one that can't check the sender's signature yet ("not verified yet"), or one where Q1 fails confirms
+  the message like any other. So the screen says "Reached", never that a phone keeps the clock or will alert.
 
 ### Starting and stopping (writer)
 
@@ -1387,18 +1424,25 @@ in how packets are sealed, signed, padded or keyed.
 
 ### What the screens say
 
-- **Own screen**, "If I go quiet": "If you don't check in on time, the phones that got your clock tell their owners."
-  / "It still works when your phone is off or gone. Only phones that got the clock can tell anyone." The chips
-  "30 min", "1 hour", "3 hours", "8 hours"; with location sharing on, the switch "Add where I am" ("Where you are now
-  goes with the clock"); "Start the clock". Running: a ring and the time left, "Ends 18:30", then from the clock
-  message's delivery receipts (Q14), never from the member list: "Not confirmed by any phone yet. If no phone has it,
-  nobody is told.", "Kept by Marco so far", "Kept by Marco and Sara so far", "Kept by Marco, Sara and 2 more so far". Buttons
-  "I'm safe, stop the clock", "Add 30 minutes", and the text button "Stop without checking in". Toasts: "Clock sent to
-  your group", "30 minutes added", "“I'm safe” sent. The clock stopped.", "Clock stopped" (with nothing in reach,
-  that it waits for a phone in range). Below: "Phones on older DarkProof versions only show the message."
+- **Own screen**, "If I go quiet": "If you don't check in on time, the phones that got your clock can alert their
+  owners." / "It still works when your phone is off or gone. Only phones that got the clock can tell anyone." The
+  chips "30 min", "1 hour", "3 hours", "8 hours"; with location sharing on, the switch "Add where I am" ("Where you
+  are now goes with the clock"); "Start the clock". Running: a ring and the time left, "Ends 18:30", then from the
+  clock message's delivery receipts (Q14), never from the member list: "Not confirmed by any phone yet. Until a phone
+  has it, nobody can be alerted.", "Reached Marco's phone so far", "Reached Marco's and Sara's phones so far",
+  "Reached Marco's, Sara's and 2 more phones so far" ("Reached" means a receipt came back, nothing more), and directly
+  under it "Phones on older DarkProof versions only show the message." Ran out: "Your clock ran out at 18:30. Phones
+  that have it can alert their owners." Buttons "I'm safe, stop the clock", "Add 30 minutes", and the text button
+  "Stop without checking in". Toasts: "Clock sent to your group", "30 minutes added", "“I'm safe” sent. The clock
+  stopped.", "Clock stopped" (with nothing in reach, that it waits for a phone in range).
 - **Chat card:** "Anna started a check-in clock" / "If no check-in from Anna reaches this phone by 18:30, it tells
-  you."; a stop: "Anna stopped the check-in clock". The name as in Q13 ("Anna (not checked) started a check-in clock"). Its own: "You started a check-in clock" / "Ends 18:30. Phones that
-  got it tell their owners if you don't check in."
+  you."; with alerts off for DarkProof on this phone, "If no check-in from Anna reaches this phone by 18:30, it shows
+  here. Alerts are off for DarkProof."; a stop: "Anna stopped the check-in clock". The name as in Q13 ("Anna (not
+  checked) started a check-in clock"). The promise shows only while this phone keeps that clock: the message is
+  verified, it passed Q1, and it is the clock this phone holds for Anna (the same packet id and mark) and still armed.
+  Otherwise (shown as "not verified yet", Q1 fails, a newer clock or a check-in replaced it) the card's second line is
+  "This phone isn't keeping this clock." Its own: "You started a check-in clock" / "Ends 18:30. Phones that got it
+  can alert their owners if you don't check in."
 - **People:** armed, "Check-in clock · ends 18:30"; overdue, "Clock ran out at 18:30 · no check-in has reached this
   phone"; then "Checked in at 19:10".
 - **Alert** (names allowed): "Anna's check-in clock ran out" / "No check-in from Anna has reached this phone since
@@ -1414,7 +1458,9 @@ in how packets are sealed, signed, padded or keyed.
 
 They show `⏳ Check on me if I don't check in within 1 hour` as an ordinary message with its time, and the stop text;
 they alert it as an ordinary message and keep no clock (a reader that knows replies, reactions, the timer and the leave
-note reads a `0x04` field as none). The sender's screen counts only receipts, so it never claims that they keep one.
+note reads a `0x04` field as none). They confirm it with a receipt like any other message, so the sender's screen
+names them under "Reached" too: "Reached" means that a receipt came back, nothing more. It never says that a phone
+keeps the clock or will alert (Q14).
 
 ### Abuse and failure
 
@@ -1423,7 +1469,10 @@ note reads a `0x04` field as none). The sender's screen counts only receipts, so
 | A member sends 50 clock messages | One record (the newest), one alert; backdated ones at most one alert in 10 minutes | Q3, Q12; per-link pacing bounds packets |
 | A member names themselves "Anna" and sends a backdated clock | The alert reads "Anna (not checked)", or "Anna · 🐶🐱🦁🐴" | Q13 |
 | Anna erases her phone or leaves while her clock runs | The clock still alerts at its deadline | Q9 |
-| Someone with Anna's locked phone taps "I'm safe" on the reminder | The phone asks for its unlock | Q8 |
+| Someone with Anna's locked phone taps "I'm safe" on the reminder or under "Are you safe?", says it to Siri, or uses the Action button or the Quick Settings tile | The phone asks for its unlock, or sends nothing | Q8 |
+| Anna taps "I'm safe" on the reminder and iOS suspends DarkProof at once | The app keeps running until a link took it (at most 20 s); otherwise an alert says it waits on her phone | Q8 |
+| Marco's phone is on an older version, or can't check Anna's signature yet | It confirms the clock message, so Anna reads "Reached Marco's phone so far", but it keeps no clock | Q14: "Reached" says only that a receipt came back |
+| Anna's phone restarts after her "I need help" while a newer clock of hers runs | No automatic re-send: her clock keeps running | "Finder", F6 |
 | A deadline years ahead, or in the past | The field is ignored, plain text | Q2 |
 | Someone writes a clock under Anna's id | Not counted | Q1: only Anna's key signs under her id |
 | A removed member's clock | Never counted, or dropped (unless the removal followed their leave note) | Q1, Q9 |
@@ -1431,7 +1480,7 @@ note reads a `0x04` field as none). The sender's screen counts only receipts, so
 | Anna's phone clock is 20 minutes fast | Alerts 20 minutes early on other phones | Deadlines are in her clock; packets more than 10 minutes ahead are dropped; the screens show the time |
 | Anna checks in but it reaches only some phones | Those phones don't alert, the others do | "has reached this phone" |
 | This phone is off at the deadline | No alert while it is off | Stated limits |
-| The clock message reaches no phone | Nobody is told | The sender's screen says so, from receipts |
+| The clock message reaches no phone | Nobody can be alerted | The sender's screen says so, from receipts |
 | Someone with Anna's unlocked phone stops her clock | It stops | As sending "I'm safe"; the lock is the protection |
 | An alert on a seized phone | No names, no text with the lock or high-risk mode | Alerts follow the same rules as message alerts |
 | A position given away | Only with location sharing and "Add where I am" on | As in check-ins |
@@ -1453,9 +1502,11 @@ and a number of metres would be trusted and wrong.
 - **F1. Field:** a "needs help" check-in (text starting with `🆘`) in a group may carry in its 5th field the type
   `0x06` and the sender's current link id (see "Link ids") as 6 raw bytes: `06 a1 b2 c3 d4 e5 f6` for `a1b2c3d4e5f6`.
   The 4th field is there and empty.
-- **F2. Writers** add it to each message of their own whose text starts with `🆘`, in a group, while the switch "Let
-  my group find this phone" is on (default on) and high-risk mode is off. Never on the Public channel, never to `✅`,
-  reports (`👤`), "Are you safe?", replies or reactions.
+- **F2. Writers** add it to each message of their own whose text starts with `🆘`, in a group, while the trial switch
+  is on (see "What the screens say": until the real-phone tests pass it is off, as in release builds, and then no
+  note is written, since no phone can use one), the switch "Let my group find this phone" is on (default on) and
+  high-risk mode is off. Never on the Public channel, never to `✅`, reports (`👤`), "Are you safe?", replies or
+  reactions.
 - **F3. Radio first:** if the packet would fit 163 bytes (MeshCore) without the note and not with it, the note is left
   out. The note adds 11 bytes (the empty 4th field's length, the 5th field's length, 7); see "Needs and head count"
   for the rest of the packet. A check-in with a battery level fits 163 bytes only with a name of a few bytes at most,
@@ -1467,15 +1518,20 @@ and a number of metres would be trusted and wrong.
 - **F5.** A person's note is the one in their most recent check-in, of either kind. A later `✅` check-in, or a later
   `🆘` without a note, ends it: "I'm safe" ends being findable.
 - **F6. After a restart** the old link id is gone. Once per start, if this phone's newest own check-in in a group is
-  "needs help", under 24 hours old, with the switch on and high-risk mode off, the phone sends it again (the same needs
-  and head count, a fresh battery level and position, the new link id), at most once in 10 minutes per group. It alerts
-  the group again, as any "needs help" does.
+  "needs help", under 24 hours old, with the trial switch on, the switch on and high-risk mode off, the phone sends it
+  again (the same needs and head count, a fresh battery level and position, the new link id), at most once in 10
+  minutes per group. It alerts the group again, as any "needs help" does. **It never cancels the sender's own newer
+  clock:** the re-sent check-in is dated now, so by rule Q4 (see "If I go quiet") it would cancel on every phone a
+  clock message its sender wrote after the first call, which that call didn't. So there is no re-send while the
+  group holds a clock message of this phone's own (a start or a stop, from its clock record or a message still shown)
+  whose `ts` is at or after that check-in's. Without the trial switch there is no re-send at all: it would carry no
+  note.
 
 What it reveals: everyone who holds the group's key learns which link id is this member's until their app restarts.
 During that time a group member, or anyone who has a member's phone or key, can recognise this phone over Bluetooth by
 linking to it and reading its HELLO. Nobody outside the group learns anything new. A later check-in without the note
-ends it for readers, and a restart ends it for everyone. Phones in high-risk mode, and phones whose user turned the
-switch off, never add it.
+ends it for readers, and a restart ends it for everyone. Phones with the trial switch off (release builds until the
+real-phone tests pass), phones in high-risk mode, and phones whose user turned the switch off never add it.
 
 ### Reading the signal
 
@@ -1503,8 +1559,9 @@ Only on the searcher's phone. Nothing about the match or the readings is ever se
 
 ### What the screens say
 
-- The whole Finder screen stays hidden behind a trial switch (`finderTrial`, off by default) until the real-phone tests
-  pass. The note is read and written either way.
+- Everything of Finder waits for a trial switch (`finderTrial`, off by default, as in release builds) until the
+  real-phone tests pass: the Finder screen, the settings switch "Let my group find this phone", the note in "I need
+  help" (F2) and the re-send after a restart (F6). The note is read either way.
 - A person whose latest check-in is "needs help" with a note gets "Find by Bluetooth" on their page, beside "Find" (the
   compass) if they shared a position. The screen is "Finding Marco": rings that light up one per band (green only at
   "Here"), the band's word and a line under it, the trend line. Lines: "Keep moving. This phone hasn't heard Marco's
@@ -1513,15 +1570,20 @@ Only on the searcher's phone. Nothing about the match or the readings is ever se
 - Always on the screen: "Bluetooth can't tell direction, only stronger or weaker. Walls and people weaken it."
 - Linked only over Wi-Fi or Apple peer-to-peer: "Linked to Marco's phone, but not over Bluetooth, so the signal can't
   be measured." Linked only by a link Marco's phone dialed, where this phone can't read the signal: "Linked to Marco's
-  phone, but this phone can't measure the signal on this link." Not linked: "Finder works only when this phone and
-  Marco's are linked by Bluetooth. If Marco's phone restarted after asking, it can't be recognised until it sends a
-  new check-in." Bluetooth off: "Turn on Bluetooth to search."
-- "I'm with Marco" sends the ordinary group message `I'm with Marco` (no new format, never a check-in) and says "Your
-  group is told you're with Marco."
+  phone, but this phone can't measure the signal on this link." Not linked: "Find by Bluetooth works only when this
+  phone and Marco's are linked by Bluetooth. If Marco's phone restarted after asking, it can't be recognised until it
+  sends a new check-in." Bluetooth off: "Turn on Bluetooth to search."
+- When Marco's latest check-in is no longer "needs help" with a note (F5), the search ends: the readings stop, and one
+  card says "Marco is safe", or after a "needs help" without a note "Marco's phone can't be found by Bluetooth right
+  now. A new “I need help” from Marco makes it findable again."
+- "I'm with Marco" sends the ordinary group message `I'm with Marco` (no new format, never a check-in), says "Sent to
+  My group", or with nothing in reach "Saved. It goes out when a phone or the internet is in reach.", and the screen
+  closes. It never says that the group is told.
 - A short vibration when the band changes; the screen stays on while Finder is open; VoiceOver says the band when it
   changes, not every second. No animation runs on its own.
-- Settings: the switch "Let my group find this phone", "When you send “I need help”, your group can tell which nearby
-  phone is yours until DarkProof restarts." In high-risk mode it is off and greyed: "Off in high-risk mode."
+- Settings, only while the trial switch is on: the switch "Let my group find this phone", "When you send “I need
+  help”, your group can tell which nearby phone is yours until DarkProof restarts." In high-risk mode it is off and
+  greyed: "Off in high-risk mode." With the trial switch off the row is hidden.
 
 Vectors: `kind: finder-field` (what a reader takes from the 5th field), `kind: finder-fit` (radio first, with the
 packet's size), `kind: finder-bands` (signal readings, one a second, to bands and trends), made by
@@ -1567,7 +1629,9 @@ spec/make-reply-vectors.py (argument `finder`).
   packets it can't open keep the rules above. It keeps the name of each packet removed this way (the key under "The
   same packet", with the packet's `ts` and its group's id, no content; at most 5,000, each until its `ts` is 7 days
   old): one that arrives again is passed on, but never shown, alerted, confirmed or copied again, and it is stored
-  again only if no key on the phone opens it any more.
+  again only if no key on the phone opens it any more. These times and the gone list are kept like the clock records
+  (see "If I go quiet", Q10): out of backups, and on iPhone in a file sealed with the key of this phone's copies, since
+  in high-risk mode the gone list is a week-long log of how many messages each group had, and when.
 
 - **The same packet** means the same id, the same `ts` and the same content (the first 8 bytes of SHA-256 of `ts`, 8
   bytes big-endian, followed by `cipher`). The encryption is bound to `ts`, so a copy with another `ts` can't be opened:
@@ -1963,6 +2027,10 @@ A GATT client opened on an existing connection only to read signal strength for 
   earlier build shows it as the ordinary message `⏳ Check on me if I don't check in within 1 hour`.
 - `0xB3`, 2026-11-23: the finder note, the 5th field `0x06` and the sender's link id in "needs help" check-ins (see
   "Finder"). A phone on an earlier build ignores the field and shows the check-in as before.
+- `0xB3`, 2026-11-23, later: same bytes, new rules. The finder note is written, and "I need help" re-sent after a
+  restart, only while the trial switch is on; the re-send never cancels the sender's own newer clock (F6). "I'm safe"
+  is never sent from a locked phone (Q8). The clock screen says "Reached" instead of "Kept by" (Q14). Clock records,
+  and on iPhone the day book, are sealed on the phone (Q10).
 
 ## Apple peer-to-peer (iPhone to iPhone)
 

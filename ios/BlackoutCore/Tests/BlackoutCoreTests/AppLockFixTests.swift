@@ -53,4 +53,37 @@ final class AppLockFixTests: XCTestCase {
         XCTAssertEqual(moves.count, AnswerGroup.maxMoves)
         XCTAssertEqual(AnswerGroup.noting(from: "a", to: "c", in: ["a>b"]), ["a>c"])
     }
+
+    // Answers given without opening DarkProof (fix round 2026-11-23, must-fix 1 and 2).
+
+    /// Must-fix 1: "I'm safe" from Siri, the Action button or Shortcuts asks for the phone's unlock (it stops the clock
+    /// everywhere); "I need help" stays possible from a locked phone, by design.
+    func testOnlyImSafeNeedsTheUnlock() {
+        XCTAssertTrue(SafeAnswer.needsUnlock(.safe))
+        XCTAssertFalse(SafeAnswer.needsUnlock(.help))
+    }
+
+    /// Must-fix 2: an answer from an alert keeps the app running until a link took it, or 20 seconds.
+    func testAnAnswerWaitsUntilItLeftOrTwentySeconds() {
+        XCTAssertNil(SafeAnswer.outcome(handedOff: false, elapsed: 0), "keep waiting")
+        XCTAssertNil(SafeAnswer.outcome(handedOff: false, elapsed: 19.9), "keep waiting")
+        XCTAssertEqual(SafeAnswer.outcome(handedOff: true, elapsed: 0.5), .left)
+        XCTAssertEqual(SafeAnswer.outcome(handedOff: true, elapsed: 25), .left, "taken counts whenever it is seen")
+        XCTAssertEqual(SafeAnswer.outcome(handedOff: false, elapsed: 20), .waiting)
+        XCTAssertEqual(SafeAnswer.waitSeconds, 20)
+    }
+
+    /// What the user is told: nothing once it left; else that it waits, or wasn't sent. Never that the group got it.
+    func testWhatAnAnswerThatDidntLeaveSays() {
+        XCTAssertNil(SafeAnswer.line(.left, .safe))
+        XCTAssertEqual(SafeAnswer.line(.waiting, .safe), "“I'm safe” is waiting on this phone. Open DarkProof so it can go.")
+        XCTAssertEqual(SafeAnswer.line(.notSent, .safe), "“I'm safe” wasn't sent. Open DarkProof to send it.")
+        XCTAssertEqual(SafeAnswer.line(.waiting, .help), "“I need help” is waiting on this phone. Open DarkProof so it can go.")
+        for o in [SafeAnswer.Outcome.waiting, .notSent] {
+            for c in [CheckIn.safe, .help] {
+                let s = SafeAnswer.line(o, c)!.lowercased()
+                for bad in QuietWords.never + ["sent to", "was sent"] { XCTAssertFalse(s.contains(bad), "\(s) says \(bad)") }
+            }
+        }
+    }
 }

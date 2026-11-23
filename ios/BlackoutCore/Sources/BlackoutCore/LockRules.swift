@@ -44,3 +44,42 @@ public enum AnswerGroup {
         Array((moves.filter { !$0.hasPrefix(from + ">") } + [from + ">" + to]).suffix(maxMoves))
     }
 }
+
+/// "I'm safe" and "I need help" given without opening DarkProof: from an alert's answer ("Are you safe?", the check-in
+/// clock's reminder), Siri, the Action button or the Shortcuts app (spec "If I go quiet", Q8).
+public enum SafeAnswer {
+    /// Whether the phone must be unlocked before it sends `c` from outside the app. "I'm safe" always: it stops the
+    /// sender's check-in clock on every phone (rule Q4) and answers "Are you safe?", so whoever holds a locked phone must
+    /// not send it. "I need help" never: it is made to work from a locked phone.
+    public static func needsUnlock(_ c: CheckIn) -> Bool { c == .safe }
+
+    /// How long an answer from an alert keeps DarkProof running in the background for a phone, a radio or a relay to
+    /// take it: iOS may suspend the app as soon as the answer is reported done.
+    public static let waitSeconds: Double = 20
+
+    public enum Outcome: Equatable, Sendable {
+        /// A phone, a radio or a relay took it ("Sent").
+        case left
+        /// Written, but nothing took it within `waitSeconds`: it waits on this phone.
+        case waiting
+        /// Not written: another check-in was still being written, or DarkProof had stopped.
+        case notSent
+    }
+
+    /// While an answer waits: nil to keep waiting, else how it ended. `handedOff`: a link took it; `elapsed`: seconds
+    /// since it was written.
+    public static func outcome(handedOff: Bool, elapsed: Double) -> Outcome? {
+        if handedOff { return .left }
+        return elapsed >= waitSeconds ? .waiting : nil
+    }
+
+    /// What the alert says when the answer didn't leave the phone; nil when it did. It never says the group got it.
+    public static func line(_ o: Outcome, _ c: CheckIn) -> String? {
+        let what = c == .safe ? "“I'm safe”" : "“I need help”"
+        switch o {
+        case .left: return nil
+        case .waiting: return "\(what) is waiting on this phone. Open DarkProof so it can go."
+        case .notSent: return "\(what) wasn't sent. Open DarkProof to send it."
+        }
+    }
+}

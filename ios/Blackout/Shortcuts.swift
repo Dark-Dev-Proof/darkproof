@@ -4,10 +4,14 @@ import BlackoutCore
 /// "I'm safe" and "I need help" for Siri, Spotlight, the Action button and the Shortcuts app. They run without opening
 /// DarkProof: the mesh starts if it isn't running and the check-in is queued like one sent from the app, then goes out
 /// over whatever link is in reach. (A Control Center or Lock Screen control would need a widget extension: not added.)
+/// "I'm safe" asks for the phone's unlock first (`SafeAnswer.needsUnlock`): it stops the check-in clock on every phone and
+/// answers "Are you safe?", so whoever holds a locked phone can't say it through Siri or the Action button. "I need
+/// help" works from a locked phone, by design.
 struct SafeIntent: AppIntent {
     static var title: LocalizedStringResource = "I'm safe"
     static var description = IntentDescription("Tells your DarkProof group you're safe, with your battery level and, if you share it, your position.")
     static var openAppWhenRun = false
+    static var authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication // `SafeAnswer.needsUnlock(.safe)`; a constant for the intents' metadata
 
     @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
         .result(dialog: IntentDialog(stringLiteral: await CheckInShortcut.send(.safe)))
